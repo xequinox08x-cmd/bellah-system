@@ -1,0 +1,10 @@
+{
+  "name": "bellah-system",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n WEB,API \"pnpm --filter web dev\" \"pnpm --filter api dev\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
