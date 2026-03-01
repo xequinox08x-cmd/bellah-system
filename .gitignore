@@ -1,1 +1,20 @@
 node_modules
+
+# env files
+.env
+.env.*
+!.env.example
+
+# dependencies / builds
+node_modules/
+dist/
+build/
+.vite/
+
+# logs
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/

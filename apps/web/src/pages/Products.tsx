@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Plus, Search, Edit2, Trash2, AlertTriangle, X, Package } from 'lucide-react';
 import { useStore, Product, ProductCategory } from '../data/store';
 import { useAuth } from '../components/AuthContext';
