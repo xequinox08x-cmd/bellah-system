@@ -1,0 +1,79 @@
+Hi [Teammate Name]!
+
+I pushed the latest code to GitHub:
+https://github.com/xequinox08x-cmd/bellah-system
+
+I need you to work on BACKEND next (Sales module). Please do this on a feature branch and open a PR when done.
+
+Setup:
+
+1. Clone repo + install:
+
+* git clone https://github.com/xequinox08x-cmd/bellah-system.git
+* cd bellah-system
+* pnpm install
+
+2. Create your local env file:
+
+* create apps/api/.env
+* add DATABASE_URL + PORT=4000
+  (I’ll send the DATABASE_URL privately.)
+
+Goal: Implement Sales API with a proper DB transaction.
+
+1. Create routes file:
+
+* apps/api/src/routes/sales.ts
+
+2. Add these endpoints:
+
+A) POST /api/sales
+Request body example:
+{
+"items": [
+{ "productId": 1, "qty": 2, "unitPrice": 120.00 },
+{ "productId": 3, "qty": 1, "unitPrice": 80.00 }
+]
+}
+
+Behavior:
+
+* Validate: items not empty, qty > 0
+* Calculate total = sum(qty * unitPrice)
+* Use a single DB transaction:
+
+  1. Insert into sales (total, created_at)
+  2. Insert each row into sale_items (sale_id, product_id, qty, unit_price)
+  3. Decrement products.stock by qty per item
+* Prevent negative stock:
+
+  * If any item would make stock < 0, rollback + return 400
+
+Response:
+
+* Return created sale + items, or at least sale id and total
+
+B) GET /api/sales
+
+* Return sales list: id, total, created_at (order latest first)
+
+C) GET /api/sales/:id
+
+* Return sale info + items joined with product name/sku
+
+3. Register the sales router in src/app.ts
+
+* app.use(salesRouter)
+
+Deliverables:
+
+1. Test results (screenshots or copy/paste curl results for POST and GET)
+2. Branch pushed:
+
+* feature/sales-api
+
+3. PR opened to main:
+
+* “Sales API (transaction + stock deduction)”
+
+Thanks!
