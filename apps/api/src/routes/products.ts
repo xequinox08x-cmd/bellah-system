@@ -4,7 +4,7 @@ import { pool } from '../db/pool';
 export const productsRouter = Router();
 
 // GET /api/products
-productsRouter.get('/api/products', async (_req, res) => {
+productsRouter.get('/products', async (_req, res) => {
   const result = await pool.query(`
     SELECT
       id,
@@ -26,7 +26,7 @@ productsRouter.get('/api/products', async (_req, res) => {
 });
 
 // POST /api/products
-productsRouter.post('/api/products', async (req, res) => {
+productsRouter.post('/products', async (req, res) => {
   const { sku, name, category, price, cost, stock, lowStockThreshold, description } = req.body;
 
   if (!sku || !name) {
@@ -66,7 +66,7 @@ productsRouter.post('/api/products', async (req, res) => {
 });
 
 // PUT /api/products/:id
-productsRouter.put('/api/products/:id', async (req, res) => {
+productsRouter.put('/products/:id', async (req, res) => {
   const id = Number(req.params.id);
   const { sku, name, category, price, cost, stock, lowStockThreshold, description } = req.body;
 
@@ -123,7 +123,7 @@ productsRouter.put('/api/products/:id', async (req, res) => {
 });
 
 // DELETE /api/products/:id
-productsRouter.delete('/api/products/:id', async (req, res) => {
+productsRouter.delete('/products/:id', async (req, res) => {
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ message: 'Invalid id' });
 
