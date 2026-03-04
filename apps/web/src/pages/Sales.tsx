@@ -1,13 +1,25 @@
-import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import React from "react";
+import { api } from "../lib/api";
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import {
-  Search, ShoppingCart, TrendingUp, Package, ChevronDown,
+  Search, ShoppingCart, TrendingUp, ChevronDown,
   Plus, Minus, AlertTriangle, CheckCircle, X, User,
   Tag, Receipt, Filter,
-} from 'lucide-react';
-import { useStore } from '../data/store';
-import { useAuth } from '../components/AuthContext';
-import { toast } from 'sonner@2.0.3';
-import type { Product } from '../data/store';
+} from "lucide-react";
+import { useAuth } from "../components/AuthContext";
+import { toast } from "sonner";
+
+type Product = {
+  id: string;
+  sku: string;
+  name: string;
+  category: string;
+  price: number;
+  cost: number;
+  stock: number;
+  lowStockThreshold: number;
+  description?: string;
+};
 
 // ─── constants ────────────────────────────────────────────────────────────────
 const TODAY = '2026-02-26';
@@ -250,7 +262,43 @@ function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: stri
 
 // ─── Sales Page ───────────────────────────────────────────────────────────────
 export default function Sales() {
-  const { products, sales, recordSale } = useStore();
+  // backend state (replaces useStore)
+const [products, setProducts] = useState<Product[]>([]);
+const [sales, setSales] = useState<any[]>([]);
+const [loading, setLoading] = useState(true);
+
+// load products + sales from backend on page load
+useEffect(() => {
+  async function load() {
+    try {
+      setLoading(true);
+
+      const rawProducts = await api.getProducts();
+      const normalizedProducts: Product[] = rawProducts.map((p: any) => ({
+        id: String(p.id),
+        sku: p.sku,
+        name: p.name,
+        category: p.category,
+        price: Number(p.price),
+        cost: Number(p.cost),
+        stock: Number(p.stock),
+        lowStockThreshold: Number(p.lowStockThreshold),
+        description: p.description ?? "",
+      }));
+      setProducts(normalizedProducts);
+
+      const rawSales = await api.getSales();
+      setSales(rawSales);
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || "Failed to load from backend");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  load();
+}, []);
   const { user } = useAuth();
 
   // ── Form state ─────────────────────────────────────────────────────────
@@ -305,36 +353,54 @@ export default function Sales() {
   }, []);
 
   // ── Submit ─────────────────────────────────────────────────────────────
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!productId)            { toast.error('Please select a product'); return; }
-    if (quantity < 1)          { toast.error('Quantity must be at least 1'); return; }
-    if (!selectedProduct)      return;
+  const handleSubmit = async (e: React.FormEvent) => {
+  e.preventDefault();
 
+  if (!productId) { toast.error("Please select a product"); return; }
+  if (quantity < 1) { toast.error("Quantity must be at least 1"); return; }
+  if (!selectedProduct) return;
+
+  try {
     setSubmitting(true);
-    const success = recordSale({
-      productId,
-      productName:  selectedProduct.name,
-      category:     selectedProduct.category,
-      quantity,
-      unitPrice:    selectedProduct.price,
-      total,
-      profit,
-      date:         TODAY,
-      staffName:    user?.name || 'Staff',
-      customerName: customerName.trim() || 'Walk-in Customer',
+
+    await api.createSale({
+      items: [
+        {
+          productId: Number(productId),
+          qty: quantity,
+          unitPrice: selectedProduct.price,
+        },
+      ],
     });
 
-    setTimeout(() => {
-      setSubmitting(false);
-      if (success) {
-        toast.success(`Sale recorded — ${selectedProduct.name} ×${quantity}`);
-        resetForm();
-      } else {
-        toast.error('Insufficient stock for this quantity');
-      }
-    }, 300);
-  };
+    // refresh products (stock updated)
+  const rawProducts = await api.getProducts();
+  const normalizedProducts = rawProducts.map((p: any) => ({
+    id: String(p.id),
+    sku: p.sku,
+    name: p.name,
+    category: p.category,
+    price: Number(p.price),
+    cost: Number(p.cost),
+    stock: Number(p.stock),
+    lowStockThreshold: Number(p.lowStockThreshold),
+   description: p.description ?? '',
+  }));
+  setProducts(normalizedProducts);
+
+  // refresh sales table
+  setSales(await api.getSales());
+
+    toast.success(`Sale recorded — ${selectedProduct.name} ×${quantity}`);
+
+    resetForm();
+  } catch (err: any) {
+    console.error(err);
+    toast.error(err.message || "Failed to record sale");
+  } finally {
+    setSubmitting(false);
+  }
+};
 
   // ── Sorted stock list ─────────────────────────────────────────────────
   const sortedByStock = useMemo(
@@ -362,20 +428,42 @@ export default function Sales() {
 
   // ── Filtered recent sales ─────────────────────────────────────────────
   const filteredSales = useMemo(() => {
-    return sales.filter(s => {
-      const q = search.toLowerCase();
-      const matchSearch = !q ||
-        s.productName.toLowerCase().includes(q) ||
-        s.customerName.toLowerCase().includes(q) ||
-        s.staffName.toLowerCase().includes(q);
-      const matchDate =
-        dateFilter === 'all'   ? true :
-        dateFilter === 'today' ? s.date === TODAY :
-        dateFilter === 'week'  ? s.date >= '2026-02-20' :
-                                 s.date >= '2026-02-01';
-      return matchSearch && matchDate;
-    });
-  }, [sales, search, dateFilter]);
+  const now = new Date();
+
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+
+  const startOfWeek = new Date(now);
+  startOfWeek.setDate(now.getDate() - 7);
+
+  const startOfMonth = new Date(now);
+  startOfMonth.setDate(1);
+  startOfMonth.setHours(0, 0, 0, 0);
+
+  return sales.filter((s: any) => {
+    const q = search.trim().toLowerCase();
+
+    const matchSearch =
+      !q ||
+      String(s.id).includes(q) ||
+      String(s.total ?? "").toLowerCase().includes(q);
+
+    const created = s.created_at ? new Date(s.created_at) : null;
+
+    const matchDate =
+      dateFilter === "all"
+        ? true
+        : !created
+        ? false
+        : dateFilter === "today"
+        ? created >= startOfToday
+        : dateFilter === "week"
+        ? created >= startOfWeek
+        : created >= startOfMonth;
+
+    return matchSearch && matchDate;
+  });
+}, [sales, search, dateFilter]);
 
   const INPUT_CLS = 'w-full px-3 py-2.5 border border-[#E5E7EB] rounded-lg text-sm text-[#111827] placeholder-[#C5C5C5] focus:outline-none focus:ring-2 focus:ring-[#EC4899]/15 focus:border-[#EC4899] bg-white transition-all';
 
@@ -422,7 +510,13 @@ export default function Sales() {
             </div>
           </div>
 
-          <form onSubmit={handleSubmit} className="p-6 space-y-5">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!submitting) handleSubmit(e);
+            }}
+            className="p-6 space-y-5"
+          >
 
             {/* Product */}
             <div>
@@ -687,114 +781,134 @@ export default function Sales() {
         </div>
       </div>
 
-      {/* ── Recent Sales Table ─────────────────────────────────────────── */}
-      <div className="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden">
-        {/* Table toolbar */}
-        <div className="px-5 py-4 border-b border-[#F3F4F6] flex flex-wrap gap-3 items-center">
-          <div className="flex items-center gap-2">
-            <ShoppingCart className="w-4 h-4 text-[#EC4899]" />
-            <h3 className="text-[#111827] text-sm" style={{ fontWeight: 600 }}>Recent Sales</h3>
-          </div>
-          <div className="flex-1" />
-          {/* Search */}
-          <div className="relative w-52">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#9CA3AF]" />
-            <input
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search product, customer…"
-              className="w-full pl-9 pr-3 py-2 text-xs border border-[#E5E7EB] rounded-lg focus:outline-none focus:border-[#F9A8C0] focus:ring-1 focus:ring-[#EC4899]/15 bg-white"
-            />
-          </div>
-          {/* Date filter */}
-          <div className="relative flex items-center">
-            <Filter className="absolute left-2.5 w-3.5 h-3.5 text-[#9CA3AF] pointer-events-none" />
-            <select
-              value={dateFilter}
-              onChange={e => setDateFilter(e.target.value as typeof dateFilter)}
-              className="pl-8 pr-3 py-2 text-xs border border-[#E5E7EB] rounded-lg bg-white text-[#374151] focus:outline-none focus:border-[#F9A8C0] appearance-none cursor-pointer"
-            >
-              <option value="all">All time</option>
-              <option value="today">Today</option>
-              <option value="week">This week</option>
-              <option value="month">This month</option>
-            </select>
-          </div>
-          <span className="text-xs text-[#9CA3AF] shrink-0">{filteredSales.length} record{filteredSales.length !== 1 ? 's' : ''}</span>
-        </div>
+      
+{/* ── Recent Sales Table ─────────────────────────────────────────── */}
+<div className="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden">
+  {/* Table toolbar */}
+  <div className="px-5 py-4 border-b border-[#F3F4F6] flex flex-wrap gap-3 items-center">
+    <div className="flex items-center gap-2">
+      <ShoppingCart className="w-4 h-4 text-[#EC4899]" />
+      <h3 className="text-[#111827] text-sm" style={{ fontWeight: 600 }}>
+        Recent Sales
+      </h3>
+    </div>
 
-        {/* Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="bg-[#F9FAFB] border-b border-[#F3F4F6]">
-                {['Date', 'Product', 'Customer', 'Qty', 'Unit Price', 'Discount', 'Total', 'Profit', 'Staff'].map(h => (
-                  <th
-                    key={h}
-                    className={`px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider ${
-                      ['Qty', 'Unit Price', 'Discount', 'Total', 'Profit'].includes(h) ? 'text-right' : 'text-left'
-                    }`}
+    <div className="flex-1" />
+
+    {/* Search */}
+    <div className="relative w-52">
+      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#9CA3AF]" />
+      <input
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search product, customer…"
+        className="w-full pl-9 pr-3 py-2 text-xs border border-[#E5E7EB] rounded-lg focus:outline-none focus:border-[#F9A8C0] focus:ring-1 focus:ring-[#EC4899]/15 bg-white"
+      />
+    </div>
+
+    {/* Date filter */}
+    <div className="relative flex items-center">
+      <Filter className="absolute left-2.5 w-3.5 h-3.5 text-[#9CA3AF] pointer-events-none" />
+      <select
+        value={dateFilter}
+        onChange={(e) => setDateFilter(e.target.value as typeof dateFilter)}
+        className="pl-8 pr-3 py-2 text-xs border border-[#E5E7EB] rounded-lg bg-white text-[#374151] focus:outline-none focus:border-[#F9A8C0] appearance-none cursor-pointer"
+      >
+        <option value="all">All time</option>
+        <option value="today">Today</option>
+        <option value="week">This week</option>
+        <option value="month">This month</option>
+      </select>
+    </div>
+
+    <span className="text-xs text-[#9CA3AF] shrink-0">
+      {filteredSales.length} record{filteredSales.length !== 1 ? "s" : ""}
+    </span>
+  </div>
+
+
+  {/* Table */}
+  <div className="overflow-x-auto">
+    <table className="w-full">
+      <thead>
+        <tr className="bg-[#F9FAFB] border-b border-[#F3F4F6]">
+          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-left">
+            ID
+          </th>
+          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-left">
+            Created
+          </th>
+          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-right">
+            Total
+          </th>
+          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-right">
+            View
+          </th>
+        </tr>
+      </thead>
+
+      <tbody className="divide-y divide-[#F3F4F6]">
+        {filteredSales.length === 0 ? (
+          <tr>
+            <td colSpan={4} className="py-14 text-center text-xs text-[#9CA3AF]">
+              No sales records match your filters
+            </td>
+          </tr>
+        ) : (
+          filteredSales.map((s: any) => {
+            const created = s.created_at ? new Date(s.created_at) : null;
+            return (
+              <tr key={s.id} className="hover:bg-[#FAFAFA] transition-colors">
+                <td className="px-4 py-3 text-xs text-[#111827] whitespace-nowrap" style={{ fontWeight: 600 }}>
+                  #{s.id}
+                </td>
+                <td className="px-4 py-3 text-xs text-[#6B7280] whitespace-nowrap">
+                  {created ? created.toLocaleString() : "—"}
+                </td>
+                <td className="px-4 py-3 text-xs text-right text-[#111827] whitespace-nowrap" style={{ fontWeight: 700 }}>
+                  ₱{Number(s.total ?? 0).toFixed(2)}
+                </td>
+                <td className="px-4 py-3 text-xs text-right whitespace-nowrap">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const details = await api.getSaleById(s.id);
+                        toast.success(`Loaded sale #${s.id} (check console)`);
+                        console.log("Sale details:", details);
+                      } catch (err: any) {
+                        toast.error(err.message || "Failed to load sale details");
+                      }
+                    }}
+                    className="px-3 py-1.5 rounded-lg border border-[#E5E7EB] text-[#6B7280] hover:bg-[#F9FAFB]"
                   >
-                    {h}
-                  </th>
-                ))}
+                    Details
+                  </button>
+                </td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-[#F3F4F6]">
-              {filteredSales.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="py-14 text-center text-xs text-[#9CA3AF]">
-                    No sales records match your filters
-                  </td>
-                </tr>
-              ) : filteredSales.map(sale => (
-                <tr key={sale.id} className="hover:bg-[#FAFAFA] transition-colors">
-                  <td className="px-4 py-3 text-xs text-[#9CA3AF] whitespace-nowrap">{sale.date}</td>
-                  <td className="px-4 py-3">
-                    <p className="text-xs text-[#111827] whitespace-nowrap" style={{ fontWeight: 500 }}>
-                      {sale.productName}
-                    </p>
-                    <p className="text-[10px] text-[#9CA3AF]">{sale.category}</p>
-                  </td>
-                  <td className="px-4 py-3 text-xs text-[#6B7280] whitespace-nowrap">{sale.customerName}</td>
-                  <td className="px-4 py-3 text-xs text-right text-[#374151]">×{sale.quantity}</td>
-                  <td className="px-4 py-3 text-xs text-right text-[#6B7280]">₱{sale.unitPrice.toFixed(2)}</td>
-                  <td className="px-4 py-3 text-xs text-right text-[#9CA3AF]">—</td>
-                  <td className="px-4 py-3 text-xs text-right text-[#111827] whitespace-nowrap" style={{ fontWeight: 700 }}>
-                    ₱{sale.total.toFixed(2)}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-right text-emerald-600 whitespace-nowrap" style={{ fontWeight: 500 }}>
-                    +₱{sale.profit.toFixed(2)}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-[#6B7280] whitespace-nowrap">{sale.staffName}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Table footer summary */}
-        {filteredSales.length > 0 && (
-          <div className="px-5 py-3 border-t border-[#F3F4F6] bg-[#F9FAFB] flex flex-wrap gap-5 items-center">
-            <span className="text-xs text-[#9CA3AF]">{filteredSales.length} transactions</span>
-            <span className="text-xs text-[#6B7280]">
-              Total Revenue: <span className="text-[#111827]" style={{ fontWeight: 700 }}>
-                ₱{filteredSales.reduce((s, x) => s + x.total, 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
-              </span>
-            </span>
-            <span className="text-xs text-[#6B7280]">
-              Total Profit: <span className="text-emerald-600" style={{ fontWeight: 700 }}>
-                +₱{filteredSales.reduce((s, x) => s + x.profit, 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
-              </span>
-            </span>
-            <span className="text-xs text-[#6B7280]">
-              Units Sold: <span className="text-[#111827]" style={{ fontWeight: 600 }}>
-                {filteredSales.reduce((s, x) => s + x.quantity, 0)}
-              </span>
-            </span>
-          </div>
+            );
+          })
         )}
-      </div>
+      </tbody>
+    </table>
+  </div>
+
+          {/* Table footer summary */}
+  {filteredSales.length > 0 && (
+    <div className="px-5 py-3 border-t border-[#F3F4F6] bg-[#F9FAFB] flex flex-wrap gap-5 items-center">
+      <span className="text-xs text-[#9CA3AF]">{filteredSales.length} transactions</span>
+      <span className="text-xs text-[#6B7280]">
+        Total Revenue:{" "}
+        <span className="text-[#111827]" style={{ fontWeight: 700 }}>
+          ₱
+          {filteredSales
+            .reduce((sum: number, x: any) => sum + Number(x.total ?? 0), 0)
+            .toLocaleString("en-US", { minimumFractionDigits: 2 })}
+        </span>
+      </span>
+    </div>
+  )}
+</div>
 
     </div>
   );
