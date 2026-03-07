@@ -4,25 +4,25 @@ import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import {
   Search, ShoppingCart, TrendingUp, ChevronDown,
   Plus, Minus, AlertTriangle, CheckCircle, X, User,
-  Tag, Receipt, Filter,
-} from "lucide-react";
-import { useAuth } from "../components/AuthContext";
-import { toast } from "sonner";
 
-type Product = {
-  id: string;
-  sku: string;
-  name: string;
-  category: string;
-  price: number;
-  cost: number;
-  stock: number;
-  lowStockThreshold: number;
-  description?: string;
-};
+  Tag, Receipt, Calendar,
+} from 'lucide-react';
+import { useAuth } from '../components/AuthContext';
+import { toast } from 'sonner@2.0.3';
+>>>>>>> 9f798104 (feat: connect sales with inventory and implement persistent sales records)
 
-// ─── constants ────────────────────────────────────────────────────────────────
-const TODAY = '2026-02-26';
+import { getProducts, ProductDTO } from "../api/products";
+import { createSale, getSales, SalesRecordDTO } from "../api/sales";
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+const TODAY = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+type UIProduct = Omit<ProductDTO, "price" | "cost"> & { price: number; cost: number };
+const toUIProduct = (p: ProductDTO): UIProduct => ({
+  ...p,
+  price: Number(p.price),
+  cost: Number(p.cost),
+});
 
 // ─── Searchable Product Combobox ──────────────────────────────────────────────
 function ProductCombobox({
@@ -30,16 +30,16 @@ function ProductCombobox({
   value,
   onChange,
 }: {
-  products: Product[];
-  value: string;
-  onChange: (id: string) => void;
+  products: UIProduct[];
+  value: number | null;
+  onChange: (id: number | null) => void;
 }) {
-  const [open, setOpen]   = useState(false);
+  const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const wrapRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const selected = products.find(p => p.id === value) ?? null;
+  const selected = value != null ? products.find(p => p.id === value) ?? null : null;
 
   const filtered = useMemo(() =>
     products.filter(p =>
@@ -51,7 +51,6 @@ function ProductCombobox({
     [products, query]
   );
 
-  // close on click-outside
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
@@ -69,7 +68,7 @@ function ProductCombobox({
     setTimeout(() => inputRef.current?.focus(), 50);
   };
 
-  const handleSelect = (id: string) => {
+  const handleSelect = (id: number) => {
     onChange(id);
     setOpen(false);
     setQuery('');
@@ -77,20 +76,19 @@ function ProductCombobox({
 
   const handleClear = (e: React.MouseEvent) => {
     e.stopPropagation();
-    onChange('');
+    onChange(null);
     setOpen(false);
   };
 
-  const stockColor = (p: Product) => {
+  const stockColor = (p: UIProduct) => {
     const pct = p.stock / p.lowStockThreshold;
     if (pct <= 0.6) return 'text-red-500';
-    if (pct <= 1)   return 'text-amber-500';
+    if (pct <= 1) return 'text-amber-500';
     return 'text-emerald-600';
   };
 
   return (
     <div ref={wrapRef} className="relative">
-      {/* Trigger */}
       <button
         type="button"
         onClick={handleOpen}
@@ -118,10 +116,8 @@ function ProductCombobox({
         </span>
       </button>
 
-      {/* Dropdown */}
       {open && (
         <div className="absolute z-30 top-full left-0 right-0 mt-1 bg-white border border-[#E5E7EB] rounded-xl shadow-lg overflow-hidden">
-          {/* Search */}
           <div className="p-2 border-b border-[#F3F4F6]">
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#9CA3AF]" />
@@ -135,12 +131,12 @@ function ProductCombobox({
               />
             </div>
           </div>
-          {/* Options */}
+
           <div className="max-h-52 overflow-y-auto">
             {filtered.length === 0 ? (
               <p className="text-xs text-[#9CA3AF] text-center py-5">No products found</p>
             ) : filtered.map(p => {
-              const isLow     = p.stock <= p.lowStockThreshold;
+              const isLow = p.stock <= p.lowStockThreshold;
               const isCritical = p.stock <= Math.floor(p.lowStockThreshold * 0.6);
               return (
                 <button
@@ -211,46 +207,6 @@ function QtyStepper({
   );
 }
 
-// ─── Stock Bar ────────────────────────────────────────────────────────────────
-function StockBar({ product }: { product: Product }) {
-  const pct      = Math.min((product.stock / (product.lowStockThreshold * 3)) * 100, 100);
-  const isLow    = product.stock <= product.lowStockThreshold;
-  const isCrit   = product.stock <= Math.floor(product.lowStockThreshold * 0.6);
-  const barColor = isCrit ? '#EF4444' : isLow ? '#F59E0B' : '#10B981';
-
-  return (
-    <div className="flex items-center gap-3 py-2.5 border-b border-[#F9FAFB] last:border-0">
-      {/* Status dot */}
-      <span
-        className="w-2 h-2 rounded-full shrink-0"
-        style={{ backgroundColor: barColor }}
-      />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center justify-between mb-1">
-          <p className="text-xs text-[#374151] truncate" style={{ fontWeight: 500 }}>
-            {product.name}
-          </p>
-          <span className={`text-[10px] shrink-0 ml-2 tabular-nums ${isCrit ? 'text-red-500' : isLow ? 'text-amber-500' : 'text-[#6B7280]'}`}>
-            {product.stock} / {product.lowStockThreshold * 3}
-          </span>
-        </div>
-        <div className="h-1.5 bg-[#F3F4F6] rounded-full overflow-hidden">
-          <div
-            className="h-full rounded-full transition-all"
-            style={{ width: `${pct}%`, backgroundColor: barColor }}
-          />
-        </div>
-        {isLow && (
-          <p className={`text-[10px] mt-0.5 ${isCrit ? 'text-red-500' : 'text-amber-500'}`}>
-            {isCrit ? '⚠ Critical — reorder now' : '↓ Below reorder threshold'}
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── Field Label ──────────────────────────────────────────────────────────────
 function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: string }) {
   return (
     <div className="flex items-center justify-between mb-1.5">
@@ -262,6 +218,7 @@ function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: stri
 
 // ─── Sales Page ───────────────────────────────────────────────────────────────
 export default function Sales() {
+<<<<<<< HEAD
   // backend state (replaces useStore)
 const [products, setProducts] = useState<Product[]>([]);
 const [sales, setSales] = useState<any[]>([]);
@@ -299,25 +256,58 @@ useEffect(() => {
 
   load();
 }, []);
+=======
+>>>>>>> 9f798104 (feat: connect sales with inventory and implement persistent sales records)
   const { user } = useAuth();
 
-  // ── Form state ─────────────────────────────────────────────────────────
-  const [productId,      setProductId]      = useState('');
-  const [quantity,       setQuantity]       = useState(1);
-  const [customerName,   setCustomerName]   = useState('');
-  const [discountType,   setDiscountType]   = useState<'%' | '₱'>('%');
-  const [discountValue,  setDiscountValue]  = useState<number | ''>('');
-  const [submitting,     setSubmitting]     = useState(false);
+  // DB products
+  const [products, setProducts] = useState<UIProduct[]>([]);
+  const [loadingProducts, setLoadingProducts] = useState(true);
 
-  // ── Table state ────────────────────────────────────────────────────────
-  const [search,     setSearch]     = useState('');
-  const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'week' | 'month'>('all');
+  // DB-backed sales records
+  const [sales, setSales] = useState<SalesRecordDTO[]>([]);
 
-  // ── Derived product data ───────────────────────────────────────────────
-  const selectedProduct = products.find(p => p.id === productId) ?? null;
-  const maxQty          = selectedProduct?.stock ?? 1;
+  // Form state
+  const [productId, setProductId] = useState<number | null>(null);
+  const [quantity, setQuantity] = useState(1);
+  const [customerName, setCustomerName] = useState('');
+  const [discountType, setDiscountType] = useState<'%' | '₱'>('%');
+  const [discountValue, setDiscountValue] = useState<number | ''>('');
+  const [submitting, setSubmitting] = useState(false);
 
-  // ── Price calculations ─────────────────────────────────────────────────
+  // Table state
+  const [search, setSearch] = useState('');
+  const [selectedDate, setSelectedDate] = useState('');
+
+  const loadProducts = useCallback(async () => {
+    try {
+      setLoadingProducts(true);
+      const data = await getProducts();
+      setProducts(data.map(toUIProduct));
+    } catch (e: any) {
+      toast.error(e.message || "Failed to load products");
+    } finally {
+      setLoadingProducts(false);
+    }
+  }, []);
+
+  const loadSales = useCallback(async () => {
+    try {
+      const data = await getSales();
+      setSales(data);
+    } catch (e: any) {
+      toast.error(e.message || "Failed to load sales records");
+    }
+  }, []);
+
+  useEffect(() => {
+    loadProducts();
+    loadSales();
+  }, [loadProducts, loadSales]);
+
+  const selectedProduct = productId != null ? products.find(p => p.id === productId) ?? null : null;
+  const maxQty = selectedProduct?.stock ?? 1;
+
   const { subtotal, discountAmount, total, profit } = useMemo(() => {
     if (!selectedProduct) return { subtotal: 0, discountAmount: 0, total: 0, profit: 0 };
     const sub = selectedProduct.price * quantity;
@@ -327,31 +317,31 @@ useEffect(() => {
         : discountType === '%'
         ? Math.min(sub * (discountValue / 100), sub)
         : Math.min(Number(discountValue), sub);
-    const tot  = sub - disc;
-    const pft  = (selectedProduct.price - selectedProduct.cost) * quantity - disc;
+    const tot = sub - disc;
+    const pft = (selectedProduct.price - selectedProduct.cost) * quantity - disc;
+
     return {
-      subtotal:       parseFloat(sub.toFixed(2)),
+      subtotal: parseFloat(sub.toFixed(2)),
       discountAmount: parseFloat(disc.toFixed(2)),
-      total:          parseFloat(tot.toFixed(2)),
-      profit:         parseFloat(pft.toFixed(2)),
+      total: parseFloat(tot.toFixed(2)),
+      profit: parseFloat(pft.toFixed(2)),
     };
   }, [selectedProduct, quantity, discountType, discountValue]);
 
-  // ── Stock status for selected product ─────────────────────────────────
-  const isSelectedLow      = selectedProduct && selectedProduct.stock <= selectedProduct.lowStockThreshold;
+  const isSelectedLow = selectedProduct && selectedProduct.stock <= selectedProduct.lowStockThreshold;
   const isSelectedCritical = selectedProduct && selectedProduct.stock <= Math.floor(selectedProduct.lowStockThreshold * 0.6);
-  const stockAfter         = selectedProduct ? selectedProduct.stock - quantity : 0;
-  const willBeLow          = selectedProduct && stockAfter <= selectedProduct.lowStockThreshold;
+  const stockAfter = selectedProduct ? selectedProduct.stock - quantity : 0;
+  const willBeLow = selectedProduct && stockAfter <= selectedProduct.lowStockThreshold;
 
-  // ── Reset form ─────────────────────────────────────────────────────────
   const resetForm = useCallback(() => {
-    setProductId('');
+    setProductId(null);
     setQuantity(1);
     setCustomerName('');
     setDiscountValue('');
     setDiscountType('%');
   }, []);
 
+<<<<<<< HEAD
   // ── Submit ─────────────────────────────────────────────────────────────
   const handleSubmit = async (e: React.FormEvent) => {
   e.preventDefault();
@@ -371,8 +361,44 @@ useEffect(() => {
           unitPrice: selectedProduct.price,
         },
       ],
-    });
+=======
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
 
+    if (productId == null) { toast.error('Please select a product'); return; }
+    if (quantity < 1) { toast.error('Quantity must be at least 1'); return; }
+    if (!selectedProduct) { toast.error('Selected product not found'); return; }
+    if (quantity > selectedProduct.stock) { toast.error('Insufficient stock'); return; }
+
+    try {
+      setSubmitting(true);
+
+      // IMPORTANT: send DB productId (number)
+      await createSale({
+      customerName: customerName.trim() || "Walk-in Customer",
+
+      // display name (optional)
+      staffName: user?.name || "Staff",
+
+      // THIS is the important fix
+      createdByClerkId: user?.id,
+      staffEmail: user?.email,
+
+      discountType: discountType === "%" ? "%" : "PHP",
+      discountValue: discountValue === '' ? 0 : Number(discountValue),
+
+      items: [
+        {
+        productId: selectedProduct.id,
+        qty: quantity,
+        unitPrice: selectedProduct.price
+        }
+      ]
+>>>>>>> 9f798104 (feat: connect sales with inventory and implement persistent sales records)
+    });
+      toast.success(`Sale recorded — ${selectedProduct.name} ×${quantity}`);
+
+<<<<<<< HEAD
     // refresh products (stock updated)
   const rawProducts = await api.getProducts();
   const normalizedProducts = rawProducts.map((p: any) => ({
@@ -401,33 +427,40 @@ useEffect(() => {
     setSubmitting(false);
   }
 };
+=======
+      // refresh products and sales records from DB
+      await loadProducts();
+      await loadSales();
 
-  // ── Sorted stock list ─────────────────────────────────────────────────
+      resetForm();
+    } catch (e: any) {
+      toast.error(e.message || "Failed to record sale");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+>>>>>>> 9f798104 (feat: connect sales with inventory and implement persistent sales records)
+
   const sortedByStock = useMemo(
-    () => [...products].sort((a, b) => {
-      const aPct = a.stock / a.lowStockThreshold;
-      const bPct = b.stock / b.lowStockThreshold;
-      return aPct - bPct;
-    }),
+    () => [...products].sort((a, b) => (a.stock / a.lowStockThreshold) - (b.stock / b.lowStockThreshold)),
     [products]
   );
 
   const lowStockCount = products.filter(p => p.stock <= p.lowStockThreshold).length;
 
-  // ── KPIs ──────────────────────────────────────────────────────────────
   const kpis = useMemo(() => {
     const todaySales = sales.filter(s => s.date === TODAY);
-    const monthSales = sales.filter(s => s.date >= '2026-02-01');
+    const monthSales = sales.filter(s => s.date >= TODAY.slice(0, 8) + "01");
     return {
-      todayCount:   todaySales.length,
+      todayCount: todaySales.length,
       todayRevenue: todaySales.reduce((s, x) => s + x.total, 0),
       monthRevenue: monthSales.reduce((s, x) => s + x.total, 0),
-      monthProfit:  monthSales.reduce((s, x) => s + x.profit, 0),
+      monthProfit: monthSales.reduce((s, x) => s + x.profit, 0),
     };
   }, [sales]);
 
-  // ── Filtered recent sales ─────────────────────────────────────────────
   const filteredSales = useMemo(() => {
+<<<<<<< HEAD
   const now = new Date();
 
   const startOfToday = new Date(now);
@@ -464,13 +497,27 @@ useEffect(() => {
     return matchSearch && matchDate;
   });
 }, [sales, search, dateFilter]);
+=======
+    return sales.filter(s => {
+      const q = search.toLowerCase();
+      const matchSearch = !q ||
+        s.productName.toLowerCase().includes(q) ||
+        s.customerName.toLowerCase().includes(q) ||
+        s.staffName.toLowerCase().includes(q);
 
-  const INPUT_CLS = 'w-full px-3 py-2.5 border border-[#E5E7EB] rounded-lg text-sm text-[#111827] placeholder-[#C5C5C5] focus:outline-none focus:ring-2 focus:ring-[#EC4899]/15 focus:border-[#EC4899] bg-white transition-all';
+      const matchDate = !selectedDate || s.date === selectedDate;
+
+      return matchSearch && matchDate;
+    });
+  }, [sales, search, selectedDate]);
+>>>>>>> 9f798104 (feat: connect sales with inventory and implement persistent sales records)
+
+  const INPUT_CLS =
+    'w-full px-3 py-2.5 border border-[#E5E7EB] rounded-lg text-sm text-[#111827] placeholder-[#C5C5C5] focus:outline-none focus:ring-2 focus:ring-[#EC4899]/15 focus:border-[#EC4899] bg-white transition-all';
 
   return (
     <div className="max-w-7xl mx-auto space-y-5 pb-6">
-
-      {/* ── Page Header ───────────────────────────────────────────────── */}
+      {/* Header */}
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-[#111827] text-xl" style={{ fontWeight: 700 }}>Sales Recording</h1>
@@ -494,12 +541,9 @@ useEffect(() => {
         </div>
       </div>
 
-      {/* ── Main: Form + Stock Panel ───────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-5 items-start">
-
-        {/* ── Sale Form ───────────────────────────────────────────────── */}
+        {/* Form */}
         <div className="lg:col-span-3 bg-white rounded-xl border border-[#E5E7EB] overflow-hidden">
-          {/* Form header */}
           <div className="px-6 py-4 border-b border-[#F3F4F6] flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-[#FCE7F3] flex items-center justify-center">
               <Receipt className="w-4 h-4 text-[#EC4899]" />
@@ -510,6 +554,7 @@ useEffect(() => {
             </div>
           </div>
 
+<<<<<<< HEAD
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -519,6 +564,9 @@ useEffect(() => {
           >
 
             {/* Product */}
+=======
+          <form onSubmit={handleSubmit} className="p-6 space-y-5">
+>>>>>>> 9f798104 (feat: connect sales with inventory and implement persistent sales records)
             <div>
               <FieldLabel hint="Required">Product</FieldLabel>
               <ProductCombobox
@@ -526,9 +574,11 @@ useEffect(() => {
                 value={productId}
                 onChange={id => { setProductId(id); setQuantity(1); }}
               />
+              {loadingProducts && (
+                <p className="text-[10px] text-[#9CA3AF] mt-1">Loading products…</p>
+              )}
             </div>
 
-            {/* Selected product info card */}
             {selectedProduct && (
               <div className={`rounded-xl border p-4 ${
                 isSelectedCritical
@@ -584,16 +634,10 @@ useEffect(() => {
               </div>
             )}
 
-            {/* Row: Quantity + Customer */}
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <FieldLabel hint={selectedProduct ? `max ${maxQty}` : undefined}>Quantity</FieldLabel>
-                <QtyStepper
-                  value={quantity}
-                  min={1}
-                  max={maxQty}
-                  onChange={setQuantity}
-                />
+                <QtyStepper value={quantity} min={1} max={maxQty} onChange={setQuantity} />
               </div>
               <div>
                 <FieldLabel hint="Optional">Customer Name</FieldLabel>
@@ -610,11 +654,9 @@ useEffect(() => {
               </div>
             </div>
 
-            {/* Discount */}
             <div>
               <FieldLabel hint="Optional">Discount</FieldLabel>
               <div className="flex gap-0">
-                {/* Type toggle */}
                 <div className="flex border border-[#E5E7EB] rounded-l-lg overflow-hidden shrink-0">
                   {(['%', '₱'] as const).map(type => (
                     <button
@@ -632,7 +674,6 @@ useEffect(() => {
                     </button>
                   ))}
                 </div>
-                {/* Amount input */}
                 <div className="relative flex-1">
                   <Tag className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#9CA3AF]" />
                   <input
@@ -654,10 +695,8 @@ useEffect(() => {
               )}
             </div>
 
-            {/* Divider */}
             <div className="border-t border-dashed border-[#E5E7EB]" />
 
-            {/* Order Summary */}
             <div className="rounded-xl bg-[#FAFAFA] border border-[#E5E7EB] overflow-hidden">
               <div className="px-4 py-2 border-b border-[#F3F4F6]">
                 <p className="text-[10px] text-[#9CA3AF] uppercase tracking-wider">Order Summary</p>
@@ -677,59 +716,35 @@ useEffect(() => {
                 </div>
                 {discountAmount > 0 && (
                   <div className="flex justify-between text-xs text-[#EC4899]">
-                    <span>Discount ({discountType === '%' ? `${discountValue}%` : `₱${discountValue}`})</span>
+                    <span>Discount</span>
                     <span>− ₱{discountAmount.toFixed(2)}</span>
                   </div>
                 )}
                 <div className="border-t border-[#E5E7EB] pt-2 flex justify-between">
                   <span className="text-sm text-[#111827]" style={{ fontWeight: 700 }}>Total</span>
-                  <span
-                    className="text-lg text-[#111827]"
-                    style={{ fontWeight: 800, letterSpacing: '-0.01em' }}
-                  >
+                  <span className="text-lg text-[#111827]" style={{ fontWeight: 800 }}>
                     {selectedProduct ? `₱${total.toFixed(2)}` : '₱0.00'}
                   </span>
                 </div>
-                {selectedProduct && (
-                  <div className="flex justify-between text-xs">
-                    <span className="text-[#9CA3AF]">Profit</span>
-                    <span className={profit >= 0 ? 'text-emerald-600' : 'text-red-500'} style={{ fontWeight: 600 }}>
-                      {profit >= 0 ? '+' : ''}₱{profit.toFixed(2)}
-                    </span>
-                  </div>
-                )}
               </div>
             </div>
 
-            {/* After-sale stock warning */}
-            {selectedProduct && willBeLow && stockAfter > 0 && (
-              <div className="flex items-start gap-2.5 px-3.5 py-3 bg-amber-50 border border-amber-200 rounded-lg">
-                <AlertTriangle className="w-3.5 h-3.5 text-amber-500 mt-0.5 shrink-0" />
-                <p className="text-xs text-amber-700">
-                  After this sale, <strong>{selectedProduct.name}</strong> will have{' '}
-                  <strong>{stockAfter} units</strong> remaining — below the reorder threshold of {selectedProduct.lowStockThreshold}.
-                </p>
-              </div>
-            )}
-
-            {/* Submit */}
             <button
               type="submit"
-              disabled={!productId || submitting}
+              disabled={productId == null || submitting}
               className="w-full py-3 rounded-xl text-white text-sm transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
               style={{
-                background: !productId || submitting
+                background: productId == null || submitting
                   ? '#D1D5DB'
                   : 'linear-gradient(135deg, #F9A8C0 0%, #EC4899 100%)',
-                boxShadow: !productId || submitting ? 'none' : '0 4px 14px rgba(236,72,153,0.3)',
+                boxShadow: productId == null || submitting ? 'none' : '0 4px 14px rgba(236,72,153,0.3)',
                 fontWeight: 600,
               }}
             >
               {submitting ? 'Recording…' : '✓ Record Sale'}
             </button>
 
-            {/* Reset */}
-            {(productId || customerName || discountValue !== '') && (
+            {(productId != null || customerName || discountValue !== '') && (
               <button
                 type="button"
                 onClick={resetForm}
@@ -741,10 +756,8 @@ useEffect(() => {
           </form>
         </div>
 
-        {/* ── Stock Remaining Panel ────────────────────────────────────── */}
+        {/* Stock Remaining Panel (kept) */}
         <div className="lg:col-span-2 space-y-4">
-
-          {/* Low stock alert banner */}
           {lowStockCount > 0 && (
             <div className="flex items-start gap-3 px-4 py-3.5 bg-red-50 border border-red-200 rounded-xl">
               <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
@@ -759,28 +772,42 @@ useEffect(() => {
             </div>
           )}
 
-          {/* Stock cards */}
           <div className="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden">
             <div className="px-5 py-4 border-b border-[#F3F4F6] flex items-center justify-between">
               <div>
                 <h3 className="text-[#111827] text-sm" style={{ fontWeight: 600 }}>Stock Remaining</h3>
                 <p className="text-[#9CA3AF] text-xs">All products · sorted by urgency</p>
               </div>
-              <div className="flex items-center gap-3 text-[10px] text-[#9CA3AF]">
-                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400 inline-block" /> Critical</span>
-                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-400 inline-block" /> Low</span>
-                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" /> OK</span>
-              </div>
             </div>
             <div className="px-5 py-2 divide-y divide-[#F9FAFB]">
               {sortedByStock.map(p => (
-                <StockBar key={p.id} product={p} />
+                <div key={p.id} className="py-2.5">
+                  <div className="flex justify-between text-xs">
+                    <span className="text-[#374151]" style={{ fontWeight: 500 }}>{p.name}</span>
+                    <span className="text-[#9CA3AF]">{p.stock}</span>
+                  </div>
+                  <div className="h-1.5 bg-[#F3F4F6] rounded-full overflow-hidden mt-1">
+                    <div
+                      className="h-full rounded-full"
+                      style={{
+                        width: `${Math.min((p.stock / (p.lowStockThreshold * 3)) * 100, 100)}%`,
+                        backgroundColor: p.stock <= Math.floor(p.lowStockThreshold * 0.6)
+                          ? '#EF4444'
+                          : p.stock <= p.lowStockThreshold
+                          ? '#F59E0B'
+                          : '#10B981',
+                      }}
+                    />
+                  </div>
+                </div>
               ))}
             </div>
           </div>
+
         </div>
       </div>
 
+<<<<<<< HEAD
       
 {/* ── Recent Sales Table ─────────────────────────────────────────── */}
 <div className="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden">
@@ -881,11 +908,58 @@ useEffect(() => {
                       }
                     }}
                     className="px-3 py-1.5 rounded-lg border border-[#E5E7EB] text-[#6B7280] hover:bg-[#F9FAFB]"
+=======
+      {/* Sales Records Table (still works locally for now) */}
+      <div className="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden">
+        <div className="px-5 py-4 border-b border-[#F3F4F6] flex flex-wrap gap-3 items-center">
+          <div className="flex items-center gap-2">
+            <ShoppingCart className="w-4 h-4 text-[#EC4899]" />
+            <h3 className="text-[#111827] text-sm" style={{ fontWeight: 600 }}>Sales Record</h3>
+          </div>
+          <div className="flex-1" />
+
+          <div className="relative w-52">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#9CA3AF]" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search product, customer…"
+              className="w-full pl-9 pr-3 py-2 text-xs border border-[#E5E7EB] rounded-lg focus:outline-none focus:border-[#F9A8C0] focus:ring-1 focus:ring-[#EC4899]/15 bg-white"
+            />
+          </div>
+
+          <div className="relative flex items-center">
+            <Calendar className="absolute left-2.5 w-3.5 h-3.5 text-[#9CA3AF] pointer-events-none" />
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={e => setSelectedDate(e.target.value)}
+              className="pl-8 pr-3 py-2 text-xs border border-[#E5E7EB] rounded-lg bg-white text-[#374151] focus:outline-none focus:border-[#F9A8C0] cursor-pointer"
+            />
+          </div>
+
+          <span className="text-xs text-[#9CA3AF] shrink-0">
+            {filteredSales.length} record{filteredSales.length !== 1 ? 's' : ''}
+          </span>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="bg-[#F9FAFB] border-b border-[#F3F4F6]">
+                {['Date', 'Product', 'Customer', 'Qty', 'Unit Price', 'Discount', 'Total', 'Profit', 'Staff'].map(h => (
+                  <th
+                    key={h}
+                    className={`px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider ${
+                      ['Qty', 'Unit Price', 'Discount', 'Total', 'Profit'].includes(h) ? 'text-right' : 'text-left'
+                    }`}
+>>>>>>> 9f798104 (feat: connect sales with inventory and implement persistent sales records)
                   >
                     Details
                   </button>
                 </td>
               </tr>
+<<<<<<< HEAD
             );
           })
         )}
@@ -909,7 +983,50 @@ useEffect(() => {
     </div>
   )}
 </div>
+=======
+            </thead>
+
+            <tbody className="divide-y divide-[#F3F4F6]">
+              {filteredSales.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="py-14 text-center text-xs text-[#9CA3AF]">
+                    No sales records match your filters
+                  </td>
+                </tr>
+              ) : filteredSales.map(sale => (
+                <tr key={sale.id} className="hover:bg-[#FAFAFA] transition-colors">
+                  <td className="px-4 py-3 text-xs text-[#9CA3AF] whitespace-nowrap">{sale.date}</td>
+                  <td className="px-4 py-3">
+                    <p className="text-xs text-[#111827] whitespace-nowrap" style={{ fontWeight: 500 }}>
+                      {sale.productName}
+                    </p>
+                    <p className="text-[10px] text-[#9CA3AF]">{sale.category}</p>
+                  </td>
+                  <td className="px-4 py-3 text-xs text-[#6B7280] whitespace-nowrap">{sale.customerName}</td>
+                  <td className="px-4 py-3 text-xs text-right text-[#374151]">×{sale.quantity}</td>
+                  <td className="px-4 py-3 text-xs text-right text-[#6B7280]">₱{sale.unitPrice.toFixed(2)}</td>
+                  <td className="px-4 py-3 text-xs text-right text-[#6B7280] whitespace-nowrap">
+                    {sale.discountAmount > 0 ? `- PHP ${sale.discountAmount.toFixed(2)}` : 'No discount'}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-right text-[#111827] whitespace-nowrap" style={{ fontWeight: 700 }}>
+                    ₱{sale.total.toFixed(2)}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-right text-emerald-600 whitespace-nowrap" style={{ fontWeight: 500 }}>
+                    +₱{sale.profit.toFixed(2)}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-[#6B7280] whitespace-nowrap">{sale.staffName}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+>>>>>>> 9f798104 (feat: connect sales with inventory and implement persistent sales records)
 
     </div>
   );
 }
+
+
+
+

@@ -29,7 +29,7 @@ interface AuthContextType {
 // In a real Clerk integration these come from Clerk's user object + publicMetadata.role
 const MOCK_USERS: AuthUser[] = [
   {
-    id:       'user_admin_001',
+    id:       'admin_001',
     name:     'Admin User',
     username: 'admin',
     email:    'admin@bellabeatrix.com',
@@ -38,7 +38,7 @@ const MOCK_USERS: AuthUser[] = [
     publicMetadata: { role: 'admin' },
   },
   {
-    id:       'user_staff_001',
+    id:       'staff_001',
     name:     'Staff Member',
     username: 'staff',
     email:    'staff@bellabeatrix.com',
@@ -109,3 +109,4 @@ export function useAuth() {
   if (!ctx) throw new Error('useAuth must be used within AuthProvider');
   return ctx;
 }
+

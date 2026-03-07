@@ -1,5 +1,6 @@
 import salesRouter from "./routes/sales";
 import { productsRouter } from './routes/products';
+import { salesRouter } from './routes/sales';
 import express from 'express';
 import cors from 'cors';
 import { healthRouter } from './routes/health';
@@ -13,8 +14,9 @@ export function createApp() {
 
   // routes
   app.use(healthRouter);
-  app.use(productsRouter);
-  app.use("/api/sales", salesRouter);
+  app.use("/api/products", productsRouter);
+  app.use(salesRouter);
+>>>>>>> 9f798104 (feat: connect sales with inventory and implement persistent sales records)
 
   // optional root route
   app.get('/', (_req, res) => {
