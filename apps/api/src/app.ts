@@ -1,4 +1,5 @@
 import { productsRouter } from './routes/products';
+import { salesRouter } from './routes/sales';
 import express from 'express';
 import cors from 'cors';
 import { healthRouter } from './routes/health';
@@ -12,7 +13,8 @@ export function createApp() {
 
   // routes
   app.use(healthRouter);
-  app.use(productsRouter);
+  app.use("/api/products", productsRouter);
+  app.use(salesRouter);
 
   // optional root route
   app.get('/', (_req, res) => {
