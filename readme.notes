@@ -1,79 +1,117 @@
-Hi [Teammate Name]!
+MONTH 1 — Foundation + Inventory
+─────────────────────────────────────────────────────────
 
-I pushed the latest code to GitHub:
-https://github.com/xequinox08x-cmd/bellah-system
+Week 1: Project Setup                                ✅ DONE
+├── Monorepo (apps/web + apps/api, pnpm workspaces)
+├── Express + TypeScript API
+├── Neon DB connection + pool.ts
+└── GET /health returns { ok, db, time }
 
-I need you to work on BACKEND next (Sales module). Please do this on a feature branch and open a PR when done.
+Week 2: Products API                                 ✅ DONE
+├── Products table in schema.sql
+├── GET /api/products
+├── POST /api/products
+├── PUT /api/products/:id
+└── DELETE /api/products/:id
 
-Setup:
+Week 3: Inventory UI → API                           ✅ DONE
+├── Products page wired to real API
+├── Add / Edit / Delete persists in DB
+├── Removed mock store for products
+└── Price/cost display with .toFixed(2)
 
-1. Clone repo + install:
+Week 4: Validation + UX                              ✅ DONE
+├── Duplicate SKU rejected (400)
+├── Non-negative price/cost/stock enforced
+├── Loading states + Sonner toasts
+└── Friendly error messages
 
-* git clone https://github.com/xequinox08x-cmd/bellah-system.git
-* cd bellah-system
-* pnpm install
 
-2. Create your local env file:
+MONTH 2 — Sales + Dashboard
+─────────────────────────────────────────────────────────
 
-* create apps/api/.env
-* add DATABASE_URL + PORT=4000
-  (I’ll send the DATABASE_URL privately.)
+Week 5: Sales Schema + Transaction                   ✅ DONE
+├── sales + sale_items tables in schema.sql
+├── POST /api/sales (transaction: insert + deduct stock)
+├── Reject sale if any item would go negative
+└── GET /api/sales, GET /api/sales/:id
 
-Goal: Implement Sales API with a proper DB transaction.
+Week 6: Sales UI                                     ✅ DONE
+├── Sales page wired to real API
+├── Record sale form (select product + qty)
+├── Sales history list
+└── Toast on success / error on insufficient stock
 
-1. Create routes file:
+Week 7: Dashboard Metrics                            ✅ DONE
+├── GET /api/dashboard/summary
+├── Sales today / week / month from DB
+├── Top products by quantity sold
+├── Low stock alerts
+├── AdminDashboard + StaffDashboard show real data
+└── Loading + error states
 
-* apps/api/src/routes/sales.ts
+Week 8: Dashboard Polish                             ✅ DONE
+├── Fetch logic moved inside components
+├── Pagination on list endpoints
+└── Design shell merged (Sidebar, TopNav, Login)
 
-2. Add these endpoints:
 
-A) POST /api/sales
-Request body example:
-{
-"items": [
-{ "productId": 1, "qty": 2, "unitPrice": 120.00 },
-{ "productId": 3, "qty": 1, "unitPrice": 80.00 }
-]
-}
+MONTH 3 — Marketing + AI + Campaigns
+─────────────────────────────────────────────────────────
 
-Behavior:
+Week 9: AI Content API                               ← YOU
+├── ai_content table migration
+├── POST /api/content (save draft)
+├── GET /api/content (list + ?status= filter)
+└── PATCH /api/content/:id/status (approve/reject)
 
-* Validate: items not empty, qty > 0
-* Calculate total = sum(qty * unitPrice)
-* Use a single DB transaction:
+Week 10: AI Content UI                               ← YOU
+├── Content list page with status filters
+├── Create draft form
+├── Approve / Reject actions (admin only)
+└── POST /api/ai/generate stub
 
-  1. Insert into sales (total, created_at)
-  2. Insert each row into sale_items (sale_id, product_id, qty, unit_price)
-  3. Decrement products.stock by qty per item
-* Prevent negative stock:
+Week 11: Campaigns API                               ← TEAMMATE
+├── campaigns + campaign_content tables migration
+├── GET/POST /api/campaigns
+├── PUT/DELETE /api/campaigns/:id
+└── POST /api/campaigns/:id/content (attach approved only)
 
-  * If any item would make stock < 0, rollback + return 400
+Week 12: Campaigns + Scheduling UI                   ← TEAMMATE
+├── scheduled_posts table migration
+├── GET/POST /api/scheduled-posts
+├── Campaigns page (create, attach content)
+└── Scheduling page (list posts with status)
 
-Response:
 
-* Return created sale + items, or at least sale id and total
+MONTH 4 — Auth + Deployment
+─────────────────────────────────────────────────────────
 
-B) GET /api/sales
+Week 13: Clerk Auth                                  ← SPLIT
+├── YOU:      ClerkProvider in apps/web
+│             Replace mock AuthContext with useUser()
+│             Protect routes, hide admin UI for staff
+│
+└── TEAMMATE: @clerk/express middleware in apps/api
+              requireAuth on all protected routes
+              requireAdmin on admin-only routes
+              Sync clerk_id + role into users table
 
-* Return sales list: id, total, created_at (order latest first)
+Week 14: Deployment                                  ← SPLIT
+├── YOU:      Deploy apps/web to Vercel
+│             Set VITE_API_URL env var
+│             Confirm lazy-loaded routes work in prod
+│
+└── TEAMMATE: Deploy apps/api to Render / Fly.io
+              Set DATABASE_URL, CLERK_SECRET_KEY, CORS_ORIGIN
+              Run all migrations on Neon production branch
+              Confirm /health returns { ok: true }
 
-C) GET /api/sales/:id
-
-* Return sale info + items joined with product name/sku
-
-3. Register the sales router in src/app.ts
-
-* app.use(salesRouter)
-
-Deliverables:
-
-1. Test results (screenshots or copy/paste curl results for POST and GET)
-2. Branch pushed:
-
-* feature/sales-api
-
-3. PR opened to main:
-
-* “Sales API (transaction + stock deduction)”
-
-Thanks!
+Week 15: Demo Prep                                   ← BOTH
+├── End-to-end smoke test
+│   Add product → record sale → stock deducts →
+│   dashboard updates → create content → approve →
+│   attach to campaign → schedule
+├── Fix any bugs found in smoke test
+├── Seed realistic demo data
+└── Final walkthrough with advisor

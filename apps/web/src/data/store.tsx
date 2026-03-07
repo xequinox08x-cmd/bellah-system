@@ -3,17 +3,23 @@ import { createContext, useContext, useState, ReactNode, useCallback } from 'rea
 // ── Types ──────────────────────────────────────────────────────────────
 export type ProductCategory = 'Skincare' | 'Makeup' | 'Fragrance' | 'Haircare';
 
-export interface Product {
+type Product = {
   id: string;
+  sku: string;
   name: string;
-  category: ProductCategory;
+  category: string;
   price: number;
   cost: number;
   stock: number;
   lowStockThreshold: number;
-  sku: string;
-  description: string;
-}
+  description?: string;
+};
+
+type SaleRow = {
+  id: number;
+  total: number;
+  created_at: string;
+};
 
 export interface Sale {
   id: string;
