@@ -4,6 +4,7 @@ import { healthRouter } from './routes/health';
 import { productsRouter } from './routes/products';
 import salesRouter from './routes/sales';
 import aiContentRouter from './routes/ai-content';
+import campaignsRouter from './routes/campaigns';
 import { errorHandler } from './middleware/errorHandler';
 
 export function createApp() {
@@ -17,6 +18,7 @@ export function createApp() {
   app.use(productsRouter);
   app.use('/api/sales', salesRouter);
   app.use('/api/ai-content', aiContentRouter);
+  app.use('/api/campaigns', campaignsRouter);
 
   // optional root route
   app.get('/', (_req, res) => {

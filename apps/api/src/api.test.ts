@@ -71,7 +71,7 @@ describe('API functionality', () => {
       const app = createApp();
       const res = await request(app).post('/api/products').send({ name: 'Only name' });
       expect(res.status).toBe(400);
-      expect(res.body.message).toContain('sku');
+      expect(res.body.error).toContain('SKU');
     });
 
     it('GET /api/products returns 200 and array', async () => {
