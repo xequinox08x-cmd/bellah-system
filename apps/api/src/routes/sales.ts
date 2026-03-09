@@ -88,7 +88,7 @@ async function resolveCreatedBy(
   return { id: adminId, source: "dev_admin" };
 }
 
-salesRouter.get("/api/sales", async (_req, res) => {
+salesRouter.get("/", async (_req, res) => {
   try {
     await ensureSalesSchema();
 
@@ -186,7 +186,7 @@ salesRouter.get("/api/sales", async (_req, res) => {
   }
 });
 
-salesRouter.post("/api/sales", async (req, res) => {
+salesRouter.post("/", async (req, res) => {
   const client = await pool.connect();
 
   try {
@@ -306,19 +306,10 @@ salesRouter.post("/api/sales", async (req, res) => {
 
     const newStock = currentStock - qty;
     const lowStockThreshold = Number(product.low_stock_threshold);
->>>>>>> 9f798104 (feat: connect sales with inventory and implement persistent sales records)
 
     await client.query("COMMIT");
 
     return res.status(201).json({
-<<<<<<< HEAD
-      sale,
-      items: createdItems,
-    });
-  } catch (error: any) {
-    await client.query("ROLLBACK");
-    return res.status(400).json({ message: error.message });
-=======
       ok: true,
       data: {
         saleId,
@@ -356,71 +347,7 @@ salesRouter.post("/api/sales", async (req, res) => {
       data: null,
       message: e?.message || "Failed to record sale",
     });
->>>>>>> 9f798104 (feat: connect sales with inventory and implement persistent sales records)
   } finally {
     client.release();
   }
 });
-<<<<<<< HEAD
-
-/**
- * GET /api/sales
- * List all sales
- */
-router.get("/", async (_req, res) => {
-  try {
-    const result = await pool.query(
-      "SELECT id, total, created_at FROM sales ORDER BY created_at DESC"
-    );
-    return res.json(result.rows);
-  } catch {
-    return res.status(500).json({ message: "Failed to fetch sales" });
-  }
-});
-
-/**
- * GET /api/sales/:id
- * Get sale with items + product info
- */
-router.get("/:id", async (req, res) => {
-  const saleId = Number(req.params.id);
-  if (!Number.isFinite(saleId)) {
-    return res.status(400).json({ message: "Invalid sale id" });
-  }
-
-  try {
-    const saleResult = await pool.query(
-      "SELECT id, total, created_at FROM sales WHERE id = $1",
-      [saleId]
-    );
-
-    if (saleResult.rows.length === 0) {
-      return res.status(404).json({ message: "Sale not found" });
-    }
-
-    const itemsResult = await pool.query(
-      `SELECT 
-          si.product_id,
-          si.qty,
-          si.unit_price,
-          p.name,
-          p.sku
-       FROM sale_items si
-       JOIN products p ON si.product_id = p.id
-       WHERE si.sale_id = $1
-       ORDER BY si.id ASC`,
-      [saleId]
-    );
-
-    return res.json({
-      sale: saleResult.rows[0],
-      items: itemsResult.rows,
-    });
-  } catch {
-    return res.status(500).json({ message: "Failed to fetch sale" });
-  }
-});
-
-export default router;
-=======
->>>>>>> 9f798104 (feat: connect sales with inventory and implement persistent sales records)
