@@ -166,7 +166,7 @@ export default function StaffDashboard() {
   const rejectedCount = myDrafts.filter(c => c.status === 'rejected').length;
 
   return (
-    <div className="space-y-5 max-w-4xl mx-auto pb-6">
+    <div className="space-y-5 pb-6">
 
       {/* ── Welcome Header ──────────────────────────────────────────────── */}
       <div className="flex items-start justify-between">
