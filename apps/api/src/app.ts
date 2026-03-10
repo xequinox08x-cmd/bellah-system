@@ -6,6 +6,7 @@ import salesRouter from './routes/sales';
 import aiContentRouter from './routes/ai-content';
 import campaignsRouter from './routes/campaigns';
 import scheduledPostsRouter from './routes/scheduled-posts';
+import { salesRouter } from './routes/sales';
 import { errorHandler } from './middleware/errorHandler';
 import forecastsRouter from './routes/forecasts';
 
@@ -24,6 +25,8 @@ export function createApp() {
   app.use('/api/scheduled-posts', scheduledPostsRouter);
   app.use('/api/forecasts', forecastsRouter);
 
+  app.use('/api/products', productsRouter);
+  app.use('/api/sales', salesRouter);
 
   // optional root route
   app.get('/', (_req, res) => {

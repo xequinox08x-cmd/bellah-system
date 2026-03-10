@@ -23,6 +23,12 @@ CREATE TABLE IF NOT EXISTS products (
 -- SALES (header)
 CREATE TABLE IF NOT EXISTS sales (
   id SERIAL PRIMARY KEY,
+  customer_name TEXT,
+  staff_name TEXT,
+  subtotal NUMERIC(10,2) NOT NULL DEFAULT 0,
+  discount_type TEXT,
+  discount_value NUMERIC(10,2) NOT NULL DEFAULT 0,
+  discount_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
   total NUMERIC(10,2) NOT NULL DEFAULT 0,
   created_by INT REFERENCES users(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
