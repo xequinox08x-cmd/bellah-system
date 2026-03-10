@@ -66,3 +66,33 @@ CREATE TABLE IF NOT EXISTS campaign_content (
   content_id INT NOT NULL REFERENCES ai_content(id) ON DELETE CASCADE,
   PRIMARY KEY (campaign_id, content_id)
 );
+
+-- ADD MISSING COLUMNS TO ai_content IF THEY DONT EXIST (using DO block or ALTER)
+ALTER TABLE ai_content ADD COLUMN IF NOT EXISTS hashtags TEXT;
+ALTER TABLE ai_content ADD COLUMN IF NOT EXISTS platform TEXT;
+
+-- SCHEDULED POSTS
+CREATE TABLE IF NOT EXISTS scheduled_posts (
+  id              SERIAL PRIMARY KEY,
+  content_id      INT NOT NULL REFERENCES ai_content(id) ON DELETE CASCADE,
+  campaign_id     INT REFERENCES campaigns(id) ON DELETE SET NULL,
+  scheduled_at    TIMESTAMPTZ NOT NULL,
+  platform        TEXT NOT NULL DEFAULT 'facebook',
+  status          TEXT NOT NULL DEFAULT 'pending',
+  facebook_post_id TEXT,
+  published_at    TIMESTAMPTZ,
+  error_message   TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- AI FORECAST
+CREATE TABLE IF NOT EXISTS ai_forecast (
+  id              SERIAL PRIMARY KEY,
+  product_id      INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  forecast_date   DATE NOT NULL,
+  forecast_value  NUMERIC(10,2) NOT NULL DEFAULT 0,
+  actual_value    NUMERIC(10,2),
+  accuracy        NUMERIC(5,2),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(product_id, forecast_date)
+);

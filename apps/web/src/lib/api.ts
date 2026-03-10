@@ -4,44 +4,45 @@ export const api = {
   // PRODUCTS
   async getProducts() {
     const res = await fetch(`${API_BASE}/products`);
-    if (!res.ok) throw new Error("Failed to fetch products");
+    if (!res.ok) throw new Error('Failed to fetch products');
     return res.json();
   },
 
-  // SALES LIST
+  // SALES
   async getSales() {
     const res = await fetch(`${API_BASE}/sales`);
-    if (!res.ok) throw new Error("Failed to fetch sales");
+    if (!res.ok) throw new Error('Failed to fetch sales');
     return res.json();
   },
 
-  // GET SALE BY ID
   async getSaleById(id: number) {
     const res = await fetch(`${API_BASE}/sales/${id}`);
-    if (!res.ok) throw new Error("Failed to fetch sale");
+    if (!res.ok) throw new Error('Failed to fetch sale');
     return res.json();
   },
 
-  // CREATE SALE
   async createSale(data: {
     items: { productId: number; qty: number; unitPrice: number }[];
   }) {
     const res = await fetch(`${API_BASE}/sales`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
-
     if (!res.ok) {
       const err = await res.json();
-      throw new Error(err.message || "Failed to create sale");
+      throw new Error(err.message || 'Failed to create sale');
     }
-
     return res.json();
   },
-  // AI CONTENT — get list, optional status filter
+
+  // DASHBOARD
+  async getDashboardSummary() {
+    const res = await fetch(`${API_BASE}/dashboard/summary`);
+    return res.json();
+  },
+
+  // AI CONTENT
   async getContent(status?: string, page = 1) {
     const params = new URLSearchParams({ page: String(page), limit: '20' });
     if (status && status !== 'all') params.set('status', status);
@@ -50,7 +51,6 @@ export const api = {
     return res.json();
   },
 
-  // AI CONTENT — save a draft
   async createContent(body: {
     title?: string;
     prompt: string;
@@ -67,7 +67,6 @@ export const api = {
     return res.json();
   },
 
-  // AI CONTENT — approve or reject
   async updateContentStatus(id: number, status: 'approved' | 'rejected') {
     const res = await fetch(`${API_BASE}/ai-content/${id}/status`, {
       method: 'PATCH',
@@ -78,7 +77,6 @@ export const api = {
     return res.json();
   },
 
-  // AI CONTENT — generate (stub for now)
   async generateContent(prompt: string) {
     const res = await fetch(`${API_BASE}/ai-content/generate`, {
       method: 'POST',
@@ -88,8 +86,7 @@ export const api = {
     return res.json();
   },
 
-  // ─── Campaigns ──────────────────────────────────────────────────────────────
-
+  // CAMPAIGNS
   getCampaigns: async () => {
     const res = await fetch(`${API_BASE}/campaigns`);
     const data = await res.json();
@@ -138,9 +135,7 @@ export const api = {
   },
 
   deleteCampaign: async (id: number) => {
-    const res = await fetch(`${API_BASE}/campaigns/${id}`, {
-      method: 'DELETE',
-    });
+    const res = await fetch(`${API_BASE}/campaigns/${id}`, { method: 'DELETE' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to delete campaign');
     return { success: true };
@@ -166,37 +161,56 @@ export const api = {
     return { success: true };
   },
 
-  // Scheduled Posts
-getScheduledPosts: async () => {
-  const res = await fetch(`${API_BASE}/scheduled-posts`);
-  return res.json();
-},
-createScheduledPost: async (data: {
-  content_id: number;
-  campaign_id?: number;
-  scheduled_at: string;
-  platform?: string;
-}) => {
-  const res = await fetch(`${API_BASE}/scheduled-posts`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
-  return res.json();
-},
-updatePostStatus: async (id: number, status: string) => {
-  const res = await fetch(`${API_BASE}/scheduled-posts/${id}/status`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status }),
-  });
-  return res.json();
-},
-deleteScheduledPost: async (id: number) => {
-  const res = await fetch(`${API_BASE}/scheduled-posts/${id}`, {
-    method: 'DELETE',
-  });
-  return res.json();
-},
+  // SCHEDULED POSTS
+  getScheduledPosts: async () => {
+    const res = await fetch(`${API_BASE}/scheduled-posts`);
+    return res.json();
+  },
 
+  createScheduledPost: async (data: {
+    content_id: number;
+    campaign_id?: number;
+    scheduled_at: string;
+    platform?: string;
+  }) => {
+    const res = await fetch(`${API_BASE}/scheduled-posts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    return res.json();
+  },
+
+  updatePostStatus: async (id: number, status: string) => {
+    const res = await fetch(`${API_BASE}/scheduled-posts/${id}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    return res.json();
+  },
+
+  deleteScheduledPost: async (id: number) => {
+    const res = await fetch(`${API_BASE}/scheduled-posts/${id}`, { method: 'DELETE' });
+    return res.json();
+  },
+
+  // FORECASTS
+  generateForecasts: async () => {
+    const res = await fetch(`${API_BASE}/forecasts/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    return res.json();
+  },
+
+  getForecasts: async () => {
+    const res = await fetch(`${API_BASE}/forecasts`);
+    return res.json();
+  },
+
+  getForecastAlerts: async () => {
+    const res = await fetch(`${API_BASE}/forecasts/alerts`);
+    return res.json();
+  },
 };

@@ -7,6 +7,7 @@ import aiContentRouter from './routes/ai-content';
 import campaignsRouter from './routes/campaigns';
 import scheduledPostsRouter from './routes/scheduled-posts';
 import { errorHandler } from './middleware/errorHandler';
+import forecastsRouter from './routes/forecasts';
 
 export function createApp() {
   const app = express();
@@ -21,6 +22,8 @@ export function createApp() {
   app.use('/api/ai-content', aiContentRouter);
   app.use('/api/campaigns', campaignsRouter);
   app.use('/api/scheduled-posts', scheduledPostsRouter);
+  app.use('/api/forecasts', forecastsRouter);
+
 
   // optional root route
   app.get('/', (_req, res) => {
