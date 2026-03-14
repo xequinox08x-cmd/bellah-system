@@ -1,6 +1,7 @@
-import salesRouter from "./routes/sales";
 import { productsRouter } from './routes/products';
 import { salesRouter } from './routes/sales';
+import { dashboardRouter } from './routes/dashboard';
+import forecastsRouter from './routes/forecasts';
 import express from 'express';
 import cors from 'cors';
 import { healthRouter } from './routes/health';
@@ -14,7 +15,9 @@ export function createApp() {
 
   app.use(healthRouter);
   app.use("/api/products", productsRouter);
-  app.use(salesRouter);
+  app.use("/api/sales", salesRouter);
+  app.use(dashboardRouter);
+  app.use("/api/forecasts", forecastsRouter);
 
   app.get("/", (_req, res) => {
     res.send("API is running");

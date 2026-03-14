@@ -1,18 +1,22 @@
-import { useState, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer,
 } from 'recharts';
 import {
   ShoppingCart, DollarSign, AlertTriangle, Calendar, TrendingUp,
-  ArrowUpRight, ArrowDownRight, RefreshCw, Activity, ChevronDown,
+  ArrowUpRight, ArrowDownRight, RefreshCw, Activity,
   AlertCircle, Sparkles, X,
 } from 'lucide-react';
 import { useAuth } from '../components/AuthContext';
+import type { ContentItem } from '../data/store';
+import { getDashboardSummary, type DashboardSummary, type DashboardTrendPoint, type LowStockProduct } from '../api/dashboard';
+import { getSales, type SalesRecordDTO } from '../api/sales';
+import { getProducts, type ProductDTO } from '../api/products';
+import { api } from '../lib/api';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const TODAY = '2026-02-26';
-
 const STATUS_COLORS: Record<string, string> = {
   pending:   'bg-amber-100 text-amber-700',
   approved:  'bg-emerald-100 text-emerald-700',
@@ -23,6 +27,22 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 const RANK_COLORS = ['#EC4899', '#D4A373', '#4A90D9', '#10B981', '#8B5CF6'];
+
+type ForecastAlert = {
+  product_id: number | string;
+  product_name: string;
+  actual_today: number | string;
+  forecast_value: number | string;
+  pct_of_forecast: number | string;
+};
+
+const EMPTY_SUMMARY: DashboardSummary = {
+  totalSales: 0,
+  revenueToday: 0,
+  lowStockItems: 0,
+  scheduledPosts: 0,
+  engagementRate: 0,
+};
 
 function getDateRange(from: string, to: string) {
   const days: string[] = [];
@@ -151,19 +171,152 @@ function CriticalAlertModal({
 // ── Admin Dashboard ───────────────────────────────────────────────────────────
 
 export default function AdminDashboard() {
-  const { sales, products, contentItems } = useStore();
   const { user } = useAuth();
+  const navigate = useNavigate();
 
   // ── Filters ────────────────────────────────────────────────────────────
+  const todayIso = useMemo(() => formatDateInput(new Date()), []);
   const thirtyDaysAgo = useMemo(() => {
-    const d = new Date('2026-02-26');
+    const d = new Date();
     d.setDate(d.getDate() - 29);
-    return d.toISOString().split('T')[0];
+    return formatDateInput(d);
   }, []);
 
   const [dateFrom, setDateFrom]               = useState(thirtyDaysAgo);
-  const [dateTo, setDateTo]                   = useState(TODAY);
+  const [dateTo, setDateTo]                   = useState(todayIso);
   const [selectedProduct, setSelectedProduct] = useState('All');
+  const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary>(EMPTY_SUMMARY);
+  const [dashboardTrend, setDashboardTrend] = useState<DashboardTrendPoint[]>([]);
+  const [dashboardLowStock, setDashboardLowStock] = useState<LowStockProduct[] | null>(null);
+  const [sales, setSales] = useState<SalesRecordDTO[]>([]);
+  const [products, setProducts] = useState<ProductDTO[]>([]);
+  const contentItems = useMemo<ContentItem[]>(() => [], []);
+  const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [forecastAlerts, setForecastAlerts] = useState<ForecastAlert[]>([]);
+  const [showAlert, setShowAlert] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  const today = useMemo(
+    () => new Date().toLocaleDateString('en-US', {
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+    }),
+    []
+  );
+  const todayShort = useMemo(
+    () => new Date().toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    }),
+    []
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadDashboardSummary() {
+      try {
+        setDashboardLoading(true);
+        setDashboardError(null);
+        const response = await getDashboardSummary(dateFrom, dateTo);
+        if (!cancelled) {
+          setDashboardSummary(response.summary);
+          setDashboardTrend(response.salesTrend);
+          setDashboardLowStock(response.lowStockProducts);
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setDashboardError(e?.message || 'Failed to load dashboard summary');
+          setDashboardSummary(EMPTY_SUMMARY);
+          setDashboardTrend([]);
+          setDashboardLowStock(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setDashboardLoading(false);
+        }
+      }
+    }
+
+    loadDashboardSummary();
+    return () => {
+      cancelled = true;
+    };
+  }, [dateFrom, dateTo]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadDashboardDataSources() {
+      try {
+        const [salesResponse, productsResponse] = await Promise.all([
+          getSales(),
+          getProducts(),
+        ]);
+
+        if (!cancelled) {
+          setSales(salesResponse);
+          setProducts(productsResponse);
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setDashboardError(prev => prev || e?.message || 'Failed to load dashboard data');
+        }
+      }
+    }
+
+    loadDashboardDataSources();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadForecastAlerts() {
+      try {
+        const response = await api.getForecastAlerts();
+        if (!cancelled) {
+          const alerts = Array.isArray(response?.data) ? response.data as ForecastAlert[] : [];
+          setForecastAlerts(alerts);
+        }
+      } catch {
+        if (!cancelled) {
+          setForecastAlerts([]);
+        }
+      }
+    }
+
+    loadForecastAlerts();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function handleGenerateForecasts() {
+    try {
+      setIsGenerating(true);
+      await api.generateForecasts();
+      const response = await api.getForecastAlerts();
+      const alerts = Array.isArray(response?.data) ? response.data as ForecastAlert[] : [];
+      setForecastAlerts(alerts);
+      setShowAlert(alerts.length > 0);
+    } catch (e: any) {
+      setDashboardError(e?.error || e?.message || 'Failed to generate forecasts');
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
+  function handleGenerateContent() {
+    setShowAlert(false);
+    navigate('/marketing');
+  }
 
   // ── Filtered sales by date range ──────────────────────────────────────
   const filteredSales = useMemo(
@@ -172,39 +325,42 @@ export default function AdminDashboard() {
   );
 
   // ── KPI: Total Sales ──────────────────────────────────────────────────
-  const totalSalesCount = filteredSales.length;
+  const totalSalesCount = dashboardSummary.totalSales;
 
   // ── KPI: Revenue Today ────────────────────────────────────────────────
   const revenueToday = useMemo(
-    () => sales.filter(s => s.date === TODAY).reduce((sum, s) => sum + s.total, 0),
-    [sales]
+    () => dashboardSummary.revenueToday,
+    [dashboardSummary]
   );
 
   // ── KPI: Low Stock ────────────────────────────────────────────────────
-  const lowStockProducts = useMemo(
-    () => products.filter(p => p.stock <= p.lowStockThreshold),
-    [products]
-  );
+  const lowStockProducts = useMemo(() => {
+    if (dashboardLowStock) return dashboardLowStock;
+    return products.filter(p => p.stock <= p.lowStockThreshold);
+  }, [dashboardLowStock, products]);
 
   // ── KPI: Scheduled Posts ──────────────────────────────────────────────
   const scheduledPostsCount = useMemo(
-    () => contentItems.filter(c => c.status === 'scheduled').length,
-    [contentItems]
+    () => dashboardSummary.scheduledPosts,
+    [dashboardSummary]
   );
 
   // ── KPI: Engagement Rate ──────────────────────────────────────────────
-  const engagementRate = useMemo(() => {
-    const withEng = contentItems.filter(c => c.engagement && c.engagement.reach > 0);
-    if (!withEng.length) return 0;
-    const total = withEng.reduce((sum, c) => {
-      const e = c.engagement!;
-      return sum + (e.likes + e.comments + e.shares) / e.reach;
-    }, 0);
-    return (total / withEng.length) * 100;
-  }, [contentItems]);
+  const engagementRate = useMemo(
+    () => dashboardSummary.engagementRate,
+    [dashboardSummary]
+  );
 
   // ── Chart: date-range trend ───────────────────────────────────────────
   const chartData = useMemo(() => {
+    if (selectedProduct === 'All') {
+      return dashboardTrend.map(point => ({
+        label: new Date(point.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        Revenue: parseFloat(Number(point.revenue).toFixed(2)),
+        Profit: parseFloat(Number(point.profit).toFixed(2)),
+      }));
+    }
+
     const days = getDateRange(dateFrom, dateTo);
     return days.map(date => {
       const daySales = sales.filter(
@@ -217,18 +373,19 @@ export default function AdminDashboard() {
         Profit:  parseFloat(daySales.reduce((sum, s) => sum + s.profit, 0).toFixed(2)),
       };
     });
-  }, [sales, dateFrom, dateTo, selectedProduct]);
+  }, [sales, dateFrom, dateTo, selectedProduct, dashboardTrend]);
 
   // ── Top products table ────────────────────────────────────────────────
   const topProducts = useMemo(() => {
     const map: Record<string, { id: string; name: string; category: string; units: number; revenue: number; profit: number }> = {};
     filteredSales.forEach(s => {
-      if (!map[s.productId]) {
-        map[s.productId] = { id: s.productId, name: s.productName, category: s.category, units: 0, revenue: 0, profit: 0 };
+      const productKey = `${s.productName}::${s.category}`;
+      if (!map[productKey]) {
+        map[productKey] = { id: productKey, name: s.productName, category: s.category, units: 0, revenue: 0, profit: 0 };
       }
-      map[s.productId].units   += s.quantity;
-      map[s.productId].revenue += s.total;
-      map[s.productId].profit  += s.profit;
+      map[productKey].units   += s.quantity;
+      map[productKey].revenue += s.total;
+      map[productKey].profit  += s.profit;
     });
     let rows = Object.values(map).sort((a, b) => b.revenue - a.revenue);
     if (selectedProduct !== 'All') rows = rows.filter(r => r.name === selectedProduct);
@@ -250,12 +407,8 @@ export default function AdminDashboard() {
 
   // ── Scheduled / upcoming posts ────────────────────────────────────────
   const scheduledContent = useMemo(
-    () =>
-      contentItems
-        .filter(c => c.status === 'scheduled' || c.status === 'approved')
-        .sort((a, b) => (a.scheduledAt ?? '').localeCompare(b.scheduledAt ?? ''))
-        .slice(0, 6),
-    [contentItems]
+    () => [],
+    []
   );
 
   // ── Staff activity log ────────────────────────────────────────────────
@@ -354,7 +507,7 @@ export default function AdminDashboard() {
         <KPICard
           label="Revenue Today"
           value={`₱${revenueToday.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
-          sub="Feb 26, 2026"
+          sub={todayShort}
           icon={DollarSign}
           iconBg="bg-[#FEF9C3]"
           iconColor="text-[#D97706]"
@@ -663,4 +816,11 @@ export default function AdminDashboard() {
 
     </div>
   );
+}
+
+function formatDateInput(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
