@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import {
   ShoppingCart, Sparkles, Calendar, Clock, FileText,
@@ -7,9 +7,9 @@ import {
 } from 'lucide-react';
 import { useStore } from '../data/store';
 import { useAuth } from '../components/AuthContext';
+import { getStaffTodaySales, type StaffTodaySales } from '../api/dashboard';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const TODAY       = '2026-02-26';
 const TODAY_LABEL = 'Thursday, February 26, 2026';
 
 const STATUS_STYLES: Record<string, { pill: string; dot: string }> = {
@@ -125,18 +125,54 @@ function Empty({ message }: { message: string }) {
 
 // ─── Staff Dashboard ──────────────────────────────────────────────────────────
 export default function StaffDashboard() {
-  const { sales, products, contentItems } = useStore();
+  const { products, contentItems } = useStore();
   const { user } = useAuth();
   const navigate = useNavigate();
 
-  // ── Today's sales ──────────────────────────────────────────────────────
-  const todaySales = useMemo(
-    () => sales.filter(s => s.date === TODAY),
-    [sales]
-  );
-  const todayRevenue   = todaySales.reduce((sum, s) => sum + s.total, 0);
-  const todayProfit    = todaySales.reduce((sum, s) => sum + s.profit, 0);
-  const todayUnits     = todaySales.reduce((sum, s) => sum + s.quantity, 0);
+  const [todaySales, setTodaySales] = useState<StaffTodaySales>({
+    transactionCount: 0,
+    unitsSold: 0,
+    revenueTotal: 0,
+    profitTotal: 0,
+    items: [],
+  });
+  const [todaySalesLoading, setTodaySalesLoading] = useState(true);
+  const [todaySalesError, setTodaySalesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadTodaySales() {
+      try {
+        setTodaySalesLoading(true);
+        setTodaySalesError(null);
+        const response = await getStaffTodaySales();
+        if (!cancelled) {
+          setTodaySales(response);
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setTodaySalesError(e?.message || "Failed to load today's sales");
+          setTodaySales({
+            transactionCount: 0,
+            unitsSold: 0,
+            revenueTotal: 0,
+            profitTotal: 0,
+            items: [],
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          setTodaySalesLoading(false);
+        }
+      }
+    }
+
+    loadTodaySales();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ── My drafts (content created by staff role) ──────────────────────────
   const myDrafts = useMemo(
@@ -218,22 +254,14 @@ export default function StaffDashboard() {
       </div>
 
       {/* ── KPI Mini Stats ───────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <MiniStat
-          label="Sales Today"
-          value={String(todaySales.length)}
-          icon={ShoppingCart}
-          iconBg="bg-[#FCE7F3]"
-          iconColor="text-[#EC4899]"
-          note={`${todayUnits} units`}
-        />
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         <MiniStat
           label="Revenue Today"
-          value={`₱${todayRevenue.toFixed(2)}`}
+          value={todaySalesLoading ? '...' : `₱${todaySales.revenueTotal.toFixed(2)}`}
           icon={TrendingUp}
           iconBg="bg-[#FEF9C3]"
           iconColor="text-[#D97706]"
-          note={`₱${todayProfit.toFixed(2)} profit`}
+          note={todaySalesLoading ? 'Loading...' : `₱${todaySales.profitTotal.toFixed(2)} profit`}
         />
         <MiniStat
           label="My Drafts"
@@ -292,9 +320,13 @@ export default function StaffDashboard() {
         <div className="lg:col-span-3">
           <SectionCard
             title="Today's Sales"
-            sub={`${todaySales.length} transaction${todaySales.length !== 1 ? 's' : ''} · ₱${todayRevenue.toFixed(2)} total`}
+            sub={
+              todaySalesLoading
+                ? "Loading today's sales..."
+                : `${todaySales.transactionCount} transaction${todaySales.transactionCount !== 1 ? 's' : ''} · ₱${todaySales.revenueTotal.toFixed(2)} total`
+            }
             badge={
-              todaySales.length > 0 ? (
+              !todaySalesLoading && todaySales.items.length > 0 ? (
                 <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 bg-emerald-50 text-emerald-600 rounded-full border border-emerald-100">
                   <CheckCircle className="w-3 h-3" />
                   Active
@@ -302,8 +334,14 @@ export default function StaffDashboard() {
               ) : undefined
             }
           >
-            {todaySales.length === 0 ? (
-              <Empty message="No sales recorded today yet. Tap 'Record a Sale' to get started." />
+            {todaySalesLoading ? (
+              <Empty message="Loading today's sales..." />
+            ) : todaySalesError ? (
+              <div className="px-5 py-10 text-center">
+                <p className="text-xs text-red-500">{todaySalesError}</p>
+              </div>
+            ) : todaySales.items.length === 0 ? (
+              <Empty message="No sales recorded today" />
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full">
@@ -320,9 +358,9 @@ export default function StaffDashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {todaySales.map((s, i) => (
+                    {todaySales.items.map((s, i) => (
                       <tr
-                        key={s.id}
+                        key={`${s.saleId}-${s.productId}-${i}`}
                         className={`border-t border-[#F3F4F6] ${i % 2 === 0 ? 'bg-white' : 'bg-[#FAFAFA]'}`}
                       >
                         <td className="px-4 py-3">
@@ -335,14 +373,14 @@ export default function StaffDashboard() {
                           {s.customerName}
                         </td>
                         <td className="px-4 py-3 text-xs text-right text-[#374151]">
-                          ×{s.quantity}
+                          ×{s.qty}
                         </td>
                         <td className="px-4 py-3 text-right">
                           <p className="text-xs text-[#111827]" style={{ fontWeight: 600 }}>
-                            ₱{s.total.toFixed(2)}
+                            ₱{s.lineTotal.toFixed(2)}
                           </p>
                           <p className="text-[10px] text-emerald-500">
-                            +₱{s.profit.toFixed(2)}
+                            +₱{s.lineProfit.toFixed(2)}
                           </p>
                         </td>
                       </tr>
@@ -352,14 +390,14 @@ export default function StaffDashboard() {
                   <tfoot>
                     <tr className="border-t-2 border-[#E5E7EB] bg-[#F9FAFB]">
                       <td colSpan={2} className="px-4 py-2.5 text-xs text-[#6B7280]" style={{ fontWeight: 500 }}>
-                        {todaySales.length} transaction{todaySales.length !== 1 ? 's' : ''}
+                        {todaySales.transactionCount} transaction{todaySales.transactionCount !== 1 ? 's' : ''}
                       </td>
-                      <td className="px-4 py-2.5 text-right text-xs text-[#374151]">{todayUnits} units</td>
+                      <td className="px-4 py-2.5 text-right text-xs text-[#374151]">{todaySales.unitsSold} units</td>
                       <td className="px-4 py-2.5 text-right">
                         <p className="text-xs text-[#111827]" style={{ fontWeight: 700 }}>
-                          ₱{todayRevenue.toFixed(2)}
+                          ₱{todaySales.revenueTotal.toFixed(2)}
                         </p>
-                        <p className="text-[10px] text-emerald-500">₱{todayProfit.toFixed(2)} profit</p>
+                        <p className="text-[10px] text-emerald-500">₱{todaySales.profitTotal.toFixed(2)} profit</p>
                       </td>
                     </tr>
                   </tfoot>
