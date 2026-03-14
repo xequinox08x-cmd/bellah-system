@@ -88,7 +88,7 @@ async function resolveCreatedBy(
   return { id: adminId, source: "dev_admin" };
 }
 
-salesRouter.get("/api/sales", async (_req, res) => {
+salesRouter.get("/", async (_req, res) => {
   try {
     await ensureSalesSchema();
 
@@ -186,7 +186,7 @@ salesRouter.get("/api/sales", async (_req, res) => {
   }
 });
 
-salesRouter.post("/api/sales", async (req, res) => {
+salesRouter.post("/", async (req, res) => {
   const client = await pool.connect();
 
   try {

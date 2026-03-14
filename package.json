@@ -2,7 +2,11 @@
   "name": "bellah-system",
   "private": true,
   "scripts": {
-    "dev": "concurrently -n WEB,API \"pnpm --filter web dev\" \"pnpm --filter api dev\""
+    "dev": "concurrently -n WEB,API \"pnpm --filter web dev\" \"pnpm --filter api dev\"",
+    "test": "pnpm --filter api test",
+    "test:watch": "pnpm --filter api test:watch",
+    "build": "pnpm --filter web build",
+    "check": "pnpm run test && pnpm run build"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

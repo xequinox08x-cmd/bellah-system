@@ -1,10 +1,10 @@
-import express from "express";
-import cors from "cors";
-import { healthRouter } from "./routes/health";
-import { productsRouter } from "./routes/products";
-import { salesRouter } from "./routes/sales";
-import { dashboardRouter } from "./routes/dashboard";
-import { errorHandler } from "./middleware/errorHandler";
+import salesRouter from "./routes/sales";
+import { productsRouter } from './routes/products';
+import { salesRouter } from './routes/sales';
+import express from 'express';
+import cors from 'cors';
+import { healthRouter } from './routes/health';
+import { errorHandler } from './middleware/errorHandler';
 
 export function createApp() {
   const app = express();
@@ -15,7 +15,6 @@ export function createApp() {
   app.use(healthRouter);
   app.use("/api/products", productsRouter);
   app.use(salesRouter);
-  app.use(dashboardRouter);
 
   app.get("/", (_req, res) => {
     res.send("API is running");

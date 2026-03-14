@@ -1,0 +1,3 @@
+ALTER TABLE ai_content 
+    ADD COLUMN IF NOT EXISTS platform TEXT NOT NULL DEFAULT 'instagram',
+    ADD COLUMN IF NOT EXISTS hashtags TEXT NOT NULL DEFAULT '';

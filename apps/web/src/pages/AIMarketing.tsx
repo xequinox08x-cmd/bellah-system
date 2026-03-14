@@ -3,6 +3,7 @@ import { Sparkles, Send, Edit3, RefreshCw, Clock, CheckCircle, XCircle, Calendar
 import { useStore, ContentItem } from '../data/store';
 import { useAuth } from '../components/AuthContext';
 import { toast } from 'sonner@2.0.3';
+import { api } from '../lib/api';
 
 type Tone = 'fun' | 'professional' | 'romantic' | 'urgent';
 type ContentType = 'caption' | 'promotion' | 'product_highlight' | 'story';
@@ -86,6 +87,7 @@ export default function AIMarketing() {
   const [editHashtags, setEditHashtags] = useState('');
   const [title, setTitle] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const selectedProduct = products.find(p => p.id === productId);
 
@@ -107,255 +109,277 @@ export default function AIMarketing() {
     }, 1200);
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!generated) { toast.error('Generate content first'); return; }
     if (!title.trim()) { toast.error('Please enter a title'); return; }
 
-    addContent({
-      title,
-      caption: editCaption,
-      hashtags: editHashtags,
-      platform,
-      status: 'pending',
-      createdBy: user?.name || 'Staff',
-      createdByRole: user?.role || 'staff',
-      productId,
-      productName: selectedProduct?.name,
-    });
+    setIsSubmitting(true);
+    try {
+      const res = await api.createContent({
+        title,
+        prompt: `${type} for ${selectedProduct?.name} — tone: ${tone}`,
+        output: editCaption,
+        platform,
+        hashtags: editHashtags,
+      });
+      console.log('API response:', res);
 
-    toast.success('Content submitted for approval!');
-    setGenerated(null);
-    setProductId('');
-    setTitle('');
-    setEditCaption('');
-    setEditHashtags('');
+      addContent({
+        title,
+        caption: editCaption,
+        hashtags: editHashtags,
+        platform,
+        status: 'pending',
+        createdBy: user?.name || 'Staff',
+        createdByRole: user?.role || 'staff',
+        productId,
+        productName: selectedProduct?.name,
+      });
+
+      toast.success('Content submitted for approval!');
+      setGenerated(null);
+      setProductId('');
+      setTitle('');
+      setEditCaption('');
+      setEditHashtags('');
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to submit content. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
       <div>
-        <h1 className="text-[#111827] text-xl" style={{ fontWeight: 700 }}>AI Marketing</h1>
-        <p className="text-[#6B7280] text-sm">Generate compelling marketing content powered by AI</p>
-      </div>
+          <h1 className="text-[#111827] text-xl" style={{ fontWeight: 700 }}>AI Marketing</h1>
+          <p className="text-[#6B7280] text-sm">Generate compelling marketing content powered by AI</p>
+        </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
-        {/* Generator Panel */}
-        <div className="lg:col-span-2 space-y-4">
-          <div className="bg-white rounded-xl border border-[#E5E7EB] p-5">
-            <div className="flex items-center gap-2 mb-4">
-              <div className="w-8 h-8 bg-gradient-to-br from-[#EC4899] to-[#D4A373] rounded-lg flex items-center justify-center">
-                <Sparkles className="w-4 h-4 text-white" />
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
+          {/* Generator Panel */}
+          <div className="lg:col-span-2 space-y-4">
+            <div className="bg-white rounded-xl border border-[#E5E7EB] p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <div className="w-8 h-8 bg-gradient-to-br from-[#EC4899] to-[#D4A373] rounded-lg flex items-center justify-center">
+                  <Sparkles className="w-4 h-4 text-white" />
+                </div>
+                <h3 className="text-[#111827] text-sm" style={{ fontWeight: 600 }}>Content Generator</h3>
               </div>
-              <h3 className="text-[#111827] text-sm" style={{ fontWeight: 600 }}>Content Generator</h3>
-            </div>
 
-            <div className="space-y-4">
-              <div>
-                <label className="block text-xs text-[#374151] mb-1.5" style={{ fontWeight: 500 }}>Product</label>
-                <select
-                  value={productId}
-                  onChange={e => setProductId(e.target.value)}
-                  className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899]"
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs text-[#374151] mb-1.5" style={{ fontWeight: 500 }}>Product</label>
+                  <select
+                    value={productId}
+                    onChange={e => setProductId(e.target.value)}
+                    className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899]"
+                  >
+                    <option value="">Select a product...</option>
+                    {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-[#374151] mb-1.5" style={{ fontWeight: 500 }}>Content Type</label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {(['caption', 'promotion', 'product_highlight', 'story'] as ContentType[]).map(t => (
+                      <button
+                        key={t}
+                        onClick={() => setType(t)}
+                        className={`py-2 px-3 rounded-lg text-xs transition-all capitalize ${type === t ? 'bg-[#EC4899] text-white' : 'bg-[#F9FAFB] text-[#6B7280] hover:bg-[#F3F4F6]'}`}
+                      >
+                        {t.replace('_', ' ')}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-[#374151] mb-1.5" style={{ fontWeight: 500 }}>Tone</label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {(['fun', 'professional', 'romantic', 'urgent'] as Tone[]).map(t => (
+                      <button
+                        key={t}
+                        onClick={() => setTone(t)}
+                        className={`py-2 px-3 rounded-lg text-xs transition-all capitalize ${tone === t ? 'bg-[#D4A373] text-white' : 'bg-[#F9FAFB] text-[#6B7280] hover:bg-[#F3F4F6]'}`}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-[#374151] mb-1.5" style={{ fontWeight: 500 }}>Platform</label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(['instagram', 'facebook', 'both'] as Platform[]).map(p => (
+                      <button
+                        key={p}
+                        onClick={() => setPlatform(p)}
+                        className={`py-2 px-2 rounded-lg text-xs transition-all capitalize ${platform === p ? 'bg-[#111827] text-white' : 'bg-[#F9FAFB] text-[#6B7280] hover:bg-[#F3F4F6]'}`}
+                      >
+                        {p}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleGenerate}
+                  disabled={isGenerating || !productId}
+                  className="w-full py-2.5 bg-gradient-to-r from-[#EC4899] to-[#D4A373] text-white rounded-lg text-sm flex items-center justify-center gap-2 hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <option value="">Select a product...</option>
-                  {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
+                  {isGenerating ? (
+                    <><RefreshCw className="w-4 h-4 animate-spin" /> Generating...</>
+                  ) : (
+                    <><Sparkles className="w-4 h-4" /> Generate Content</>
+                  )}
+                </button>
               </div>
-
-              <div>
-                <label className="block text-xs text-[#374151] mb-1.5" style={{ fontWeight: 500 }}>Content Type</label>
-                <div className="grid grid-cols-2 gap-1.5">
-                  {(['caption', 'promotion', 'product_highlight', 'story'] as ContentType[]).map(t => (
-                    <button
-                      key={t}
-                      onClick={() => setType(t)}
-                      className={`py-2 px-3 rounded-lg text-xs transition-all capitalize ${type === t ? 'bg-[#EC4899] text-white' : 'bg-[#F9FAFB] text-[#6B7280] hover:bg-[#F3F4F6]'}`}
-                    >
-                      {t.replace('_', ' ')}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs text-[#374151] mb-1.5" style={{ fontWeight: 500 }}>Tone</label>
-                <div className="grid grid-cols-2 gap-1.5">
-                  {(['fun', 'professional', 'romantic', 'urgent'] as Tone[]).map(t => (
-                    <button
-                      key={t}
-                      onClick={() => setTone(t)}
-                      className={`py-2 px-3 rounded-lg text-xs transition-all capitalize ${tone === t ? 'bg-[#D4A373] text-white' : 'bg-[#F9FAFB] text-[#6B7280] hover:bg-[#F3F4F6]'}`}
-                    >
-                      {t}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs text-[#374151] mb-1.5" style={{ fontWeight: 500 }}>Platform</label>
-                <div className="grid grid-cols-3 gap-1.5">
-                  {(['instagram', 'facebook', 'both'] as Platform[]).map(p => (
-                    <button
-                      key={p}
-                      onClick={() => setPlatform(p)}
-                      className={`py-2 px-2 rounded-lg text-xs transition-all capitalize ${platform === p ? 'bg-[#111827] text-white' : 'bg-[#F9FAFB] text-[#6B7280] hover:bg-[#F3F4F6]'}`}
-                    >
-                      {p}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <button
-                onClick={handleGenerate}
-                disabled={isGenerating || !productId}
-                className="w-full py-2.5 bg-gradient-to-r from-[#EC4899] to-[#D4A373] text-white rounded-lg text-sm flex items-center justify-center gap-2 hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isGenerating ? (
-                  <><RefreshCw className="w-4 h-4 animate-spin" /> Generating...</>
-                ) : (
-                  <><Sparkles className="w-4 h-4" /> Generate Content</>
-                )}
-              </button>
             </div>
+          </div>
+
+          {/* Preview Panel */}
+          <div className="lg:col-span-3 space-y-4">
+            {generated ? (
+              <div className="bg-white rounded-xl border border-[#E5E7EB] p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-[#111827] text-sm" style={{ fontWeight: 600 }}>Generated Content</h3>
+                  <button
+                    onClick={handleGenerate}
+                    className="flex items-center gap-1 text-xs text-[#6B7280] hover:text-[#111827] transition-all"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" /> Regenerate
+                  </button>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-[#374151] mb-1.5" style={{ fontWeight: 500 }}>Post Title</label>
+                  <input
+                    value={title}
+                    onChange={e => setTitle(e.target.value)}
+                    className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899] transition-all"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs text-[#374151] mb-1.5" style={{ fontWeight: 500 }}>Caption</label>
+                  <textarea
+                    value={editCaption}
+                    onChange={e => setEditCaption(e.target.value)}
+                    rows={6}
+                    className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899] resize-none transition-all"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs text-[#374151] mb-1.5" style={{ fontWeight: 500 }}>Hashtags</label>
+                  <input
+                    value={editHashtags}
+                    onChange={e => setEditHashtags(e.target.value)}
+                    className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899] transition-all font-mono"
+                  />
+                </div>
+
+                {/* Preview Card */}
+                <div className="p-4 bg-[#F9FAFB] rounded-xl border border-[#E5E7EB]">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-8 h-8 bg-gradient-to-br from-[#EC4899] to-[#D4A373] rounded-full" />
+                    <div>
+                      <p className="text-xs text-[#111827]" style={{ fontWeight: 600 }}>BellahBeatrix</p>
+                      <p className="text-[10px] text-[#9CA3AF]">{platform === 'both' ? 'Instagram & Facebook' : platform}</p>
+                    </div>
+                  </div>
+                  <p className="text-xs text-[#374151] whitespace-pre-wrap leading-relaxed">{editCaption}</p>
+                  <p className="text-xs text-blue-500 mt-2">{editHashtags}</p>
+                </div>
+
+                <button
+                  onClick={handleSubmit}
+                  disabled={isSubmitting}
+                  className="w-full py-2.5 bg-[#EC4899] text-white rounded-lg text-sm flex items-center justify-center gap-2 hover:bg-[#DB2777] transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {isSubmitting ? (
+                    <><RefreshCw className="w-4 h-4 animate-spin" /> Submitting...</>
+                  ) : (
+                    <><Send className="w-4 h-4" /> Submit for Approval</>
+                  )}
+                </button>
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl border border-[#E5E7EB] p-12 flex flex-col items-center justify-center text-center">
+                <div className="w-14 h-14 bg-[#FCE7F3] rounded-2xl flex items-center justify-center mb-4">
+                  <Sparkles className="w-7 h-7 text-[#EC4899]" />
+                </div>
+                <p className="text-[#111827] text-sm" style={{ fontWeight: 500 }}>No content generated yet</p>
+                <p className="text-[#9CA3AF] text-xs mt-1">Select a product and click Generate Content</p>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Preview Panel */}
-        <div className="lg:col-span-3 space-y-4">
-          {generated ? (
-            <div className="bg-white rounded-xl border border-[#E5E7EB] p-5 space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-[#111827] text-sm" style={{ fontWeight: 600 }}>Generated Content</h3>
-                <button
-                  onClick={handleGenerate}
-                  className="flex items-center gap-1 text-xs text-[#6B7280] hover:text-[#111827] transition-all"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" /> Regenerate
-                </button>
-              </div>
-
-              <div>
-                <label className="block text-xs text-[#374151] mb-1.5" style={{ fontWeight: 500 }}>Post Title</label>
-                <input
-                  value={title}
-                  onChange={e => setTitle(e.target.value)}
-                  className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899] transition-all"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs text-[#374151] mb-1.5" style={{ fontWeight: 500 }}>Caption</label>
-                <textarea
-                  value={editCaption}
-                  onChange={e => setEditCaption(e.target.value)}
-                  rows={6}
-                  className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899] resize-none transition-all"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs text-[#374151] mb-1.5" style={{ fontWeight: 500 }}>Hashtags</label>
-                <input
-                  value={editHashtags}
-                  onChange={e => setEditHashtags(e.target.value)}
-                  className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899] transition-all font-mono"
-                />
-              </div>
-
-              {/* Preview Card */}
-              <div className="p-4 bg-[#F9FAFB] rounded-xl border border-[#E5E7EB]">
-                <div className="flex items-center gap-2 mb-3">
-                  <div className="w-8 h-8 bg-gradient-to-br from-[#EC4899] to-[#D4A373] rounded-full" />
-                  <div>
-                    <p className="text-xs text-[#111827]" style={{ fontWeight: 600 }}>BellahBeatrix</p>
-                    <p className="text-[10px] text-[#9CA3AF]">{platform === 'both' ? 'Instagram & Facebook' : platform}</p>
-                  </div>
-                </div>
-                <p className="text-xs text-[#374151] whitespace-pre-wrap leading-relaxed">{editCaption}</p>
-                <p className="text-xs text-blue-500 mt-2">{editHashtags}</p>
-              </div>
-
-              <button
-                onClick={handleSubmit}
-                className="w-full py-2.5 bg-[#EC4899] text-white rounded-lg text-sm flex items-center justify-center gap-2 hover:bg-[#DB2777] transition-all"
-              >
-                <Send className="w-4 h-4" /> Submit for Approval
-              </button>
-            </div>
-          ) : (
-            <div className="bg-white rounded-xl border border-[#E5E7EB] p-12 flex flex-col items-center justify-center text-center">
-              <div className="w-14 h-14 bg-[#FCE7F3] rounded-2xl flex items-center justify-center mb-4">
-                <Sparkles className="w-7 h-7 text-[#EC4899]" />
-              </div>
-              <p className="text-[#111827] text-sm" style={{ fontWeight: 500 }}>No content generated yet</p>
-              <p className="text-[#9CA3AF] text-xs mt-1">Select a product and click Generate Content</p>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Content History */}
-      <div className="bg-white rounded-xl border border-[#E5E7EB]">
-        <div className="px-5 py-4 border-b border-[#E5E7EB]">
-          <h3 className="text-[#111827] text-sm" style={{ fontWeight: 600 }}>
-            {user?.role === 'admin' ? 'All Content' : 'My Content'}
-          </h3>
-        </div>
-        <div className="divide-y divide-[#F3F4F6]">
-          {myContent.length === 0 ? (
-            <div className="py-12 text-center text-[#9CA3AF] text-sm">No content yet</div>
-          ) : (
-            myContent.map(item => {
-              const cfg = STATUS_CONFIG[item.status];
-              const Icon = cfg.icon;
-              return (
-                <div key={item.id} className="px-5 py-4 flex items-start gap-4">
-                  <div className={`w-8 h-8 rounded-lg ${cfg.bg} flex items-center justify-center shrink-0 mt-0.5`}>
-                    <Icon className={`w-4 h-4 ${cfg.text}`} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>{item.title}</p>
-                        <p className="text-xs text-[#9CA3AF] mt-0.5">
-                          {item.productName && `${item.productName} · `}
-                          {new Date(item.createdAt).toLocaleDateString()} · by {item.createdBy}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span className={`text-[10px] px-2 py-0.5 rounded-full ${PLATFORM_BADGE[item.platform]}`}>
-                          {item.platform}
-                        </span>
-                        <span className={`text-[10px] px-2 py-0.5 rounded-full ${cfg.bg} ${cfg.text}`}>
-                          {cfg.label}
-                        </span>
-                      </div>
+        {/* Content History */}
+        <div className="bg-white rounded-xl border border-[#E5E7EB]">
+          <div className="px-5 py-4 border-b border-[#E5E7EB]">
+            <h3 className="text-[#111827] text-sm" style={{ fontWeight: 600 }}>
+              {user?.role === 'admin' ? 'All Content' : 'My Content'}
+            </h3>
+          </div>
+          <div className="divide-y divide-[#F3F4F6]">
+            {myContent.length === 0 ? (
+              <div className="py-12 text-center text-[#9CA3AF] text-sm">No content yet</div>
+            ) : (
+              myContent.map(item => {
+                const cfg = STATUS_CONFIG[item.status];
+                const Icon = cfg.icon;
+                return (
+                  <div key={item.id} className="px-5 py-4 flex items-start gap-4">
+                    <div className={`w-8 h-8 rounded-lg ${cfg.bg} flex items-center justify-center shrink-0 mt-0.5`}>
+                      <Icon className={`w-4 h-4 ${cfg.text}`} />
                     </div>
-                    <p className="text-xs text-[#6B7280] mt-2 line-clamp-2">{item.caption}</p>
-                    {item.rejectionReason && (
-                      <p className="text-xs text-red-500 mt-1.5 italic">Reason: {item.rejectionReason}</p>
-                    )}
-                    {item.engagement && (
-                      <div className="flex items-center gap-3 mt-2">
-                        {[
-                          { label: '❤', value: item.engagement.likes },
-                          { label: '💬', value: item.engagement.comments },
-                          { label: '↗', value: item.engagement.shares },
-                          { label: '👁', value: item.engagement.reach },
-                        ].map(e => (
-                          <span key={e.label} className="text-xs text-[#6B7280]">{e.label} {e.value}</span>
-                        ))}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>{item.title}</p>
+                          <p className="text-xs text-[#9CA3AF] mt-0.5">
+                            {item.productName && `${item.productName} · `}
+                            {new Date(item.createdAt).toLocaleDateString()} · by {item.createdBy}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full ${PLATFORM_BADGE[item.platform]}`}>
+                            {item.platform}
+                          </span>
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full ${cfg.bg} ${cfg.text}`}>
+                            {cfg.label}
+                          </span>
+                        </div>
                       </div>
-                    )}
+                      <p className="text-xs text-[#6B7280] mt-2 line-clamp-2">{item.caption}</p>
+                      {item.rejectionReason && (
+                        <p className="text-xs text-red-500 mt-1.5 italic">Reason: {item.rejectionReason}</p>
+                      )}
+                      {item.engagement && (
+                        <div className="flex items-center gap-3 mt-2">
+                          {[
+                            { label: '❤', value: item.engagement.likes },
+                            { label: '💬', value: item.engagement.comments },
+                            { label: '↗', value: item.engagement.shares },
+                            { label: '👁', value: item.engagement.reach },
+                          ].map(e => (
+                            <span key={e.label} className="text-xs text-[#6B7280]">{e.label} {e.value}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })
-          )}
+                );
+              })
+            )}
+          </div>
         </div>
       </div>
-    </div>
-  );
-}
+    );
+  }

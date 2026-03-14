@@ -1,117 +1,323 @@
-MONTH 1 — Foundation + Inventory
-─────────────────────────────────────────────────────────
+BELLAH BEATRIX SYSTEM — CORRECTED ROADMAP
+==========================================
+(Aligned with Thesis Documentation)
 
-Week 1: Project Setup                                ✅ DONE
-├── Monorepo (apps/web + apps/api, pnpm workspaces)
-├── Express + TypeScript API
-├── Neon DB connection + pool.ts
-└── GET /health returns { ok, db, time }
-
-Week 2: Products API                                 ✅ DONE
-├── Products table in schema.sql
-├── GET /api/products
-├── POST /api/products
-├── PUT /api/products/:id
-└── DELETE /api/products/:id
-
-Week 3: Inventory UI → API                           ✅ DONE
-├── Products page wired to real API
-├── Add / Edit / Delete persists in DB
-├── Removed mock store for products
-└── Price/cost display with .toFixed(2)
-
-Week 4: Validation + UX                              ✅ DONE
-├── Duplicate SKU rejected (400)
-├── Non-negative price/cost/stock enforced
-├── Loading states + Sonner toasts
-└── Friendly error messages
+DONE ✅
+-------
+Week 1–8   Monorepo setup, Supabase DB, Products CRUD, Sales Entry, Dashboard shell
+Week 9     AI Content API (generate, list, approve, reject)
+Week 10    AI Content UI (AIMarketing, ContentApproval, lazy loading)
+Week 11    Campaigns API (CRUD + attach/detach content)
 
 
-MONTH 2 — Sales + Dashboard
-─────────────────────────────────────────────────────────
-
-Week 5: Sales Schema + Transaction                   ✅ DONE
-├── sales + sale_items tables in schema.sql
-├── POST /api/sales (transaction: insert + deduct stock)
-├── Reject sale if any item would go negative
-└── GET /api/sales, GET /api/sales/:id
-
-Week 6: Sales UI                                     ✅ DONE
-├── Sales page wired to real API
-├── Record sale form (select product + qty)
-├── Sales history list
-└── Toast on success / error on insufficient stock
-
-Week 7: Dashboard Metrics                            ✅ DONE
-├── GET /api/dashboard/summary
-├── Sales today / week / month from DB
-├── Top products by quantity sold
-├── Low stock alerts
-├── AdminDashboard + StaffDashboard show real data
-└── Loading + error states
-
-Week 8: Dashboard Polish                             ✅ DONE
-├── Fetch logic moved inside components
-├── Pagination on list endpoints
-└── Design shell merged (Sidebar, TopNav, Login)
+IN PROGRESS 🔄
+---------------
+Week 12    Campaigns.tsx (80%) | Scheduling/Social Posting (0%)
 
 
-MONTH 3 — Marketing + AI + Campaigns
-─────────────────────────────────────────────────────────
-
-Week 9: AI Content API                               ← YOU
-├── ai_content table migration
-├── POST /api/content (save draft)
-├── GET /api/content (list + ?status= filter)
-└── PATCH /api/content/:id/status (approve/reject)
-
-Week 10: AI Content UI                               ← YOU
-├── Content list page with status filters
-├── Create draft form
-├── Approve / Reject actions (admin only)
-└── POST /api/ai/generate stub
-
-Week 11: Campaigns API                               ← TEAMMATE
-├── campaigns + campaign_content tables migration
-├── GET/POST /api/campaigns
-├── PUT/DELETE /api/campaigns/:id
-└── POST /api/campaigns/:id/content (attach approved only)
-
-Week 12: Campaigns + Scheduling UI                   ← TEAMMATE
-├── scheduled_posts table migration
-├── GET/POST /api/scheduled-posts
-├── Campaigns page (create, attach content)
-└── Scheduling page (list posts with status)
+SCOPE BOUNDARIES (from thesis)
+--------------------------------
+Platform     Facebook ONLY (no Instagram, no TikTok)
+Auth         Role-based: Admin and Staff only
+AI APIs      OpenAI API (text/captions) + Canva AI (visuals)
+Automation   n8n workflows
+No scope     E-commerce, online payments, customer accounts, custom LLMs
+Evaluation   ISO/IEC 25010:2018
 
 
-MONTH 4 — Auth + Deployment
-─────────────────────────────────────────────────────────
+REMAINING ROADMAP
+-----------------
 
-Week 13: Clerk Auth                                  ← SPLIT
-├── YOU:      ClerkProvider in apps/web
-│             Replace mock AuthContext with useUser()
-│             Protect routes, hide admin UI for staff
-│
-└── TEAMMATE: @clerk/express middleware in apps/api
-              requireAuth on all protected routes
-              requireAdmin on admin-only routes
-              Sync clerk_id + role into users table
+MONTH 3 — Finish Core Features (March 2026)
+--------------------------------------------
+Week 12
 
-Week 14: Deployment                                  ← SPLIT
-├── YOU:      Deploy apps/web to Vercel
-│             Set VITE_API_URL env var
-│             Confirm lazy-loaded routes work in prod
-│
-└── TEAMMATE: Deploy apps/api to Render / Fly.io
-              Set DATABASE_URL, CLERK_SECRET_KEY, CORS_ORIGIN
-              Run all migrations on Neon production branch
-              Confirm /health returns { ok: true }
+Task 1: Finish Campaigns.tsx
+- Campaign list, create/edit modal, attach content, campaign detail
 
-Week 15: Demo Prep                                   ← BOTH
-├── End-to-end smoke test
-│   Add product → record sale → stock deducts →
-│   dashboard updates → create content → approve →
-│   attach to campaign → schedule
-├── Fix any bugs found in smoke test
-├── Seed realistic demo data
-└── Final walkthrough with advisor
+Task 2: Social Posting page (Scheduling.tsx rewrite)
+- Fetch approved content from real API
+- Schedule post → POST /api/scheduled-posts
+- Show scheduled/published/failed posts
+- Manual "Post Now" button
+
+Task 3: Scheduled Posts API
+- POST   /api/scheduled-posts
+- GET    /api/scheduled-posts
+- GET    /api/scheduled-posts/pending  ← n8n polls this
+- PATCH  /api/scheduled-posts/:id/status
+
+
+MONTH 4 — AI Intelligence Layer (April 2026)
+---------------------------------------------
+Week 13 — AI Sales Forecasting
+
+This is a core thesis feature. The system forecasts
+next 7 days of revenue per product based on historical
+sales data. When actual sales fall below forecast,
+a Critical Alert is triggered.
+
+DB changes:
+  CREATE TABLE ai_forecast (
+    id SERIAL PRIMARY KEY,
+    product_id INT REFERENCES products(id),
+    forecast_date DATE NOT NULL,
+    forecast_value NUMERIC NOT NULL,
+    actual_value NUMERIC,
+    accuracy NUMERIC,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE TABLE ai_recommendation (
+    id SERIAL PRIMARY KEY,
+    user_id INT,
+    product_id INT REFERENCES products(id),
+    product_name TEXT,
+    recommendation TEXT,
+    source_type TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE TABLE trending_keywords (
+    id SERIAL PRIMARY KEY,
+    keyword TEXT NOT NULL,
+    rank_score NUMERIC,
+    detected_at TIMESTAMPTZ DEFAULT NOW()
+  );
+
+API endpoints:
+- POST /api/forecasts/generate  ← runs forecast model
+- GET  /api/forecasts            ← fetch predictions
+- GET  /api/forecasts/alerts     ← products below threshold
+
+Forecast model options (pick one):
+- Simple: Linear regression on last 30 days of sales data
+- Better: XGBoost via Python microservice (thesis mentions this)
+- Simplest for demo: Moving average calculation in Node.js
+
+Week 14 — Critical Alert + AI Recommendation
+
+This is shown in the UI mockup as a dashboard modal.
+When sales drop below forecast threshold, system:
+  1. Detects the drop (scheduled check every hour via n8n)
+  2. Shows Critical Sales Alert modal on dashboard
+  3. Displays affected products + % drop
+  4. Shows AI-generated recommendation text (OpenAI)
+  5. Suggests: Generate Content / Create Campaign / View Analytics
+
+Build:
+- Dashboard alert modal (shown in Figure 3.12)
+- AI recommendation text via OpenAI API
+- Dismiss / act on alert behavior
+- Store recommendation in ai_recommendation table
+
+Week 15 — n8n Setup + Facebook Integration
+
+⚠️ Apply for Facebook Developer App IMMEDIATELY
+   Takes 1–2 weeks for approval.
+
+n8n Workflow 1 — Auto Publisher (every 5 min):
+  Poll GET /api/scheduled-posts/pending
+  → For each pending post past scheduled_at:
+    → POST to Facebook Graph API
+    → On success: PATCH status to 'published' + save facebook_post_link
+    → On failure: PATCH status to 'failed' + save error
+
+n8n Workflow 2 — Engagement Collector (daily 9AM):
+  → Fetch published posts from DB
+  → Pull likes/comments/shares/reach from Facebook Graph API
+  → Save to engagement_data table
+
+n8n Workflow 3 — Sales Drop Detector (hourly):
+  → Compare actual vs forecast sales
+  → If below threshold: trigger AI recommendation
+  → Store in ai_recommendation
+
+
+MONTH 5 — Auth + Analytics (May 2026)
+---------------------------------------
+Week 16 — Supabase Auth
+
+Use Supabase Auth (not Clerk — already on Supabase,
+free, no extra service needed).
+
+Tasks:
+- Remove mock AuthContext
+- Install @supabase/supabase-js auth in frontend
+- Login page wired to real Supabase Auth
+- JWT middleware in API (verify Supabase token)
+- Protect all API routes
+- Role-based routing: admin sees User Management,
+  staff does not
+
+DB addition:
+  ALTER TABLE users ADD COLUMN auth_id TEXT UNIQUE;
+  (links Supabase Auth user to app user record)
+
+Week 17 — Performance & ROI Page
+
+This is shown in Figure 3.17. It displays:
+- Total Campaign ROI
+- Marketing Spend
+- Revenue Generated
+- AI Recommendations count
+- KPI bars: Revenue Growth, Customer Acquisition Cost,
+  Conversion Rate, Campaign ROI, Average Order Value,
+  Social Engagement Rate
+- SMART Goals tab
+- Campaign Performance tab
+- AI Recommendations tab
+
+Build:
+- GET /api/analytics/kpis
+- GET /api/analytics/campaigns
+- GET /api/analytics/engagement
+- Performance & ROI page with recharts visualizations
+
+Week 18 — User Management Page (Admin Only)
+
+This is shown in Figure 3.18. Admin can:
+- View all users (username, name, email, role, status, last login)
+- Add new user
+- Edit user role (Admin / Sales Staff / Marketing Staff)
+- Activate / deactivate user
+- Delete user
+
+Build:
+- GET    /api/users
+- POST   /api/users
+- PUT    /api/users/:id
+- DELETE /api/users/:id
+- User Management page (admin role gate)
+
+Also: User Activity Log (for thesis audit trail)
+- Log each major action (login, sale recorded, post scheduled)
+- Store in user_activity_log table
+
+
+MONTH 6 — Deployment + Evaluation (June 2026)
+-----------------------------------------------
+Week 19 — Deployment
+
+- Deploy frontend to Vercel
+- Deploy API to Render or Fly.io
+- Set all environment variables in production
+- Point n8n to production API URL
+- Full end-to-end test in production
+
+Week 20 — System Testing + ISO Evaluation Prep
+
+Thesis requires evaluation based on ISO/IEC 25010:2018:
+- Functional Suitability  → use-case testing checklist
+- Performance Efficiency  → measure API response times
+- Compatibility           → test on Chrome, Firefox, Edge, mobile
+- Usability               → survey with admin and staff
+- Reliability             → uptime, error handling
+- Security                → auth routes, SQL injection tests
+- Maintainability         → code documentation
+- Portability             → responsive on laptop + mobile
+
+Prepare UAT survey forms for BellahBeatrix staff.
+Conduct actual UAT at the General Trias, Cavite office.
+
+Week 21 — Demo Prep + Thesis Finalization
+
+- Load realistic test data (products, sales, campaigns)
+- Run full procedural flow demo:
+    Sales drop detected →
+    Alert shown →
+    AI content generated →
+    Content approved →
+    Post scheduled →
+    n8n auto-posts to Facebook →
+    Engagement pulled back →
+    Performance dashboard updated
+- Record demo video as backup
+- Finalize thesis manuscript (Chapters 4 and 5)
+- Prepare for defense
+
+
+FULL PAGE LIST (matches thesis UI mockups)
+------------------------------------------
+Page                  Route           Role
+--------------------------------------------------
+Login                 /login          all
+Dashboard             /               admin + staff
+Sales Entry (POS)     /sales          admin + staff
+Inventory             /products       admin + staff
+Campaigns             /campaigns      admin + staff
+AI Content            /ai-marketing   admin + staff
+Content Approval      /content-approval  admin
+Social Posting        /scheduling     admin + staff
+Performance & ROI     /analytics      admin + staff
+User Management       /users          admin only
+
+
+FULL TABLE LIST (matches thesis ERD)
+--------------------------------------
+Table                  Status
+-------------------------------------
+users                  exists (needs auth_id column)
+products               exists ✅
+sales                  exists ✅
+ai_content             exists ✅ (maps to Marketing_Content)
+campaigns              exists ✅
+campaign_content       exists ✅
+scheduled_posts        needs creation (maps to Scheduling_Post)
+engagement_data        needs creation
+ai_forecast            needs creation
+ai_recommendation      needs creation
+trending_keywords      needs creation
+user_activity_log      needs creation
+
+
+PRIORITY THIS WEEK
+------------------
+1. Finish Campaigns.tsx
+2. Build scheduled_posts API
+3. Wire Scheduling.tsx (Social Posting page)
+4. Apply for Facebook Developer App TODAY
+5. Add missing DB tables in Supabase SQL Editor
+
+
+RISK MANAGEMENT
+---------------
+Facebook App Review slow    → Apply today, use mock post in demo if needed
+Forecast model complex      → Use moving average first, upgrade later
+n8n breaks in production    → Keep manual Post Now button on every post
+Auth breaks existing flow   → Keep mock AuthContext working until Supabase Auth confirmed
+Running out of time         → Cut Trending Keywords + Activity Log last
+ISO evaluation forms late   → Draft survey forms now, don't wait until Month 6
+
+
+MINIMUM VIABLE DEMO
+--------------------
+Must Have:
+- Login with roles (admin vs staff)
+- Dashboard with sales summary + AI forecast
+- Sales Entry (POS)
+- Inventory management
+- Campaign management
+- AI content generation (OpenAI captions + hashtags)
+- Content approval flow
+- Social Posting scheduler
+- Auto Facebook posting via n8n
+- Engagement data pulled back from Facebook
+- Performance & ROI page
+- User Management (admin)
+- Deployment
+
+Nice To Have (cut if time runs out):
+- Trending keywords detection
+- User Activity Log
+- SMART Goals tab in analytics
+- AI Recommendation history log
+
+
+TIMELINE SUMMARY
+-----------------
+Month 3 (March)    Campaigns UI + Social Posting + Scheduled Posts API
+Month 4 (April)    AI Forecasting + Critical Alert + n8n + Facebook integration
+Month 5 (May)      Supabase Auth + Performance ROI + User Management + UAT
+Month 6 (June)     Deployment + ISO Testing + Thesis manuscript + Defense
+Total              4 months remaining

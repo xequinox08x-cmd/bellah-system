@@ -1,10 +1,7 @@
-import React from "react";
-import { api } from "../lib/api";
-import { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import {
   Search, ShoppingCart, TrendingUp, ChevronDown,
   Plus, Minus, AlertTriangle, CheckCircle, X, User,
-
   Tag, Receipt, Calendar,
 } from 'lucide-react';
 import { useAuth } from '../components/AuthContext';

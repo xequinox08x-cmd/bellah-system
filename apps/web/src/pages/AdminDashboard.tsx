@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer,
@@ -6,14 +6,12 @@ import {
 import {
   ShoppingCart, DollarSign, AlertTriangle, Calendar, TrendingUp,
   ArrowUpRight, ArrowDownRight, RefreshCw, Activity, ChevronDown,
+  AlertCircle, Sparkles, X,
 } from 'lucide-react';
-import { useStore } from '../data/store';
 import { useAuth } from '../components/AuthContext';
-import { getDashboardSummary, type LowStockProduct } from '../api/dashboard';
-import { getProducts } from '../api/products';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const TODAY = new Date().toISOString().slice(0, 10);
+const TODAY = '2026-02-26';
 
 const STATUS_COLORS: Record<string, string> = {
   pending:   'bg-amber-100 text-amber-700',
@@ -25,6 +23,17 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 const RANK_COLORS = ['#EC4899', '#D4A373', '#4A90D9', '#10B981', '#8B5CF6'];
+
+function getDateRange(from: string, to: string) {
+  const days: string[] = [];
+  const cur = new Date(from);
+  const end = new Date(to);
+  while (cur <= end) {
+    days.push(cur.toISOString().split('T')[0]);
+    cur.setDate(cur.getDate() + 1);
+  }
+  return days;
+}
 
 // ─── KPI Card ─────────────────────────────────────────────────────────────────
 function KPICard({
@@ -55,7 +64,8 @@ function KPICard({
   );
 }
 
-// ─── Section Header ───────────────────────────────────────────────────────────
+// ── Section Header ────────────────────────────────────────────────────────────
+
 function SectionHeader({ title, sub }: { title: string; sub?: string }) {
   return (
     <div className="px-5 py-4 border-b border-[#F3F4F6]">
@@ -65,14 +75,88 @@ function SectionHeader({ title, sub }: { title: string; sub?: string }) {
   );
 }
 
-// ─── Admin Dashboard ──────────────────────────────────────────────────────────
+// ── Critical Alert Modal ──────────────────────────────────────────────────────
+
+function CriticalAlertModal({
+  alerts,
+  onClose,
+  onGenerateContent,
+}: {
+  alerts: ForecastAlert[];
+  onClose: () => void;
+  onGenerateContent: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl">
+        {/* Header */}
+        <div className="bg-red-500 rounded-t-2xl px-6 py-5 flex items-start justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+              <AlertCircle className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <p className="text-white text-sm" style={{ fontWeight: 700 }}>Critical Sales Alert</p>
+              <p className="text-red-100 text-xs mt-0.5">
+                {alerts.length} product{alerts.length > 1 ? 's' : ''} below 50% of forecast
+              </p>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-white/70 hover:text-white transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Alert list */}
+        <div className="px-6 py-4 space-y-3 max-h-[300px] overflow-y-auto">
+          {alerts.map(alert => (
+            <div key={alert.product_id} className="flex items-center justify-between p-3 bg-red-50 rounded-xl border border-red-100">
+              <div>
+                <p className="text-sm text-[#111827]" style={{ fontWeight: 600 }}>{alert.product_name}</p>
+                <p className="text-xs text-[#6B7280] mt-0.5">
+                  Actual: ₱{Number(alert.actual_today).toFixed(2)} · Forecast: ₱{Number(alert.forecast_value).toFixed(2)}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-lg text-red-500" style={{ fontWeight: 700 }}>
+                  {Number(alert.pct_of_forecast).toFixed(0)}%
+                </p>
+                <p className="text-[10px] text-red-400">of forecast</p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Actions */}
+        <div className="px-6 py-4 border-t border-[#F3F4F6] space-y-2">
+          <p className="text-xs text-[#6B7280] mb-3">Recommended actions to boost sales:</p>
+          <button
+            onClick={onGenerateContent}
+            className="w-full py-2.5 bg-[#EC4899] text-white rounded-xl text-sm flex items-center justify-center gap-2 hover:bg-[#DB2777] transition-all"
+          >
+            <Sparkles className="w-4 h-4" /> Generate AI Marketing Content
+          </button>
+          <button
+            onClick={onClose}
+            className="w-full py-2.5 border border-[#E5E7EB] text-[#374151] rounded-xl text-sm hover:bg-[#F9FAFB] transition-all"
+          >
+            Dismiss
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Admin Dashboard ───────────────────────────────────────────────────────────
+
 export default function AdminDashboard() {
-  const { sales, contentItems } = useStore();
+  const { sales, products, contentItems } = useStore();
   const { user } = useAuth();
 
   // ── Filters ────────────────────────────────────────────────────────────
   const thirtyDaysAgo = useMemo(() => {
-    const d = new Date(`${TODAY}T00:00:00`);
+    const d = new Date('2026-02-26');
     d.setDate(d.getDate() - 29);
     return d.toISOString().split('T')[0];
   }, []);
@@ -80,18 +164,6 @@ export default function AdminDashboard() {
   const [dateFrom, setDateFrom]               = useState(thirtyDaysAgo);
   const [dateTo, setDateTo]                   = useState(TODAY);
   const [selectedProduct, setSelectedProduct] = useState('All');
-  const [dashboardLoading, setDashboardLoading] = useState(true);
-  const [dashboardError, setDashboardError] = useState<string | null>(null);
-  const [dashboardSummary, setDashboardSummary] = useState({
-    totalSales: 0,
-    revenueToday: 0,
-    lowStockItems: 0,
-    scheduledPosts: 0,
-    engagementRate: 0,
-  });
-  const [salesTrend, setSalesTrend] = useState<Array<{ date: string; revenue: number; profit: number }>>([]);
-  const [lowStockProducts, setLowStockProducts] = useState<LowStockProduct[]>([]);
-  const [productOptions, setProductOptions] = useState<string[]>(['All']);
 
   // ── Filtered sales by date range ──────────────────────────────────────
   const filteredSales = useMemo(
@@ -99,85 +171,53 @@ export default function AdminDashboard() {
     [sales, dateFrom, dateTo]
   );
 
-  // ── KPI: Low Stock ────────────────────────────────────────────────────
-  useEffect(() => {
-    let cancelled = false;
+  // ── KPI: Total Sales ──────────────────────────────────────────────────
+  const totalSalesCount = filteredSales.length;
 
-    async function loadDashboardSummary() {
-      try {
-        setDashboardLoading(true);
-        setDashboardError(null);
-        setSalesTrend([]);
-        setLowStockProducts([]);
-
-        const response = await getDashboardSummary(dateFrom, dateTo);
-        if (cancelled) return;
-
-        setDashboardSummary(response.summary);
-        setLowStockProducts(response.lowStockProducts);
-        setSalesTrend(response.salesTrend);
-      } catch (e: any) {
-        if (cancelled) return;
-        setDashboardError(e?.message || "Failed to load dashboard summary");
-        setLowStockProducts([]);
-      } finally {
-        if (!cancelled) {
-          setDashboardLoading(false);
-        }
-      }
-    }
-
-    loadDashboardSummary();
-    return () => {
-      cancelled = true;
-    };
-  }, [dateFrom, dateTo]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadProductOptions() {
-      try {
-        const inventoryProducts = await getProducts();
-        if (cancelled) return;
-
-        const names = Array.from(
-          new Set(
-            inventoryProducts
-              .map((product) => product.name?.trim())
-              .filter((name): name is string => Boolean(name))
-          )
-        ).sort((a, b) => a.localeCompare(b));
-
-        setProductOptions(['All', ...names]);
-      } catch {
-        if (!cancelled) {
-          setProductOptions(['All']);
-        }
-      }
-    }
-
-    loadProductOptions();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (selectedProduct !== 'All' && !productOptions.includes(selectedProduct)) {
-      setSelectedProduct('All');
-    }
-  }, [productOptions, selectedProduct]);
-
-  const chartData = useMemo(
-    () =>
-      salesTrend.map((point) => ({
-        label: new Date(point.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        Revenue: Number(point.revenue.toFixed(2)),
-        Profit: Number(point.profit.toFixed(2)),
-      })),
-    [salesTrend]
+  // ── KPI: Revenue Today ────────────────────────────────────────────────
+  const revenueToday = useMemo(
+    () => sales.filter(s => s.date === TODAY).reduce((sum, s) => sum + s.total, 0),
+    [sales]
   );
+
+  // ── KPI: Low Stock ────────────────────────────────────────────────────
+  const lowStockProducts = useMemo(
+    () => products.filter(p => p.stock <= p.lowStockThreshold),
+    [products]
+  );
+
+  // ── KPI: Scheduled Posts ──────────────────────────────────────────────
+  const scheduledPostsCount = useMemo(
+    () => contentItems.filter(c => c.status === 'scheduled').length,
+    [contentItems]
+  );
+
+  // ── KPI: Engagement Rate ──────────────────────────────────────────────
+  const engagementRate = useMemo(() => {
+    const withEng = contentItems.filter(c => c.engagement && c.engagement.reach > 0);
+    if (!withEng.length) return 0;
+    const total = withEng.reduce((sum, c) => {
+      const e = c.engagement!;
+      return sum + (e.likes + e.comments + e.shares) / e.reach;
+    }, 0);
+    return (total / withEng.length) * 100;
+  }, [contentItems]);
+
+  // ── Chart: date-range trend ───────────────────────────────────────────
+  const chartData = useMemo(() => {
+    const days = getDateRange(dateFrom, dateTo);
+    return days.map(date => {
+      const daySales = sales.filter(
+        s => s.date === date &&
+          (selectedProduct === 'All' || s.productName === selectedProduct)
+      );
+      return {
+        label:   new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        Revenue: parseFloat(daySales.reduce((sum, s) => sum + s.total, 0).toFixed(2)),
+        Profit:  parseFloat(daySales.reduce((sum, s) => sum + s.profit, 0).toFixed(2)),
+      };
+    });
+  }, [sales, dateFrom, dateTo, selectedProduct]);
 
   // ── Top products table ────────────────────────────────────────────────
   const topProducts = useMemo(() => {
@@ -249,52 +289,55 @@ export default function AdminDashboard() {
     return entries.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10);
   }, [sales, contentItems]);
 
+  // ── Product options ───────────────────────────────────────────────────
+  const productOptions = ['All', ...products.map(p => p.name)];
+
   const tickInterval = Math.max(1, Math.floor(chartData.length / 7) - 1);
 
   return (
     <div className="space-y-5 max-w-7xl mx-auto pb-6">
 
-      {/* ── Header + Filters ─────────────────────────────────────────── */}
+      {/* Critical Alert Modal */}
+      {showAlert && forecastAlerts.length > 0 && (
+        <CriticalAlertModal
+          alerts={forecastAlerts}
+          onClose={() => setShowAlert(false)}
+          onGenerateContent={handleGenerateContent}
+        />
+      )}
+
+      {/* ── Header ───────────────────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row sm:items-end gap-3 justify-between">
         <div>
           <h1 className="text-[#111827] text-xl" style={{ fontWeight: 700 }}>Admin Dashboard</h1>
           <p className="text-[#6B7280] text-sm mt-0.5">
-            Welcome back, {user?.name?.split(' ')[0]} — Thursday, February 26, 2026
+            Welcome back, {user?.name?.split(' ')[0]} — {today}
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-2 items-center">
-          {/* Date Range */}
-          <div className="flex items-center gap-1.5 bg-white border border-[#E5E7EB] rounded-lg px-3 py-2 text-xs text-[#374151]">
-            <Calendar className="w-3.5 h-3.5 text-[#9CA3AF] shrink-0" />
-            <input
-              type="date"
-              value={dateFrom}
-              onChange={e => setDateFrom(e.target.value)}
-              className="bg-transparent outline-none text-xs text-[#374151] w-[110px]"
-            />
-            <span className="text-[#9CA3AF]">→</span>
-            <input
-              type="date"
-              value={dateTo}
-              onChange={e => setDateTo(e.target.value)}
-              className="bg-transparent outline-none text-xs text-[#374151] w-[110px]"
-            />
-          </div>
-
-          {/* Product Filter */}
-          <div className="relative flex items-center bg-white border border-[#E5E7EB] rounded-lg px-3 py-2 gap-1.5">
-            <select
-              value={selectedProduct}
-              onChange={e => setSelectedProduct(e.target.value)}
-              className="appearance-none bg-transparent outline-none text-xs text-[#374151] pr-4 cursor-pointer"
+        <div className="flex gap-2">
+          {/* Forecast alert badge */}
+          {forecastAlerts.length > 0 && (
+            <button
+              onClick={() => setShowAlert(true)}
+              className="flex items-center gap-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600 hover:bg-red-100 transition-all"
             >
-              {productOptions.map(p => (
-                <option key={p} value={p}>{p === 'All' ? 'All Products' : p}</option>
-              ))}
-            </select>
-            <ChevronDown className="w-3 h-3 text-[#9CA3AF] absolute right-2 pointer-events-none" />
-          </div>
+              <AlertCircle className="w-3.5 h-3.5" />
+              {forecastAlerts.length} Sales Alert{forecastAlerts.length > 1 ? 's' : ''}
+            </button>
+          )}
+
+          {/* Generate forecast button */}
+          <button
+            onClick={handleGenerateForecasts}
+            disabled={isGenerating}
+            className="flex items-center gap-2 px-3 py-2 bg-white border border-[#E5E7EB] rounded-lg text-xs text-[#374151] hover:bg-[#F9FAFB] transition-all disabled:opacity-50"
+          >
+            {isGenerating
+              ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Generating...</>
+              : <><TrendingUp className="w-3.5 h-3.5" /> Run Forecast</>
+            }
+          </button>
         </div>
       </div>
 
@@ -302,18 +345,16 @@ export default function AdminDashboard() {
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <KPICard
           label="Total Sales"
-          value={dashboardLoading ? '...' : String(dashboardSummary.totalSales)}
+          value={String(totalSalesCount)}
           sub="transactions in range"
           icon={ShoppingCart}
           iconBg="bg-[#FCE7F3]"
           iconColor="text-[#EC4899]"
-          trend="+8.1%"
-          trendUp
         />
         <KPICard
           label="Revenue Today"
-          value={dashboardLoading ? '...' : `₱${dashboardSummary.revenueToday.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-          sub={new Date(TODAY).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+          value={`₱${revenueToday.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+          sub="Feb 26, 2026"
           icon={DollarSign}
           iconBg="bg-[#FEF9C3]"
           iconColor="text-[#D97706]"
@@ -322,7 +363,7 @@ export default function AdminDashboard() {
         />
         <KPICard
           label="Low Stock Items"
-          value={dashboardLoading ? '...' : String(dashboardSummary.lowStockItems)}
+          value={String(lowStockProducts.length)}
           sub="need restocking"
           icon={AlertTriangle}
           iconBg="bg-red-50"
@@ -330,7 +371,7 @@ export default function AdminDashboard() {
         />
         <KPICard
           label="Scheduled Posts"
-          value={dashboardLoading ? '...' : String(dashboardSummary.scheduledPosts)}
+          value={String(scheduledPostsCount)}
           sub="upcoming content"
           icon={Calendar}
           iconBg="bg-blue-50"
@@ -338,7 +379,7 @@ export default function AdminDashboard() {
         />
         <KPICard
           label="Engagement Rate"
-          value={dashboardLoading ? '...' : `${dashboardSummary.engagementRate.toFixed(1)}%`}
+          value={`${engagementRate.toFixed(1)}%`}
           sub="avg across published"
           icon={TrendingUp}
           iconBg="bg-emerald-50"
@@ -348,13 +389,14 @@ export default function AdminDashboard() {
         />
       </div>
 
-      {/* ── Sales Trend Chart ─────────────────────────────────────────── */}
+      {/* ── Sales Trend Chart (7 days) ────────────────────────────────── */}
       <div className="bg-white rounded-xl border border-[#E5E7EB] p-5">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h3 className="text-[#111827] text-sm" style={{ fontWeight: 600 }}>Sales Trend</h3>
             <p className="text-[#9CA3AF] text-xs">
               {dateFrom} → {dateTo}
+              {selectedProduct !== 'All' && ` · ${selectedProduct}`}
             </p>
           </div>
           <div className="flex items-center gap-4 text-[10px] text-[#6B7280]">
@@ -386,7 +428,7 @@ export default function AdminDashboard() {
               tick={{ fontSize: 10, fill: '#9CA3AF' }}
               axisLine={false}
               tickLine={false}
-              tickFormatter={v => `₱${Number(v).toFixed(2)}`}
+              tickFormatter={v => `₱${v}`}
             />
             <Tooltip
               contentStyle={{ borderRadius: 8, border: '1px solid #E5E7EB', fontSize: 12, boxShadow: '0 4px 12px rgba(0,0,0,0.06)' }}
@@ -500,36 +542,27 @@ export default function AdminDashboard() {
             <div>
               <h3 className="text-[#111827] text-sm" style={{ fontWeight: 600 }}>Low Stock Alerts</h3>
               <p className="text-[#9CA3AF] text-xs">
-                {dashboardLoading
-                  ? 'Loading alerts...'
-                  : `${lowStockFiltered.length} item${lowStockFiltered.length !== 1 ? 's' : ''} need attention`}
+                {lowStockFiltered.length} item{lowStockFiltered.length !== 1 ? 's' : ''} need attention
               </p>
             </div>
-            {!dashboardLoading && lowStockFiltered.length > 0 && (
+            {lowStockFiltered.length > 0 && (
               <span className="text-[10px] px-2 py-0.5 bg-red-50 text-red-600 rounded-full border border-red-100">
                 {lowStockFiltered.length} alert{lowStockFiltered.length !== 1 ? 's' : ''}
               </span>
             )}
           </div>
           <div className="divide-y divide-[#F3F4F6]">
-            {dashboardLoading ? (
-              <p className="px-5 py-10 text-center text-xs text-[#9CA3AF]">Loading low stock alerts...</p>
-            ) : dashboardError ? (
-              <p className="px-5 py-10 text-center text-xs text-red-500">Failed to load low stock alerts</p>
-            ) : lowStockFiltered.length === 0 ? (
-              <p className="px-5 py-10 text-center text-xs text-[#9CA3AF]">No low stock alerts</p>
+            {lowStockFiltered.length === 0 ? (
+              <p className="px-5 py-10 text-center text-xs text-[#9CA3AF]">✓ All stock levels healthy</p>
             ) : lowStockFiltered.map(p => {
-              const pct = Math.max(0, Math.min(p.ratio * 100, 100));
-              const isCritical = p.status === 'critical';
-              const subtitleParts = [p.sku?.trim(), p.category?.trim()].filter(Boolean);
+              const pct       = Math.round((p.stock / p.lowStockThreshold) * 100);
+              const isCritical = p.stock <= Math.floor(p.lowStockThreshold * 0.6);
               return (
                 <div key={p.id} className="px-5 py-3.5">
                   <div className="flex items-start justify-between mb-2">
                     <div className="min-w-0">
                       <p className="text-xs text-[#111827]" style={{ fontWeight: 500 }}>{p.name}</p>
-                      <p className="text-[10px] text-[#9CA3AF] mt-0.5">
-                        {subtitleParts.length > 0 ? subtitleParts.join(' · ') : 'No SKU/category'}
-                      </p>
+                      <p className="text-[10px] text-[#9CA3AF] mt-0.5">{p.sku} · {p.category}</p>
                     </div>
                     <span className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ml-2 flex items-center gap-1 ${
                       isCritical
@@ -545,7 +578,7 @@ export default function AdminDashboard() {
                       <div
                         className="h-full rounded-full transition-all"
                         style={{
-                          width: `${pct}%`,
+                          width: `${Math.min(pct, 100)}%`,
                           backgroundColor: isCritical ? '#EF4444' : '#F59E0B',
                         }}
                       />
