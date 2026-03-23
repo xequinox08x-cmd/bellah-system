@@ -3,23 +3,16 @@ import { Calendar, Clock, Send, Trash2, CheckCircle, XCircle, AlertCircle, Refre
 import { toast } from 'sonner';
 import { api } from '../lib/api';
 
-// ── Types ────────────────────────────────────────────────────────────────────
-
-interface ScheduledPost {
+interface QueueItem {
   id: number;
-  content_id: number;
-  campaign_id: number | null;
-  scheduled_at: string;
+  title: string;
+  output: string;
   platform: string;
-  status: 'pending' | 'published' | 'failed' | 'cancelled';
-  facebook_post_id: string | null;
-  published_at: string | null;
-  error_message: string | null;
-  created_at: string;
-  content_title: string;
-  content_output: string;
-  content_hashtags: string;
-  campaign_name: string | null;
+  hashtags: string;
+  status: 'approved' | 'scheduled' | 'published' | 'failed' | 'cancelled';
+  createdAt: string;
+  scheduledAt?: string | null;
+  publishedAt?: string | null;
 }
 
 interface ApprovedContent {
@@ -30,16 +23,12 @@ interface ApprovedContent {
   hashtags: string;
 }
 
-// ── Status config ─────────────────────────────────────────────────────────────
-
 const STATUS_CONFIG = {
-  pending:   { label: 'Scheduled',  icon: Clock,         bg: 'bg-blue-50',    text: 'text-blue-600'   },
-  published: { label: 'Published',  icon: CheckCircle,   bg: 'bg-emerald-50', text: 'text-emerald-600' },
-  failed:    { label: 'Failed',     icon: XCircle,       bg: 'bg-red-50',     text: 'text-red-500'    },
-  cancelled: { label: 'Cancelled',  icon: AlertCircle,   bg: 'bg-gray-50',    text: 'text-gray-400'   },
+  scheduled: { label: 'Scheduled', icon: Clock, bg: 'bg-blue-50', text: 'text-blue-600' },
+  published: { label: 'Published', icon: CheckCircle, bg: 'bg-emerald-50', text: 'text-emerald-600' },
+  failed: { label: 'Failed', icon: XCircle, bg: 'bg-red-50', text: 'text-red-500' },
+  cancelled: { label: 'Cancelled', icon: AlertCircle, bg: 'bg-gray-50', text: 'text-gray-400' },
 } as const;
-
-// ── Schedule Modal ────────────────────────────────────────────────────────────
 
 function ScheduleModal({
   content,
@@ -50,24 +39,31 @@ function ScheduleModal({
   onClose: () => void;
   onScheduled: () => void;
 }) {
-  const [scheduledAt, setScheduledAt] = useState('');
+  const [dateValue, setDateValue] = useState('');
+  const [timeValue, setTimeValue] = useState('');
   const [platform, setPlatform] = useState(content.platform === 'instagram' ? 'facebook' : content.platform);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const minDate = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const dateTime = dateValue && timeValue ? `${dateValue}T${timeValue}` : '';
+
   const handleSubmit = async () => {
-    if (!scheduledAt) { toast.error('Please select a date and time'); return; }
-    if (new Date(scheduledAt) <= new Date()) { toast.error('Scheduled time must be in the future'); return; }
+    if (!dateValue || !timeValue) {
+      toast.error('Please select a date and time');
+      return;
+    }
+    if (new Date(dateTime) <= new Date()) {
+      toast.error('Scheduled time must be in the future');
+      return;
+    }
 
     setIsSubmitting(true);
     try {
-      const res = await api.createScheduledPost({
-        content_id: content.id,
-        scheduled_at: new Date(scheduledAt).toISOString(),
-        platform,
-      });
+      console.log('Scheduling dateTime:', dateTime);
+      const res = await api.scheduleContent(content.id, dateTime);
       if (res.error) throw new Error(res.error);
       toast.success('Post scheduled!');
-      onScheduled();
+      await onScheduled();
       onClose();
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to schedule post');
@@ -100,13 +96,21 @@ function ScheduleModal({
 
         <div>
           <label className="block text-xs text-[#374151] mb-1.5" style={{ fontWeight: 500 }}>Date & Time</label>
-          <input
-            type="datetime-local"
-            value={scheduledAt}
-            onChange={e => setScheduledAt(e.target.value)}
-            min={new Date().toISOString().slice(0, 16)}
-            className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899]"
-          />
+          <div className="grid grid-cols-2 gap-3">
+            <input
+              type="date"
+              value={dateValue}
+              onChange={e => setDateValue(e.target.value)}
+              min={minDate}
+              className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899]"
+            />
+            <input
+              type="time"
+              value={timeValue}
+              onChange={e => setTimeValue(e.target.value)}
+              className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899]"
+            />
+          </div>
         </div>
 
         <div className="flex gap-3 pt-1">
@@ -129,10 +133,8 @@ function ScheduleModal({
   );
 }
 
-// ── Main Page ─────────────────────────────────────────────────────────────────
-
 export default function Scheduling() {
-  const [posts, setPosts] = useState<ScheduledPost[]>([]);
+  const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
   const [approvedContent, setApprovedContent] = useState<ApprovedContent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -143,12 +145,40 @@ export default function Scheduling() {
     setLoading(true);
     setError(null);
     try {
-      const [postsRes, contentRes] = await Promise.all([
-        api.getScheduledPosts(),
-        api.getContent('approved'),
-      ]);
-      setPosts(postsRes.data ?? []);
-      setApprovedContent(contentRes.data ?? []);
+      const res = await api.getContent();
+      const items = Array.isArray(res.data) ? res.data : [];
+
+      const approved = items
+        .filter((item: any) => item.status === 'approved')
+        .map((item: any) => ({
+          id: Number(item.id),
+          title: String(item.title ?? 'Untitled Content'),
+          output: String(item.output ?? ''),
+          platform: String(item.platform ?? 'facebook'),
+          hashtags: String(item.hashtags ?? ''),
+        }));
+
+      const queue = items
+        .filter((item: any) => ['scheduled', 'published', 'failed'].includes(item.status))
+        .map((item: any) => ({
+          id: Number(item.id),
+          title: String(item.title ?? 'Untitled Content'),
+          output: String(item.output ?? ''),
+          platform: String(item.platform ?? 'facebook'),
+          hashtags: String(item.hashtags ?? ''),
+          status: item.status as QueueItem['status'],
+          createdAt: String(item.createdAt),
+          scheduledAt: item.scheduledAt ? String(item.scheduledAt) : null,
+          publishedAt: item.publishedAt ? String(item.publishedAt) : null,
+        }))
+        .sort((a, b) => {
+          const aDate = a.scheduledAt ?? a.publishedAt ?? a.createdAt;
+          const bDate = b.scheduledAt ?? b.publishedAt ?? b.createdAt;
+          return bDate.localeCompare(aDate);
+        });
+
+      setApprovedContent(approved);
+      setQueueItems(queue);
     } catch {
       setError('Failed to load scheduling data');
     } finally {
@@ -156,14 +186,13 @@ export default function Scheduling() {
     }
   };
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => { void loadData(); }, []);
 
   const handleCancel = async (id: number) => {
     try {
-      const res = await api.deleteScheduledPost(id);
-      if (res.error) throw new Error(res.error);
+      await api.updateContentStatus(id, 'cancelled');
       toast.success('Post cancelled');
-      loadData();
+      await loadData();
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to cancel post');
     }
@@ -171,22 +200,24 @@ export default function Scheduling() {
 
   const handleMarkPublished = async (id: number) => {
     try {
-      const res = await api.updatePostStatus(id, 'published');
-      if (res.error) throw new Error(res.error);
+      await api.updateContentStatus(id, 'published');
       toast.success('Marked as published');
-      loadData();
+      await loadData();
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to update status');
     }
   };
 
-  const filteredPosts = activeTab === 'all' ? posts : posts.filter(p => p.status === activeTab);
+  const filteredPosts = activeTab === 'all'
+    ? queueItems
+    : activeTab === 'pending'
+    ? queueItems.filter(item => item.status === 'scheduled')
+    : queueItems.filter(item => item.status === activeTab);
 
-  // Summary counts
   const counts = {
-    pending:   posts.filter(p => p.status === 'pending').length,
-    published: posts.filter(p => p.status === 'published').length,
-    failed:    posts.filter(p => p.status === 'failed').length,
+    scheduled: queueItems.filter(item => item.status === 'scheduled').length,
+    published: queueItems.filter(item => item.status === 'published').length,
+    failed: queueItems.filter(item => item.status === 'failed').length,
   };
 
   return (
@@ -196,12 +227,11 @@ export default function Scheduling() {
         <p className="text-[#6B7280] text-sm">Schedule and manage your Facebook posts</p>
       </div>
 
-      {/* Summary cards */}
       <div className="grid grid-cols-3 gap-4">
         {[
-          { label: 'Scheduled', count: counts.pending,   color: 'text-blue-600',    bg: 'bg-blue-50'    },
-          { label: 'Published', count: counts.published, color: 'text-emerald-600', bg: 'bg-emerald-50' },
-          { label: 'Failed',    count: counts.failed,    color: 'text-red-500',     bg: 'bg-red-50'     },
+          { label: 'Scheduled', count: counts.scheduled, color: 'text-blue-600' },
+          { label: 'Published', count: counts.published, color: 'text-emerald-600' },
+          { label: 'Failed', count: counts.failed, color: 'text-red-500' },
         ].map(card => (
           <div key={card.label} className="bg-white rounded-xl border border-[#E5E7EB] p-4">
             <p className="text-xs text-[#6B7280]">{card.label}</p>
@@ -211,8 +241,6 @@ export default function Scheduling() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-
-        {/* Approved content — pick to schedule */}
         <div className="bg-white rounded-xl border border-[#E5E7EB]">
           <div className="px-5 py-4 border-b border-[#E5E7EB]">
             <h3 className="text-[#111827] text-sm" style={{ fontWeight: 600 }}>Approved Content</h3>
@@ -220,9 +248,7 @@ export default function Scheduling() {
           </div>
           <div className="divide-y divide-[#F3F4F6] max-h-[500px] overflow-y-auto">
             {approvedContent.length === 0 && (
-              <div className="py-10 text-center text-[#9CA3AF] text-sm">
-                No approved content yet
-              </div>
+              <div className="py-10 text-center text-[#9CA3AF] text-sm">No approved content yet</div>
             )}
             {approvedContent.map(item => (
               <div
@@ -246,7 +272,6 @@ export default function Scheduling() {
           </div>
         </div>
 
-        {/* Scheduled posts list */}
         <div className="lg:col-span-2 bg-white rounded-xl border border-[#E5E7EB]">
           <div className="px-5 py-4 border-b border-[#E5E7EB] flex items-center justify-between">
             <h3 className="text-[#111827] text-sm" style={{ fontWeight: 600 }}>Posts Queue</h3>
@@ -272,8 +297,10 @@ export default function Scheduling() {
               <div className="py-12 text-center text-[#9CA3AF] text-sm">No posts here yet</div>
             )}
             {!loading && !error && filteredPosts.map(post => {
-              const cfg = STATUS_CONFIG[post.status] ?? STATUS_CONFIG.pending;
+              const cfg = STATUS_CONFIG[post.status] ?? STATUS_CONFIG.scheduled;
               const Icon = cfg.icon;
+              const displayDate = post.scheduledAt ?? post.publishedAt ?? post.createdAt;
+
               return (
                 <div key={post.id} className="px-5 py-4 flex items-start gap-4">
                   <div className={`w-8 h-8 rounded-lg ${cfg.bg} flex items-center justify-center shrink-0 mt-0.5`}>
@@ -282,18 +309,17 @@ export default function Scheduling() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>{post.content_title}</p>
+                        <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>{post.title}</p>
                         <p className="text-xs text-[#9CA3AF] mt-0.5 flex items-center gap-1">
                           <Calendar className="w-3 h-3" />
-                          {new Date(post.scheduled_at).toLocaleString()}
-                          {post.campaign_name && <span className="ml-1">· {post.campaign_name}</span>}
+                          {new Date(displayDate).toLocaleString()}
                         </p>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         <span className={`text-[10px] px-2 py-0.5 rounded-full ${cfg.bg} ${cfg.text}`}>
                           {cfg.label}
                         </span>
-                        {post.status === 'pending' && (
+                        {post.status === 'scheduled' && (
                           <>
                             <button
                               onClick={() => handleMarkPublished(post.id)}
@@ -313,10 +339,7 @@ export default function Scheduling() {
                         )}
                       </div>
                     </div>
-                    <p className="text-xs text-[#6B7280] mt-1.5 line-clamp-1">{post.content_output}</p>
-                    {post.error_message && (
-                      <p className="text-xs text-red-500 mt-1">Error: {post.error_message}</p>
-                    )}
+                    <p className="text-xs text-[#6B7280] mt-1.5 line-clamp-1">{post.output}</p>
                   </div>
                 </div>
               );
@@ -325,7 +348,6 @@ export default function Scheduling() {
         </div>
       </div>
 
-      {/* Schedule modal */}
       {selectedContent && (
         <ScheduleModal
           content={selectedContent}

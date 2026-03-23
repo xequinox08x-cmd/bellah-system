@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { CheckCircle, XCircle, Clock, Calendar, X, Eye } from 'lucide-react';
+import { CheckCircle, XCircle, Clock, Calendar, X, Eye, Trash2, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../components/AuthContext';
 import { Navigate } from 'react-router';
 import { toast } from 'sonner';
@@ -40,11 +40,13 @@ function ContentCard({
   onApprove,
   onReject,
   onView,
+  onDelete,
 }: {
   item: ContentItem;
   onApprove: (id: number) => void;
   onReject: (item: ContentItem) => void;
   onView: (item: ContentItem) => void;
+  onDelete: (item: ContentItem) => void;
 }) {
   const plat = PLATFORM_BADGE[item.platform] ?? { label: item.platform, className: 'bg-gray-100 text-gray-500' };
 
@@ -116,6 +118,13 @@ function ContentCard({
             </button>
           </>
         )}
+
+        <button
+          onClick={() => onDelete(item)}
+          className="flex items-center gap-1.5 px-3 py-1.5 border border-red-200 bg-red-50 text-red-600 rounded-lg text-xs hover:bg-red-100 transition-all"
+        >
+          <Trash2 className="w-3.5 h-3.5" /> Delete
+        </button>
       </div>
     </div>
   );
@@ -175,6 +184,60 @@ function RejectModal({
               className="flex-1 py-2.5 bg-red-500 text-white rounded-lg text-sm hover:bg-red-600 transition-all"
             >
               Confirm Rejection
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeleteModal({
+  item,
+  deleting,
+  onConfirm,
+  onClose,
+}: {
+  item: ContentItem;
+  deleting: boolean;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[#E5E7EB]">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-full bg-red-50 flex items-center justify-center">
+              <AlertTriangle className="w-4 h-4 text-red-500" />
+            </div>
+            <h2 className="text-[#111827] text-base" style={{ fontWeight: 600 }}>Delete Content</h2>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-[#F9FAFB]" disabled={deleting}>
+            <X className="w-4 h-4 text-[#6B7280]" />
+          </button>
+        </div>
+        <div className="p-6 space-y-4">
+          <p className="text-sm text-[#374151]">
+            Are you sure you want to permanently delete this content?
+          </p>
+          <div className="p-3 bg-[#F9FAFB] rounded-lg">
+            <p className="text-xs text-[#374151]" style={{ fontWeight: 500 }}>{item.title ?? 'Untitled'}</p>
+          </div>
+          <div className="flex gap-3">
+            <button
+              onClick={onClose}
+              disabled={deleting}
+              className="flex-1 py-2.5 border border-[#E5E7EB] rounded-lg text-sm text-[#6B7280] hover:bg-[#F9FAFB] transition-all disabled:opacity-60"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={onConfirm}
+              disabled={deleting}
+              className="flex-1 py-2.5 bg-red-500 text-white rounded-lg text-sm hover:bg-red-600 transition-all disabled:opacity-60"
+            >
+              {deleting ? 'Deleting...' : 'Delete Permanently'}
             </button>
           </div>
         </div>
@@ -243,6 +306,8 @@ export default function ContentApproval() {
   const [activeTab, setActiveTab] = useState<ContentStatus | 'all'>('draft');
   const [rejectItem, setRejectItem] = useState<ContentItem | null>(null);
   const [viewItem, setViewItem] = useState<ContentItem | null>(null);
+  const [deleteItem, setDeleteItem] = useState<ContentItem | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // ── Redirect non-admins ─────────────────────────────────────────────────────
   // Staff should never see this page
@@ -274,6 +339,7 @@ export default function ContentApproval() {
       const res = await api.updateContentStatus(id, 'approved');
       if (res.error) throw new Error(res.error);
       toast.success('Content approved!');
+      window.dispatchEvent(new Event('ai-content-updated'));
       loadContent(); // reload list so the status updates immediately
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to approve content');
@@ -291,9 +357,27 @@ export default function ContentApproval() {
       if (res.error) throw new Error(res.error);
       toast.success('Content rejected.');
       setRejectItem(null);
+      window.dispatchEvent(new Event('ai-content-updated'));
       loadContent(); // reload list so the status updates immediately
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to reject content');
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteItem || user?.role !== 'admin') return;
+
+    setIsDeleting(true);
+    try {
+      await api.deleteContent(deleteItem.id, user.role);
+      toast.success('Content deleted permanently.');
+      setDeleteItem(null);
+      setContentItems(prev => prev.filter(item => item.id !== deleteItem.id));
+      window.dispatchEvent(new Event('ai-content-updated'));
+    } catch (err: unknown) {
+      toast.error((err as Error).message || 'Failed to delete content');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -404,6 +488,7 @@ export default function ContentApproval() {
               onApprove={handleApprove}
               onReject={setRejectItem}
               onView={setViewItem}
+              onDelete={setDeleteItem}
             />
           ))}
         </div>
@@ -421,6 +506,16 @@ export default function ContentApproval() {
         <ViewModal
           item={viewItem}
           onClose={() => setViewItem(null)}
+        />
+      )}
+      {deleteItem && (
+        <DeleteModal
+          item={deleteItem}
+          deleting={isDeleting}
+          onConfirm={handleDelete}
+          onClose={() => {
+            if (!isDeleting) setDeleteItem(null);
+          }}
         />
       )}
     </div>
