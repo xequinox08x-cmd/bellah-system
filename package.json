@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "concurrently -n WEB,API \"pnpm --filter web dev\" \"pnpm --filter api dev\"",
+    "migrate": "pnpm --filter api migrate",
     "test": "pnpm --filter api test",
     "test:watch": "pnpm --filter api test:watch",
     "build": "pnpm --filter web build",

@@ -280,12 +280,12 @@ export default function Products() {
   };
 
   const handleDelete = async (id: number, name: string) => {
-    if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
+    if (!confirm(`Remove "${name}" from inventory? Products already used in sales will be archived instead.`)) return;
 
     try {
-      await apiDeleteProduct(id);
-      setProducts(prev => prev.filter(p => p.id !== id));
-      toast.success('Product deleted');
+      const result = await apiDeleteProduct(id);
+      await refresh();
+      toast.success(result.message);
     } catch (e: any) {
       toast.error(e.message || "Failed to delete product");
     }

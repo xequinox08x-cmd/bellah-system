@@ -2,6 +2,9 @@ import { productsRouter } from './routes/products';
 import { salesRouter } from './routes/sales';
 import { dashboardRouter } from './routes/dashboard';
 import forecastsRouter from './routes/forecasts';
+import { aiRouter } from './routes/ai';
+import { analyticsRouter } from './routes/analytics';
+import { facebookRouter } from './routes/facebook';
 import express from 'express';
 import cors from 'cors';
 import { healthRouter } from './routes/health';
@@ -18,6 +21,9 @@ export function createApp() {
   app.use("/api/sales", salesRouter);
   app.use(dashboardRouter);
   app.use("/api/forecasts", forecastsRouter);
+  app.use("/api/ai", aiRouter);
+  app.use("/api/facebook", facebookRouter);
+  app.use("/api/analytics", analyticsRouter);
 
   app.get("/", (_req, res) => {
     res.send("API is running");

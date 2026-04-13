@@ -6,8 +6,8 @@ import {
   Shield, Users, ChevronDown, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import { useAuth } from './AuthContext';
-import { useStore } from '../data/store';
 import { toast } from 'sonner@2.0.3';
+import { api } from '../lib/api';
 
 // ─── Logo ─────────────────────────────────────────────────────────────────────
 function BLogo({ size = 30 }: { size?: number }) {
@@ -79,7 +79,6 @@ function NavItem({
 // ─── Sidebar ───────────────────────────────────────────────────────────────────
 export function Sidebar() {
   const { user, logout } = useAuth();
-  const { contentItems } = useStore();
   const navigate   = useNavigate();
   const location   = useLocation();
 
@@ -93,6 +92,7 @@ export function Sidebar() {
     p => location.pathname.startsWith(p)
   );
   const [marketingOpen, setMarketingOpen] = useState(isOnMarketing);
+  const [approvalDraftCount, setApprovalDraftCount] = useState(0);
 
   useEffect(() => {
     localStorage.setItem('bb_sidebar_collapsed', String(collapsed));
@@ -102,8 +102,39 @@ export function Sidebar() {
     if (isOnMarketing) setMarketingOpen(true);
   }, [location.pathname, isOnMarketing]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadApprovalCount = async () => {
+      if (user?.role !== 'admin') {
+        setApprovalDraftCount(0);
+        return;
+      }
+
+      try {
+        const res = await api.getContent();
+        if (cancelled) return;
+
+        const items = Array.isArray(res?.data) ? res.data : [];
+        setApprovalDraftCount(items.filter((item: { status?: string }) => item.status === 'draft').length);
+      } catch {
+        if (!cancelled) setApprovalDraftCount(0);
+      }
+    };
+
+    loadApprovalCount();
+    const handleContentUpdated = () => {
+      loadApprovalCount();
+    };
+    window.addEventListener('ai-content-updated', handleContentUpdated);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('ai-content-updated', handleContentUpdated);
+    };
+  }, [user?.role, location.pathname]);
+
   const isAdmin       = user?.role === 'admin';
-  const pendingCount  = contentItems.filter(c => c.status === 'pending').length;
+  const draftCount    = approvalDraftCount;
 
   const handleLogout = () => {
     logout();
@@ -203,9 +234,9 @@ export function Sidebar() {
                 {isAdmin && (
                   <NavLink to="/approvals" className={subNavClass}>
                     Content Approvals
-                    {pendingCount > 0 && (
+                    {draftCount > 0 && (
                       <span className="ml-auto text-[9px] px-1.5 py-0.5 bg-[#EC4899] text-white rounded-full shrink-0">
-                        {pendingCount}
+                        {draftCount}
                       </span>
                     )}
                   </NavLink>
@@ -223,7 +254,7 @@ export function Sidebar() {
               title="Marketing"
             >
               <Sparkles className="w-4 h-4 shrink-0" />
-              {pendingCount > 0 && (
+              {draftCount > 0 && (
                 <span className="absolute top-1 right-1 w-2 h-2 bg-[#EC4899] rounded-full" />
               )}
             </NavLink>

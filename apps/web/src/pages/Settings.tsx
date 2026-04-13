@@ -1,6 +1,7 @@
-import { useState } from 'react';
-import { User, Bell, Shield, Palette, Save, Check } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { User, Bell, Shield, Palette, Save, Check, Link2, RefreshCw, AlertCircle } from 'lucide-react';
 import { useAuth } from '../components/AuthContext';
+import { api } from '../lib/api';
 import { toast } from 'sonner@2.0.3';
 
 type Section = 'profile' | 'notifications' | 'security' | 'appearance';
@@ -25,10 +26,34 @@ function Toggle({ enabled, onChange }: { enabled: boolean; onChange: (v: boolean
   );
 }
 
+type FacebookStatus = {
+  valid: boolean;
+  state: 'connected' | 'expired' | 'invalid' | 'missing_config';
+  pageId: string | null;
+  pageName: string | null;
+  error: string | null;
+  expiresAt: string | null;
+  tokenUpdatedAt: string | null;
+  tokenExpiresAt: string | null;
+  lastKnownSync: {
+    contentId: number | null;
+    facebookPostId: string | null;
+    syncedAt: string | null;
+  };
+};
+
+function formatDateTime(value: string | null) {
+  return value ? new Date(value).toLocaleString() : 'Not available';
+}
+
 export default function Settings() {
   const { user } = useAuth();
   const [activeSection, setActiveSection] = useState<Section>('profile');
   const [saved, setSaved] = useState(false);
+  const [facebookStatus, setFacebookStatus] = useState<FacebookStatus | null>(null);
+  const [facebookStatusLoading, setFacebookStatusLoading] = useState(false);
+  const [facebookStatusError, setFacebookStatusError] = useState<string | null>(null);
+  const [facebookStatusRefreshKey, setFacebookStatusRefreshKey] = useState(0);
 
   const [profile, setProfile] = useState({
     name: user?.name || '',
@@ -51,6 +76,56 @@ export default function Settings() {
     toast.success('Settings saved successfully');
     setTimeout(() => setSaved(false), 2000);
   };
+
+  useEffect(() => {
+    if (activeSection !== 'security' || user?.role !== 'admin') return;
+
+    let active = true;
+
+    async function loadFacebookStatus() {
+      setFacebookStatusLoading(true);
+      setFacebookStatusError(null);
+
+      try {
+        const response = await api.getFacebookStatus();
+        if (!active) return;
+        setFacebookStatus(response.data as FacebookStatus);
+      } catch (error: any) {
+        if (!active) return;
+        setFacebookStatus(null);
+        setFacebookStatusError(error?.message || 'Failed to load Facebook status');
+      } finally {
+        if (active) {
+          setFacebookStatusLoading(false);
+        }
+      }
+    }
+
+    loadFacebookStatus();
+
+    return () => {
+      active = false;
+    };
+  }, [activeSection, user?.role, facebookStatusRefreshKey]);
+
+  const canShowFacebookStatus = activeSection === 'security' && user?.role === 'admin';
+  const facebookState = facebookStatus?.state ?? 'missing_config';
+  const facebookStateClasses =
+    facebookState === 'connected'
+      ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+      : facebookState === 'expired'
+      ? 'bg-amber-50 border-amber-200 text-amber-700'
+      : facebookState === 'invalid'
+      ? 'bg-red-50 border-red-200 text-red-700'
+      : 'bg-gray-50 border-gray-200 text-gray-700';
+  const facebookStateLabel =
+    facebookState === 'connected'
+      ? 'Connected'
+      : facebookState === 'expired'
+      ? 'Expired'
+      : facebookState === 'invalid'
+      ? 'Invalid'
+      : 'Missing token';
 
   return (
     <div className="max-w-4xl mx-auto space-y-5">
@@ -207,6 +282,92 @@ export default function Settings() {
                   Update Password
                 </button>
               </div>
+
+              {canShowFacebookStatus && (
+                <div className="bg-white rounded-xl border border-[#E5E7EB] p-6 space-y-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h2 className="text-[#111827] text-base" style={{ fontWeight: 600 }}>Facebook Connection</h2>
+                      <p className="text-xs text-[#9CA3AF]">Backend-only token health for manual sync and analytics</p>
+                    </div>
+                    <button
+                      onClick={() => setFacebookStatusRefreshKey((value) => value + 1)}
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-[#E5E7EB] text-xs text-[#374151] hover:bg-[#F9FAFB] transition-all"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      Refresh
+                    </button>
+                  </div>
+
+                  {facebookStatusError && (
+                    <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                      <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                      <span>{facebookStatusError}</span>
+                    </div>
+                  )}
+
+                  {facebookStatusLoading ? (
+                    <div className="rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3 text-sm text-[#6B7280]">
+                      Checking Facebook connection...
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className={`rounded-xl border px-4 py-3 ${facebookStateClasses}`}>
+                        <div className="flex items-center gap-2">
+                          {facebookState === 'connected' ? (
+                            <Check className="w-4 h-4" />
+                          ) : (
+                            <AlertCircle className="w-4 h-4" />
+                          )}
+                          <span className="text-sm" style={{ fontWeight: 600 }}>{facebookStateLabel}</span>
+                        </div>
+                        <p className="text-xs mt-1">
+                          {facebookStatus?.error || 'Facebook page access token is active and ready for sync.'}
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3">
+                          <div className="flex items-center gap-2 mb-1">
+                            <Link2 className="w-4 h-4 text-[#6B7280]" />
+                            <p className="text-xs text-[#6B7280]">Facebook Page</p>
+                          </div>
+                          <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>
+                            {facebookStatus?.pageName || facebookStatus?.pageId || 'Not configured'}
+                          </p>
+                        </div>
+
+                        <div className="rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3">
+                          <p className="text-xs text-[#6B7280] mb-1">Last Known Sync</p>
+                          <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>
+                            {formatDateTime(facebookStatus?.lastKnownSync?.syncedAt ?? null)}
+                          </p>
+                        </div>
+
+                        <div className="rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3">
+                          <p className="text-xs text-[#6B7280] mb-1">Token Updated</p>
+                          <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>
+                            {formatDateTime(facebookStatus?.tokenUpdatedAt ?? null)}
+                          </p>
+                        </div>
+
+                        <div className="rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3">
+                          <p className="text-xs text-[#6B7280] mb-1">Token Expires</p>
+                          <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>
+                            {formatDateTime(facebookStatus?.expiresAt ?? facebookStatus?.tokenExpiresAt ?? null)}
+                          </p>
+                        </div>
+                      </div>
+
+                      {!facebookStatus?.valid && (
+                        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                          Reconnect Facebook or refresh the page access token in the backend env.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

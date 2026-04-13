@@ -5,6 +5,9 @@ export interface ContentItem {
     output: string;
     platform: string;
     hashtags: string;
-    status: 'draft' | 'approved' | 'rejected';
+    outputMode?: string;
+    referenceImageUrl?: string | null;
+    generatedImageUrl?: string | null;
+    status: 'draft' | 'pending' | 'approved' | 'rejected' | 'scheduled' | 'published';
     createdAt: string;
 }

@@ -293,6 +293,7 @@ export default function AIMarketing() {
         setFeedItems(Array.isArray(feed.data) ? feed.data : []);
       } catch {}
 
+      window.dispatchEvent(new Event('ai-content-updated'));
       toast.success('Content submitted for approval!');
       setGeneratedContentId(null);
       setGenerated(null);

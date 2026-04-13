@@ -9,8 +9,6 @@ type SaleRequestBody = {
   staffEmail?: string;
   createdBy?: number | string;
   created_by?: number | string;
-  createdByClerkId?: string;
-  created_by_clerk_id?: string;
   discountType?: "%" | "PHP" | string;
   discountValue?: number | string;
   items?: Array<{
@@ -21,7 +19,7 @@ type SaleRequestBody = {
 };
 
 let salesSchemaReady = false;
-let salesSchemaPromise: Promise<void> | null = null;
+let salesSchemaPromise: Promise<void> | null = null;   
 
 function ensureSalesSchema() {
   if (salesSchemaReady) return Promise.resolve();
@@ -46,16 +44,15 @@ function ensureSalesSchema() {
 async function ensureDevAdminUser(client: any): Promise<number> {
   const upsert = await client.query(
     `
-    INSERT INTO users (clerk_id, name, email, role)
-    VALUES ($1, $2, $3, $4)
-    ON CONFLICT (clerk_id)
+    INSERT INTO users (name, email, role)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (email)
     DO UPDATE SET
       name = EXCLUDED.name,
-      email = EXCLUDED.email,
       role = EXCLUDED.role
     RETURNING id
     `,
-    ["admin_001", "Admin User", "admin@bellah.test", "admin"]
+    ["Admin User", "admin@bellah.test", "admin"]
   );
 
   return Number(upsert.rows[0].id);
@@ -64,18 +61,11 @@ async function ensureDevAdminUser(client: any): Promise<number> {
 async function resolveCreatedBy(
   client: any,
   body: SaleRequestBody
-): Promise<{ id: number; source: "id" | "clerk_id" | "email" | "dev_admin" }> {
+): Promise<{ id: number; source: "id" | "email" | "dev_admin" }> {
   const createdByNum = Number(body.createdBy ?? body.created_by);
   if (Number.isFinite(createdByNum) && createdByNum > 0) {
     const byId = await client.query(`SELECT id FROM users WHERE id = $1`, [createdByNum]);
     if (byId.rows.length) return { id: createdByNum, source: "id" };
-  }
-
-  const clerkIdRaw = body.createdByClerkId ?? body.created_by_clerk_id;
-  const clerkId = typeof clerkIdRaw === "string" ? clerkIdRaw.trim() : "";
-  if (clerkId) {
-    const byClerk = await client.query(`SELECT id FROM users WHERE clerk_id = $1`, [clerkId]);
-    if (byClerk.rows.length) return { id: Number(byClerk.rows[0].id), source: "clerk_id" };
   }
 
   const staffEmail = typeof body.staffEmail === "string" ? body.staffEmail.trim() : "";

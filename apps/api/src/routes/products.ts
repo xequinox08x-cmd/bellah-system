@@ -28,7 +28,7 @@ productsRouter.get("/", async (req, res) => {
     const category = typeof req.query.category === "string" ? req.query.category.trim() : "";
     const lowStock = req.query.lowStock === "true";
 
-    const where: string[] = [];
+    const where: string[] = [`is_active = TRUE`];
     const params: unknown[] = [];
 
     if (search) {
@@ -240,17 +240,92 @@ productsRouter.patch("/:id/stock", async (req, res) => {
 productsRouter.delete("/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    if (!Number.isFinite(id) || id <= 0) {
+    if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ ok: false, data: null, message: "Invalid id" });
     }
 
-    const result = await pool.query("DELETE FROM products WHERE id = $1 RETURNING id", [id]);
-    if (!result.rows.length) {
+    const existingProduct = await pool.query(
+      "SELECT id FROM products WHERE id = $1",
+      [id]
+    );
+
+    if (!existingProduct.rows.length) {
       return res.status(404).json({ ok: false, data: null, message: "Product not found" });
     }
 
-    res.json({ ok: true, data: { deletedId: result.rows[0].id }, message: null });
+    const salesUsage = await pool.query(
+      "SELECT 1 FROM sale_items WHERE product_id = $1 LIMIT 1",
+      [id]
+    );
+
+    if (salesUsage.rows.length > 0) {
+      const archivedProduct = await pool.query(
+        `
+        UPDATE products
+        SET is_active = FALSE, updated_at = NOW()
+        WHERE id = $1
+        RETURNING id
+        `,
+        [id]
+      );
+
+      if (!archivedProduct.rows.length) {
+        return res.status(404).json({ ok: false, data: null, message: "Product not found" });
+      }
+
+      return res.json({
+        ok: true,
+        data: { id: archivedProduct.rows[0].id, action: "archived" },
+        message: "Product archived because it already exists in sales records.",
+      });
+    }
+
+    try {
+      const deletedProduct = await pool.query(
+        "DELETE FROM products WHERE id = $1 RETURNING id",
+        [id]
+      );
+
+      if (!deletedProduct.rows.length) {
+        return res.status(404).json({ ok: false, data: null, message: "Product not found" });
+      }
+
+      return res.json({
+        ok: true,
+        data: { id: deletedProduct.rows[0].id, action: "deleted" },
+        message: "Product deleted successfully.",
+      });
+    } catch (e: any) {
+      if (e?.code === "23503") {
+        const archivedProduct = await pool.query(
+          `
+          UPDATE products
+          SET is_active = FALSE, updated_at = NOW()
+          WHERE id = $1
+          RETURNING id
+          `,
+          [id]
+        );
+
+        if (!archivedProduct.rows.length) {
+          return res.status(404).json({ ok: false, data: null, message: "Product not found" });
+        }
+
+        return res.json({
+          ok: true,
+          data: { id: archivedProduct.rows[0].id, action: "archived" },
+          message: "Product archived because it already exists in sales records.",
+        });
+      }
+
+      throw e;
+    }
   } catch (e: any) {
-    res.status(500).json({ ok: false, data: null, message: e.message || "Failed to delete product" });
+    console.error("[DELETE /api/products/:id] Failed to remove product", e);
+    res.status(500).json({
+      ok: false,
+      data: null,
+      message: "Failed to remove product. Please try again.",
+    });
   }
 });

@@ -171,7 +171,8 @@ dashboardRouter.get("/api/dashboard/summary", async (req, res) => {
            WHERE created_at::date = CURRENT_DATE) AS revenue_today,
           (SELECT COUNT(*)::int
            FROM products
-           WHERE low_stock_threshold IS NOT NULL
+           WHERE is_active = TRUE
+             AND low_stock_threshold IS NOT NULL
              AND low_stock_threshold > 0
              AND stock <= low_stock_threshold) AS low_stock_items
         `,
@@ -221,7 +222,8 @@ dashboardRouter.get("/api/dashboard/summary", async (req, res) => {
           stock,
           low_stock_threshold
         FROM products
-        WHERE low_stock_threshold IS NOT NULL
+        WHERE is_active = TRUE
+          AND low_stock_threshold IS NOT NULL
           AND low_stock_threshold > 0
           AND stock <= low_stock_threshold
         ORDER BY stock ASC, name ASC

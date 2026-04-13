@@ -8,8 +8,7 @@ import { ContentItem } from '../types/content';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-// All possible statuses a content item can have
-type ContentStatus = 'draft' | 'approved' | 'rejected' | 'scheduled' | 'published' | 'pending';
+type ReviewStatus = 'pending' | 'approved' | 'rejected';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -19,18 +18,42 @@ const PLATFORM_BADGE: Record<string, { label: string; className: string }> = {
   both: { label: 'IG + FB', className: 'bg-purple-100 text-purple-600' },
 };
 
-const STATUS_TABS: { key: ContentStatus | 'all'; label: string }[] = [
+const STATUS_TABS: { key: ReviewStatus | 'all'; label: string }[] = [
   { key: 'all', label: 'All' },
-  { key: 'draft', label: 'Draft' },
+  { key: 'pending', label: 'Pending' },
   { key: 'approved', label: 'Approved' },
   { key: 'rejected', label: 'Rejected' },
 ];
 
 const STATUS_CARD_CONFIG: Record<string, { bg: string; text: string }> = {
-  draft: { bg: 'bg-gray-50 border-gray-200', text: 'text-gray-500' },
+  pending: { bg: 'bg-amber-50 border-amber-200', text: 'text-amber-600' },
   approved: { bg: 'bg-emerald-50 border-emerald-200', text: 'text-emerald-600' },
   rejected: { bg: 'bg-red-50 border-red-200', text: 'text-red-500' },
 };
+
+const STATUS_BADGE_CLASS: Record<ContentItem['status'], string> = {
+  draft: 'bg-gray-50 text-gray-500',
+  pending: 'bg-amber-50 text-amber-600',
+  approved: 'bg-emerald-50 text-emerald-600',
+  rejected: 'bg-red-50 text-red-500',
+  scheduled: 'bg-blue-50 text-blue-600',
+  published: 'bg-purple-50 text-purple-600',
+};
+
+function formatCardTimestamp(value: string) {
+  const parsed = new Date(value);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return parsed.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
 
 // ─── Content Card ─────────────────────────────────────────────────────────────
 // This is the card shown for each content item in the grid
@@ -60,9 +83,7 @@ function ContentCard({
             {item.title ?? 'Untitled'}
           </p>
           <p className="text-xs text-[#9CA3AF] mt-0.5">
-            {new Date(item.createdAt).toLocaleDateString('en-US', {
-              month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-            })}
+            {formatCardTimestamp(item.createdAt)}
           </p>
         </div>
         <span className={`text-[10px] px-2 py-1 rounded-full shrink-0 ${plat.className}`}>
@@ -83,10 +104,7 @@ function ContentCard({
 
       {/* Status badge */}
       <div className="flex items-center gap-2">
-        <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium
-          ${item.status === 'approved' ? 'bg-emerald-50 text-emerald-600' :
-            item.status === 'rejected' ? 'bg-red-50 text-red-500' :
-              'bg-gray-50 text-gray-500'}`}>
+        <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${STATUS_BADGE_CLASS[item.status]}`}>
           {item.status.charAt(0).toUpperCase() + item.status.slice(1)}
         </span>
       </div>
@@ -102,7 +120,7 @@ function ContentCard({
         </button>
 
         {/* Approve and Reject buttons — only shown for drafts */}
-        {item.status === 'draft' && (
+        {item.status === 'pending' && (
           <>
             <button
               onClick={() => onApprove(item.id)}
@@ -285,7 +303,7 @@ function ViewModal({ item, onClose }: { item: ContentItem; onClose: () => void }
           </div>
 
           <div className="text-xs text-[#9CA3AF] space-y-1">
-            <p>Created: {new Date(item.createdAt).toLocaleString()}</p>
+            <p>Created: {formatCardTimestamp(item.createdAt)}</p>
             <p>Status: <span className="capitalize">{item.status}</span></p>
           </div>
         </div>
@@ -303,7 +321,7 @@ export default function ContentApproval() {
   const [contentItems, setContentItems] = useState<ContentItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<ContentStatus | 'all'>('draft');
+  const [activeTab, setActiveTab] = useState<ReviewStatus | 'all'>('pending');
   const [rejectItem, setRejectItem] = useState<ContentItem | null>(null);
   const [viewItem, setViewItem] = useState<ContentItem | null>(null);
   const [deleteItem, setDeleteItem] = useState<ContentItem | null>(null);
@@ -321,8 +339,7 @@ export default function ContentApproval() {
     setError(null);
     try {
       const res = await api.getContent();
-      if (res.error) throw new Error(res.error);
-      setContentItems(res.data);
+      setContentItems(Array.isArray(res.data) ? res.data : []);
     } catch {
       setError('Failed to load content');
     } finally {
@@ -330,7 +347,19 @@ export default function ContentApproval() {
     }
   };
 
-  useEffect(() => { loadContent(); }, []);
+  useEffect(() => {
+    void loadContent();
+
+    const handleContentUpdated = () => {
+      void loadContent();
+    };
+
+    window.addEventListener('ai-content-updated', handleContentUpdated);
+
+    return () => {
+      window.removeEventListener('ai-content-updated', handleContentUpdated);
+    };
+  }, []);
 
   // ── Approve ─────────────────────────────────────────────────────────────────
   // Calls PATCH /api/ai-content/:id/status with status = 'approved'
@@ -340,7 +369,7 @@ export default function ContentApproval() {
       if (res.error) throw new Error(res.error);
       toast.success('Content approved!');
       window.dispatchEvent(new Event('ai-content-updated'));
-      loadContent(); // reload list so the status updates immediately
+      void loadContent();
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to approve content');
     }
@@ -358,7 +387,7 @@ export default function ContentApproval() {
       toast.success('Content rejected.');
       setRejectItem(null);
       window.dispatchEvent(new Event('ai-content-updated'));
-      loadContent(); // reload list so the status updates immediately
+      void loadContent();
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to reject content');
     }
@@ -388,7 +417,7 @@ export default function ContentApproval() {
 
   // Count per status for the summary cards and tab badges
   const counts = {
-    draft: contentItems.filter(c => c.status === 'draft').length,
+    pending: contentItems.filter(c => c.status === 'pending').length,
     approved: contentItems.filter(c => c.status === 'approved').length,
     rejected: contentItems.filter(c => c.status === 'rejected').length,
   };
@@ -403,11 +432,11 @@ export default function ContentApproval() {
           <h1 className="text-[#111827] text-xl" style={{ fontWeight: 700 }}>Content Approvals</h1>
           <p className="text-[#6B7280] text-sm">Review and approve marketing content before publishing</p>
         </div>
-        {counts.draft > 0 && (
+        {counts.pending > 0 && (
           <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 border border-amber-200 rounded-xl">
             <Clock className="w-4 h-4 text-amber-600" />
             <span className="text-sm text-amber-700" style={{ fontWeight: 500 }}>
-              {counts.draft} draft{counts.draft > 1 ? 's' : ''} to review
+              {counts.pending} pending item{counts.pending > 1 ? 's' : ''} to review
             </span>
           </div>
         )}
@@ -415,7 +444,7 @@ export default function ContentApproval() {
 
       {/* Summary Cards — shows count per status */}
       <div className="grid grid-cols-3 gap-3">
-        {(['draft', 'approved', 'rejected'] as ContentStatus[]).map(status => (
+        {(['pending', 'approved', 'rejected'] as ReviewStatus[]).map(status => (
           <div key={status} className={`rounded-xl border p-4 ${STATUS_CARD_CONFIG[status].bg}`}>
             <p className={`text-2xl ${STATUS_CARD_CONFIG[status].text}`} style={{ fontWeight: 700 }}>
               {counts[status as keyof typeof counts] ?? 0}

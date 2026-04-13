@@ -1,9 +1,12 @@
 import { Router, type Request, type Response } from "express";
 import { pool } from "../db/pool";
+import { publishSystemContent } from "../services/facebook";
 
 export const aiRouter = Router();
 
 const FACEBOOK_PLATFORM = "facebook";
+const GENERATED_CONTENT_STATUS = "draft";
+const PENDING_APPROVAL_STATUS = "pending";
 
 type GenerateRequestBody = {
   productId?: number | string;
@@ -105,6 +108,9 @@ function ensureAiSchema() {
     await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS generated_image_url TEXT`);
     await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS image_prompt TEXT`);
     await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS hashtags TEXT`);
+    await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS facebook_post_id TEXT`);
+    await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS facebook_page_id TEXT`);
+    await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS facebook_permalink_url TEXT`);
 
     aiSchemaReady = true;
   })().catch((err) => {
@@ -365,7 +371,7 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
         hashtags,
         status
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'draft')
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING id, status
       `,
       [
@@ -381,6 +387,7 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
         generatedImageUrl,
         imagePrompt,
         hashtags,
+        GENERATED_CONTENT_STATUS,
       ]
     );
 
@@ -394,7 +401,7 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
         generatedImageUrl,
         referenceImageUrl: parsed.referenceImageUrl,
         outputMode: parsed.outputMode,
-        status: String(insertResult.rows[0].status ?? "draft"),
+        status: String(insertResult.rows[0].status ?? GENERATED_CONTENT_STATUS),
       },
       message: null,
     });
@@ -577,11 +584,11 @@ aiRouter.patch("/contents/:id/submit", async (req: Request, res: Response) => {
         content = $2,
         platform = $3,
         hashtags = $4,
-        status = 'pending'
-      WHERE id = $5
+        status = $5
+      WHERE id = $6
       RETURNING id, title, content, platform, hashtags, status, created_at AS "createdAt"
       `,
-      [title, content, platform, hashtags, id]
+      [title, content, platform, hashtags, PENDING_APPROVAL_STATUS, id]
     );
 
     if (!result.rows.length) {
@@ -606,6 +613,28 @@ aiRouter.patch("/contents/:id/status", async (req: Request, res: Response) => {
 
     if (!["approved", "rejected", "published", "failed", "cancelled"].includes(status)) {
       return res.status(400).json({ ok: false, data: null, message: "Invalid status" });
+    }
+
+    if (status === "published") {
+      // Publish through the backend so the system captures the real Facebook
+      // post ID and immediately marks the generated content as analytics-ready.
+      const published = await publishSystemContent(id);
+
+      return res.json({
+        ok: true,
+        data: {
+          id: published.contentId,
+          title: published.title,
+          status: published.status,
+          approvedAt: published.approvedAt,
+          publishedAt: published.publishedAt,
+          facebookPostId: published.facebookPostId,
+          facebookPageId: published.facebookPageId,
+          facebookPermalinkUrl: published.facebookPermalinkUrl,
+          initialMetricsSynced: published.initialMetricsSynced,
+        },
+        message: null,
+      });
     }
 
     const result = await pool.query(

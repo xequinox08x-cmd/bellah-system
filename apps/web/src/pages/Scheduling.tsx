@@ -140,6 +140,7 @@ export default function Scheduling() {
   const [error, setError] = useState<string | null>(null);
   const [selectedContent, setSelectedContent] = useState<ApprovedContent | null>(null);
   const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'published' | 'failed'>('all');
+  const [publishingId, setPublishingId] = useState<number | null>(null);
 
   const loadData = async () => {
     setLoading(true);
@@ -192,19 +193,32 @@ export default function Scheduling() {
     try {
       await api.updateContentStatus(id, 'cancelled');
       toast.success('Post cancelled');
+      window.dispatchEvent(new Event('ai-content-updated'));
       await loadData();
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to cancel post');
     }
   };
 
-  const handleMarkPublished = async (id: number) => {
+  const handlePublishNow = async (id: number) => {
+    setPublishingId(id);
     try {
-      await api.updateContentStatus(id, 'published');
-      toast.success('Marked as published');
+      const result = await api.publishFacebookContent(id);
+      const initialMetricsSynced = Boolean(result?.data?.initialMetricsSynced);
+
+      toast.success(
+        initialMetricsSynced
+          ? 'Post published and now tracked in analytics'
+          : 'Post published and added to analytics tracking'
+      );
+
+      window.dispatchEvent(new Event('ai-content-updated'));
+      window.dispatchEvent(new Event('facebook-analytics-updated'));
       await loadData();
     } catch (err: unknown) {
-      toast.error((err as Error).message || 'Failed to update status');
+      toast.error((err as Error).message || 'Failed to publish to Facebook');
+    } finally {
+      setPublishingId(null);
     }
   };
 
@@ -260,6 +274,16 @@ export default function Scheduling() {
                 <p className="text-xs text-[#6B7280] mt-1 line-clamp-2">{item.output}</p>
                 <div className="flex items-center gap-2 mt-2">
                   <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-100 text-blue-600">{item.platform}</span>
+                  <button
+                    onClick={e => {
+                      e.stopPropagation();
+                      void handlePublishNow(item.id);
+                    }}
+                    disabled={publishingId !== null}
+                    className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {publishingId === item.id ? 'Publishing...' : 'Publish Now'}
+                  </button>
                   <button
                     onClick={e => { e.stopPropagation(); setSelectedContent(item); }}
                     className="text-[10px] px-2 py-0.5 rounded-full bg-[#EC4899] text-white hover:bg-[#DB2777] transition-all"
@@ -322,16 +346,28 @@ export default function Scheduling() {
                         {post.status === 'scheduled' && (
                           <>
                             <button
-                              onClick={() => handleMarkPublished(post.id)}
-                              title="Mark as published"
-                              className="w-6 h-6 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center hover:bg-emerald-100 transition-all"
+                              onClick={() => void handlePublishNow(post.id)}
+                              title="Publish to Facebook"
+                              disabled={publishingId !== null}
+                              className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs text-emerald-600 hover:bg-emerald-100 transition-all disabled:cursor-not-allowed disabled:opacity-60"
                             >
-                              <CheckCircle className="w-3.5 h-3.5" />
+                              {publishingId === post.id ? (
+                                <>
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                  Publishing...
+                                </>
+                              ) : (
+                                <>
+                                  <CheckCircle className="w-3.5 h-3.5" />
+                                  Publish Now
+                                </>
+                              )}
                             </button>
                             <button
                               onClick={() => handleCancel(post.id)}
                               title="Cancel post"
-                              className="w-6 h-6 rounded-lg bg-red-50 text-red-500 flex items-center justify-center hover:bg-red-100 transition-all"
+                              disabled={publishingId !== null}
+                              className="w-6 h-6 rounded-lg bg-red-50 text-red-500 flex items-center justify-center hover:bg-red-100 transition-all disabled:cursor-not-allowed disabled:opacity-60"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>

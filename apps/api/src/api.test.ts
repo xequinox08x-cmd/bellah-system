@@ -57,29 +57,39 @@ describe('API functionality', () => {
         stock: productPayload.stock,
         lowStockThreshold: productPayload.lowStockThreshold,
         description: productPayload.description,
-        created_at: new Date(),
-        updated_at: new Date(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       };
       queryMock.mockResolvedValueOnce({ rows: [created], rowCount: 1 } as any);
       const app = createApp();
       const res = await request(app).post('/api/products').send(productPayload);
       expect(res.status).toBe(201);
-      expect(res.body).toMatchObject({ id: 1, sku: productPayload.sku, name: productPayload.name });
+      expect(res.body).toMatchObject({
+        ok: true,
+        data: { id: 1, sku: productPayload.sku, name: productPayload.name },
+      });
     });
 
     it('POST /api/products returns 400 when sku or name missing', async () => {
       const app = createApp();
       const res = await request(app).post('/api/products').send({ name: 'Only name' });
       expect(res.status).toBe(400);
-      expect(res.body.error).toContain('SKU');
+      expect(res.body).toMatchObject({
+        ok: false,
+        message: 'sku and name are required',
+      });
     });
 
-    it('GET /api/products returns 200 and array', async () => {
+    it('GET /api/products returns 200 and only queries active products', async () => {
       queryMock.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       const app = createApp();
       const res = await request(app).get('/api/products');
       expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body).toMatchObject({ ok: true, data: [] });
+      expect(queryMock).toHaveBeenCalledWith(
+        expect.stringContaining('is_active = TRUE'),
+        []
+      );
     });
 
     it('PUT /api/products/:id returns 200 and updated product', async () => {
@@ -93,8 +103,8 @@ describe('API functionality', () => {
         stock: 50,
         lowStockThreshold: 5,
         description: 'Updated',
-        created_at: new Date(),
-        updated_at: new Date(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       };
       queryMock.mockResolvedValueOnce({ rows: [updated], rowCount: 1 } as any);
       const app = createApp();
@@ -102,7 +112,10 @@ describe('API functionality', () => {
         .put('/api/products/1')
         .send({ ...productPayload, sku: 'UPDATED-SKU', name: 'Updated name' });
       expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({ id: 1, sku: 'UPDATED-SKU', name: 'Updated name' });
+      expect(res.body).toMatchObject({
+        ok: true,
+        data: { id: 1, sku: 'UPDATED-SKU', name: 'Updated name' },
+      });
     });
 
     it('PUT /api/products/:id returns 404 when product not found', async () => {
@@ -112,12 +125,38 @@ describe('API functionality', () => {
       expect(res.status).toBe(404);
     });
 
-    it('DELETE /api/products/:id returns 200 with ok and deletedId', async () => {
+    it('DELETE /api/products/:id permanently deletes unused products', async () => {
+      queryMock.mockResolvedValueOnce({ rows: [{ id: 1 }], rowCount: 1 } as any);
+      queryMock.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       queryMock.mockResolvedValueOnce({ rows: [{ id: 1 }], rowCount: 1 } as any);
       const app = createApp();
       const res = await request(app).delete('/api/products/1');
       expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({ ok: true, deletedId: 1 });
+      expect(res.body).toMatchObject({
+        ok: true,
+        data: { id: 1, action: 'deleted' },
+        message: 'Product deleted successfully.',
+      });
+    });
+
+    it('DELETE /api/products/:id archives products already used in sales', async () => {
+      queryMock.mockResolvedValueOnce({ rows: [{ id: 1 }], rowCount: 1 } as any);
+      queryMock.mockResolvedValueOnce({ rows: [{ product_id: 1 }], rowCount: 1 } as any);
+      queryMock.mockResolvedValueOnce({ rows: [{ id: 1 }], rowCount: 1 } as any);
+      const app = createApp();
+      const res = await request(app).delete('/api/products/1');
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        ok: true,
+        data: { id: 1, action: 'archived' },
+        message: 'Product archived because it already exists in sales records.',
+      });
+    });
+
+    it('DELETE /api/products/:id returns 400 for an invalid id', async () => {
+      const app = createApp();
+      const res = await request(app).delete('/api/products/not-a-number');
+      expect(res.status).toBe(400);
     });
 
     it('DELETE /api/products/:id returns 404 when product not found', async () => {
