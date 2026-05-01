@@ -1,15 +1,8 @@
-import { Outlet, Navigate } from 'react-router';
-import { useAuth } from './AuthContext';
+import { Outlet } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { TopNav }  from './TopNav';
 
 export function Layout() {
-  const { isAuthenticated } = useAuth();
-
-  if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
-  }
-
   return (
     <div className="flex h-screen overflow-hidden" style={{ backgroundColor: '#F7F8FC' }}>
       {/* Sidebar */}

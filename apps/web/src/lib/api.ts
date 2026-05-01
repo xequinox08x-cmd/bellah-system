@@ -1,32 +1,80 @@
 const API_BASE = `${import.meta.env.VITE_API_URL}/api`;
 
+export interface ApiUser {
+  id: number;
+  auth_id: string;
+  name: string;
+  email: string;
+  role: 'admin' | 'staff';
+  created_at: string;
+}
+
 export const api = {
   // PRODUCTS
-  async getProducts() {
-    const res = await fetch(`${API_BASE}/products`);
+  async getProducts(token: string) {
+    const res = await fetch(`${API_BASE}/products`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
     if (!res.ok) throw new Error('Failed to fetch products');
     return res.json();
   },
 
+  async createProduct(data: any, token: string) {
+    const res = await fetch(`${API_BASE}/products`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(data),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Failed to create product');
+    return json;
+  },
+
+  async updateProduct(id: number, data: any, token: string) {
+    const res = await fetch(`${API_BASE}/products/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(data),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Failed to update product');
+    return json;
+  },
+
+  async deleteProduct(id: number, token: string) {
+    const res = await fetch(`${API_BASE}/products/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Failed to delete product');
+    return json;
+  },
+
   // SALES
-  async getSales() {
-    const res = await fetch(`${API_BASE}/sales`);
+  async getSales(token: string) {
+    const res = await fetch(`${API_BASE}/sales`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
     if (!res.ok) throw new Error('Failed to fetch sales');
     return res.json();
   },
 
-  async getSaleById(id: number) {
-    const res = await fetch(`${API_BASE}/sales/${id}`);
+  async getSaleById(id: number, token: string) {
+    const res = await fetch(`${API_BASE}/sales/${id}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
     if (!res.ok) throw new Error('Failed to fetch sale');
     return res.json();
   },
 
-  async createSale(data: {
-    items: { productId: number; qty: number; unitPrice: number }[];
-  }) {
+  async createSale(data: { items: { productId: number; qty: number; unitPrice: number }[] }, token: string) {
     const res = await fetch(`${API_BASE}/sales`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
       body: JSON.stringify(data),
     });
     if (!res.ok) {
@@ -37,180 +85,122 @@ export const api = {
   },
 
   // DASHBOARD
-  async getDashboardSummary() {
-    const res = await fetch(`${API_BASE}/dashboard/summary`);
+  async getDashboardSummary(token: string) {
+    const res = await fetch(`${API_BASE}/dashboard/summary`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!res.ok) throw new Error('Failed to fetch dashboard summary');
     return res.json();
   },
 
   // AI CONTENT
-  async getContent(status?: string, page = 1) {
+  async getContent(token: string, status?: string, page = 1) {
     const params = new URLSearchParams({ page: String(page), limit: '20' });
     if (status && status !== 'all') params.set('status', status);
-    const res = await fetch(`${API_BASE}/ai-content?${params}`);
+    const res = await fetch(`${API_BASE}/ai-content?${params}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
     if (!res.ok) throw new Error('Failed to fetch content');
     return res.json();
   },
 
-  async createContent(body: {
-    title?: string;
-    prompt: string;
-    output: string;
-    platform?: string;
-    hashtags?: string;
-  }) {
+  async createContent(body: any, token: string) {
     const res = await fetch(`${API_BASE}/ai-content`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error('Failed to save content');
     return res.json();
   },
 
-  async updateContentStatus(id: number, status: 'approved' | 'rejected') {
+  async updateContentStatus(id: number, status: 'approved' | 'rejected', token: string) {
     const res = await fetch(`${API_BASE}/ai-content/${id}/status`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
       body: JSON.stringify({ status }),
     });
     if (!res.ok) throw new Error('Failed to update status');
     return res.json();
   },
 
-  async generateContent(prompt: string) {
-    const res = await fetch(`${API_BASE}/ai-content/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt }),
+  // CAMPAIGNS
+  getCampaigns: async (token: string) => {
+    const res = await fetch(`${API_BASE}/campaigns`, {
+      headers: { Authorization: `Bearer ${token}` }
     });
     return res.json();
-  },
-
-  // CAMPAIGNS
-  getCampaigns: async () => {
-    const res = await fetch(`${API_BASE}/campaigns`);
-    const data = await res.json();
-    if (!res.ok) return { data: [], error: data.error };
-    return { data: data.data, error: null };
-  },
-
-  getCampaign: async (id: number) => {
-    const res = await fetch(`${API_BASE}/campaigns/${id}`);
-    const data = await res.json();
-    if (!res.ok) return { data: null, error: data.error };
-    return { data: data.data, error: null };
-  },
-
-  createCampaign: async (body: {
-    name: string;
-    description?: string;
-    startDate?: string;
-    endDate?: string;
-  }) => {
-    const res = await fetch(`${API_BASE}/campaigns`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to create campaign');
-    return { data: data.data, error: null };
-  },
-
-  updateCampaign: async (id: number, body: {
-    name: string;
-    description?: string;
-    status?: string;
-    startDate?: string;
-    endDate?: string;
-  }) => {
-    const res = await fetch(`${API_BASE}/campaigns/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to update campaign');
-    return { data: data.data, error: null };
-  },
-
-  deleteCampaign: async (id: number) => {
-    const res = await fetch(`${API_BASE}/campaigns/${id}`, { method: 'DELETE' });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to delete campaign');
-    return { success: true };
-  },
-
-  attachContent: async (campaignId: number, contentId: number) => {
-    const res = await fetch(`${API_BASE}/campaigns/${campaignId}/content`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contentId }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to attach content');
-    return { success: true };
-  },
-
-  detachContent: async (campaignId: number, contentId: number) => {
-    const res = await fetch(`${API_BASE}/campaigns/${campaignId}/content/${contentId}`, {
-      method: 'DELETE',
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to detach content');
-    return { success: true };
   },
 
   // SCHEDULED POSTS
-  getScheduledPosts: async () => {
-    const res = await fetch(`${API_BASE}/scheduled-posts`);
-    return res.json();
-  },
-
-  createScheduledPost: async (data: {
-    content_id: number;
-    campaign_id?: number;
-    scheduled_at: string;
-    platform?: string;
-  }) => {
+  getScheduledPosts: async (token: string) => {
     const res = await fetch(`${API_BASE}/scheduled-posts`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
+      headers: { Authorization: `Bearer ${token}` }
     });
-    return res.json();
-  },
-
-  updatePostStatus: async (id: number, status: string) => {
-    const res = await fetch(`${API_BASE}/scheduled-posts/${id}/status`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
-    });
-    return res.json();
-  },
-
-  deleteScheduledPost: async (id: number) => {
-    const res = await fetch(`${API_BASE}/scheduled-posts/${id}`, { method: 'DELETE' });
     return res.json();
   },
 
   // FORECASTS
-  generateForecasts: async () => {
+  generateForecasts: async (token: string) => {
     const res = await fetch(`${API_BASE}/forecasts/generate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${token}` }
     });
     return res.json();
   },
 
-  getForecasts: async () => {
-    const res = await fetch(`${API_BASE}/forecasts`);
+  getForecastAlerts: async (token: string) => {
+    const res = await fetch(`${API_BASE}/forecasts/alerts`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
     return res.json();
   },
 
-  getForecastAlerts: async () => {
-    const res = await fetch(`${API_BASE}/forecasts/alerts`);
-    return res.json();
+  // USERS
+  getUsers: async (token: string) => {
+    const res = await fetch(`${API_BASE}/users`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to fetch users');
+    return data;
+  },
+
+  createUser: async (body: any, token: string) => {
+    const res = await fetch(`${API_BASE}/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to create user');
+    return data;
+  },
+
+  updateUser: async (id: number, body: any, token: string) => {
+    const res = await fetch(`${API_BASE}/users/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to update user');
+    return data;
+  },
+
+  deleteUser: async (id: number, token: string) => {
+    const res = await fetch(`${API_BASE}/users/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to delete user');
+    return data;
   },
 };

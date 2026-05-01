@@ -1,8 +1,24 @@
-import { useEffect, useState } from 'react';
-import { Plus, Search, Edit2, Trash2, AlertTriangle, X, Package } from 'lucide-react';
-import { useStore, Product, ProductCategory } from '../data/store';
+import { useEffect, useState, useMemo } from 'react';
+import { Plus, Search, Edit2, Trash2, AlertTriangle, X, Package, DollarSign, BarChart2, Camera } from 'lucide-react';
 import { useAuth } from '../components/AuthContext';
-import { toast } from 'sonner@2.0.3';
+import { api } from '../lib/api';
+import { toast } from 'sonner';
+import ProductFormModal from '../components/ProductFormModal';
+
+type ProductCategory = 'Skincare' | 'Makeup' | 'Fragrance' | 'Haircare';
+
+interface Product {
+  id: number;
+  sku: string;
+  name: string;
+  category: ProductCategory;
+  price: number;
+  cost: number;
+  stock: number;
+  lowStockThreshold: number;
+  description: string;
+  imageUrl?: string;
+}
 
 const CATEGORIES: ProductCategory[] = ['Skincare', 'Makeup', 'Fragrance', 'Haircare'];
 
@@ -20,121 +36,30 @@ function StockBadge({ stock, threshold }: { stock: number; threshold: number }) 
 }
 
 const emptyForm = {
-  name: '', category: 'Skincare' as ProductCategory, price: '', cost: '',
-  stock: '', lowStockThreshold: '20', sku: '', description: '',
+  name: '', category: 'Skincare' as ProductCategory,
+  price: '', cost: '', stock: '', lowStockThreshold: '20',
+  sku: '', description: '', isActive: true,
 };
+type FormErrors = Partial<Record<keyof typeof emptyForm, string>>;
 
 interface ProductFormProps {
   initial?: Product | null;
   onSave: (data: Omit<Product, 'id'>) => void;
   onClose: () => void;
+  saving: boolean;
 }
 
-function ProductForm({ initial, onSave, onClose }: ProductFormProps) {
-  const [form, setForm] = useState(
-    initial
-      ? {
-          name: initial.name, category: initial.category,
-          price: String(initial.price), cost: String(initial.cost),
-          stock: String(initial.stock), lowStockThreshold: String(initial.lowStockThreshold),
-          sku: initial.sku, description: initial.description,
-        }
-      : emptyForm
-  );
+const ProductForm = ProductFormModal;
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!form.name || !form.price || !form.stock || !form.sku) {
-      toast.error('Please fill in all required fields');
-      return;
-    }
-    onSave({
-      name: form.name,
-      category: form.category,
-      price: parseFloat(form.price),
-      cost: parseFloat(form.cost) || 0,
-      stock: parseInt(form.stock),
-      lowStockThreshold: parseInt(form.lowStockThreshold) || 20,
-      sku: form.sku,
-      description: form.description,
-    });
-  };
-
-  const field = (label: string, key: keyof typeof form, type = 'text', required = false) => (
-    <div>
-      <label className="block text-xs text-[#374151] mb-1" style={{ fontWeight: 500 }}>
-        {label} {required && <span className="text-red-500">*</span>}
-      </label>
-      <input
-        type={type}
-        value={form[key]}
-        onChange={e => setForm(prev => ({ ...prev, [key]: e.target.value }))}
-        className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm text-[#111827] focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899] transition-all"
-      />
-    </div>
-  );
-
-  return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[#E5E7EB]">
-          <h2 className="text-[#111827] text-base" style={{ fontWeight: 600 }}>
-            {initial ? 'Edit Product' : 'Add New Product'}
-          </h2>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-[#F9FAFB] transition-all">
-            <X className="w-4 h-4 text-[#6B7280]" />
-          </button>
-        </div>
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
-          {field('Product Name', 'name', 'text', true)}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs text-[#374151] mb-1" style={{ fontWeight: 500 }}>Category *</label>
-              <select
-                value={form.category}
-                onChange={e => setForm(prev => ({ ...prev, category: e.target.value as ProductCategory }))}
-                className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm text-[#111827] focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899] bg-white"
-              >
-                {CATEGORIES.map(c => <option key={c}>{c}</option>)}
-              </select>
-            </div>
-            {field('SKU', 'sku', 'text', true)}
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            {field('Selling Price (₱)', 'price', 'number', true)}
-            {field('Cost Price (₱)', 'cost', 'number')}
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            {field('Stock Quantity', 'stock', 'number', true)}
-            {field('Low Stock Threshold', 'lowStockThreshold', 'number')}
-          </div>
-          <div>
-            <label className="block text-xs text-[#374151] mb-1" style={{ fontWeight: 500 }}>Description</label>
-            <textarea
-              value={form.description}
-              onChange={e => setForm(prev => ({ ...prev, description: e.target.value }))}
-              rows={2}
-              className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm text-[#111827] focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899] resize-none transition-all"
-            />
-          </div>
-          <div className="flex gap-3 pt-2">
-            <button type="button" onClick={onClose} className="flex-1 py-2.5 border border-[#E5E7EB] rounded-lg text-sm text-[#6B7280] hover:bg-[#F9FAFB] transition-all">
-              Cancel
-            </button>
-            <button type="submit" className="flex-1 py-2.5 bg-[#EC4899] text-white rounded-lg text-sm hover:bg-[#DB2777] transition-all">
-              {initial ? 'Save Changes' : 'Add Product'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
 
 export default function Products() {
-  const { products, addProduct, updateProduct, deleteProduct } = useStore();
-  const { user } = useAuth();
+  const { user, session } = useAuth();
+  const token = session?.access_token ?? '';
   const isAdmin = user?.role === 'admin';
+
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All');
@@ -142,44 +67,94 @@ export default function Products() {
   const [showForm, setShowForm] = useState(false);
   const [editProduct, setEditProduct] = useState<Product | null>(null);
 
+  // ── Load ──────────────────────────────────────────────────────────────────
+  const load = async () => {
+    if (!token) return;
+    try {
+      setLoading(true);
+      const raw = await api.getProducts(token);
+      setProducts(raw.map((p: any) => ({
+        id: Number(p.id),
+        sku: p.sku,
+        name: p.name,
+        category: p.category,
+        price: Number(p.price),
+        cost: Number(p.cost),
+        stock: Number(p.stock),
+        lowStockThreshold: Number(p.lowStockThreshold),
+        description: p.description ?? '',
+        imageUrl: p.imageUrl ?? undefined,
+      })));
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to load products');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, [token]);
+
+  // ── KPIs ──────────────────────────────────────────────────────────────────
+  const kpis = useMemo(() => {
+    const totalValue = products.reduce((s, p) => s + p.cost * p.stock, 0);
+    const retailValue = products.reduce((s, p) => s + p.price * p.stock, 0);
+    const lowStockCount = products.filter(p => p.stock > 0 && p.stock <= p.lowStockThreshold).length;
+    const outOfStock = products.filter(p => p.stock === 0).length;
+    return { totalValue, retailValue, lowStockCount, outOfStock };
+  }, [products]);
+
+  // ── Filters ───────────────────────────────────────────────────────────────
   const filtered = products.filter(p => {
     const matchSearch = p.name.toLowerCase().includes(search.toLowerCase()) ||
       p.sku.toLowerCase().includes(search.toLowerCase());
     const matchCat = categoryFilter === 'All' || p.category === categoryFilter;
     const matchStock = stockFilter === 'All' ||
-      (stockFilter === 'Low' && p.stock <= p.lowStockThreshold) ||
+      (stockFilter === 'Low' && p.stock <= p.lowStockThreshold && p.stock > 0) ||
       (stockFilter === 'Out' && p.stock === 0);
     return matchSearch && matchCat && matchStock;
   });
 
-  const lowStockCount = products.filter(p => p.stock <= p.lowStockThreshold).length;
-
-  const handleSave = (data: Omit<Product, 'id'>) => {
-    if (editProduct) {
-      updateProduct({ ...data, id: editProduct.id });
-      toast.success('Product updated successfully');
-    } else {
-      addProduct(data);
-      toast.success('Product added successfully');
+  // ── Save (create / update) ────────────────────────────────────────────────
+  const handleSave = async (data: Omit<Product, 'id'>) => {
+    try {
+      setSaving(true);
+      if (editProduct) {
+        await api.updateProduct(editProduct.id, data, token);
+        toast.success('Product updated');
+      } else {
+        await api.createProduct(data, token);
+        toast.success('Product added');
+      }
+      setShowForm(false);
+      setEditProduct(null);
+      await load();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to save product');
+    } finally {
+      setSaving(false);
     }
-    setShowForm(false);
-    setEditProduct(null);
   };
 
-  const handleDelete = (id: string, name: string) => {
-    if (confirm(`Delete "${name}"? This cannot be undone.`)) {
-      deleteProduct(id);
+  // ── Delete ────────────────────────────────────────────────────────────────
+  const handleDelete = async (id: number, name: string) => {
+    if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
+    try {
+      await api.deleteProduct(id, token);
       toast.success('Product deleted');
+      await load();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to delete product');
     }
   };
 
   return (
     <div className="max-w-7xl mx-auto space-y-5">
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-[#111827] text-xl" style={{ fontWeight: 700 }}>Inventory Management</h1>
-          <p className="text-[#6B7280] text-sm">{products.length} products · {lowStockCount} low stock</p>
+          <p className="text-[#6B7280] text-sm">{products.length} products · {kpis.lowStockCount} low stock · {kpis.outOfStock} out of stock</p>
         </div>
         {isAdmin && (
           <button
@@ -191,11 +166,31 @@ export default function Products() {
         )}
       </div>
 
+      {/* KPI Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label: 'Total Products', value: String(products.length), icon: Package, bg: 'bg-pink-50', color: 'text-[#EC4899]' },
+          { label: 'Stock Cost Value', value: `₱${kpis.totalValue.toLocaleString('en-US', { minimumFractionDigits: 2 })}`, icon: DollarSign, bg: 'bg-yellow-50', color: 'text-yellow-600' },
+          { label: 'Retail Value', value: `₱${kpis.retailValue.toLocaleString('en-US', { minimumFractionDigits: 2 })}`, icon: BarChart2, bg: 'bg-emerald-50', color: 'text-emerald-600' },
+          { label: 'Low / Out Stock', value: `${kpis.lowStockCount} / ${kpis.outOfStock}`, icon: AlertTriangle, bg: 'bg-red-50', color: 'text-red-500' },
+        ].map(({ label, value, icon: Icon, bg, color }) => (
+          <div key={label} className="bg-white rounded-xl border border-[#E5E7EB] px-5 py-4 flex items-center gap-4">
+            <div className={`w-9 h-9 rounded-lg ${bg} flex items-center justify-center shrink-0`}>
+              <Icon className={color} style={{ width: 18, height: 18 }} />
+            </div>
+            <div className="min-w-0">
+              <p className="text-base text-[#111827] truncate" style={{ fontWeight: 700 }}>{value}</p>
+              <p className="text-[10px] text-[#6B7280]">{label}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
       {/* Low stock banner */}
-      {lowStockCount > 0 && (
+      {kpis.lowStockCount > 0 && (
         <div className="flex items-center gap-2.5 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700">
           <AlertTriangle className="w-4 h-4 shrink-0" />
-          <span>{lowStockCount} product(s) are running low on stock and need restocking.</span>
+          <span>{kpis.lowStockCount} product(s) are running low on stock and need restocking.</span>
         </div>
       )}
 
@@ -231,79 +226,85 @@ export default function Products() {
 
       {/* Table */}
       <div className="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-[#E5E7EB] bg-[#F9FAFB]">
-                {['Product', 'SKU', 'Category', 'Price', 'Cost', 'Stock', 'Status', isAdmin ? 'Actions' : ''].filter(Boolean).map(h => (
-                  <th key={h} className="text-left px-5 py-3 text-xs text-[#6B7280] uppercase tracking-wider" style={{ fontWeight: 600 }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#F3F4F6]">
-              {filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="text-center py-12 text-[#9CA3AF] text-sm">
-                    <Package className="w-8 h-8 mx-auto mb-2 opacity-40" />
-                    No products found
-                  </td>
+        {loading ? (
+          <div className="py-16 text-center text-sm text-[#9CA3AF]">Loading inventory…</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-[#E5E7EB] bg-[#F9FAFB]">
+                  {(['Product', 'SKU', 'Category', 'Price', 'Cost', 'Stock', 'Status', isAdmin ? 'Actions' : ''] as string[])
+                    .filter(Boolean)
+                    .map(h => (
+                      <th key={h} className="text-left px-5 py-3 text-xs text-[#6B7280] uppercase tracking-wider" style={{ fontWeight: 600 }}>{h}</th>
+                    ))}
                 </tr>
-              ) : (
-                filtered.map(product => (
-                  <tr key={product.id} className="hover:bg-[#F9FAFB] transition-colors">
-                    <td className="px-5 py-3.5">
-                      <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>{product.name}</p>
-                      <p className="text-xs text-[#9CA3AF] mt-0.5 line-clamp-1">{product.description}</p>
+              </thead>
+              <tbody className="divide-y divide-[#F3F4F6]">
+                {filtered.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="text-center py-12 text-[#9CA3AF] text-sm">
+                      <Package className="w-8 h-8 mx-auto mb-2 opacity-40" />
+                      No products found
                     </td>
-                    <td className="px-5 py-3.5 text-xs text-[#6B7280] font-mono">{product.sku}</td>
-                    <td className="px-5 py-3.5">
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full ${CATEGORY_COLORS[product.category]}`}>
-                        {product.category}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3.5 text-sm text-[#111827]" style={{ fontWeight: 500 }}>₱{product.price.toFixed(2)}</td>
-                    <td className="px-5 py-3.5 text-sm text-[#6B7280]">₱{product.cost.toFixed(2)}</td>
-                    <td className="px-5 py-3.5">
-                      <div>
-                        <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>{product.stock}</p>
-                        <div className="w-16 h-1 bg-[#F3F4F6] rounded-full mt-1 overflow-hidden">
-                          <div
-                            className="h-full rounded-full"
-                            style={{
-                              width: `${Math.min((product.stock / (product.lowStockThreshold * 3)) * 100, 100)}%`,
-                              backgroundColor: product.stock <= product.lowStockThreshold ? '#EF4444' : '#10B981',
-                            }}
-                          />
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-5 py-3.5">
-                      <StockBadge stock={product.stock} threshold={product.lowStockThreshold} />
-                    </td>
-                    {isAdmin && (
+                  </tr>
+                ) : (
+                  filtered.map(product => (
+                    <tr key={product.id} className="hover:bg-[#F9FAFB] transition-colors">
                       <td className="px-5 py-3.5">
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => { setEditProduct(product); setShowForm(true); }}
-                            className="p-1.5 rounded-md hover:bg-[#F3F4F6] text-[#6B7280] hover:text-[#111827] transition-all"
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => handleDelete(product.id, product.name)}
-                            className="p-1.5 rounded-md hover:bg-red-50 text-[#6B7280] hover:text-red-500 transition-all"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                        <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>{product.name}</p>
+                        <p className="text-xs text-[#9CA3AF] mt-0.5 line-clamp-1">{product.description}</p>
+                      </td>
+                      <td className="px-5 py-3.5 text-xs text-[#6B7280] font-mono">{product.sku}</td>
+                      <td className="px-5 py-3.5">
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full ${CATEGORY_COLORS[product.category]}`}>
+                          {product.category}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3.5 text-sm text-[#111827]" style={{ fontWeight: 500 }}>₱{product.price.toFixed(2)}</td>
+                      <td className="px-5 py-3.5 text-sm text-[#6B7280]">₱{product.cost.toFixed(2)}</td>
+                      <td className="px-5 py-3.5">
+                        <div>
+                          <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>{product.stock}</p>
+                          <div className="w-16 h-1 bg-[#F3F4F6] rounded-full mt-1 overflow-hidden">
+                            <div
+                              className="h-full rounded-full"
+                              style={{
+                                width: `${Math.min((product.stock / (product.lowStockThreshold * 3)) * 100, 100)}%`,
+                                backgroundColor: product.stock === 0 ? '#EF4444' : product.stock <= product.lowStockThreshold ? '#F59E0B' : '#10B981',
+                              }}
+                            />
+                          </div>
                         </div>
                       </td>
-                    )}
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                      <td className="px-5 py-3.5">
+                        <StockBadge stock={product.stock} threshold={product.lowStockThreshold} />
+                      </td>
+                      {isAdmin && (
+                        <td className="px-5 py-3.5">
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => { setEditProduct(product); setShowForm(true); }}
+                              className="p-1.5 rounded-md hover:bg-[#F3F4F6] text-[#6B7280] hover:text-[#111827] transition-all"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => handleDelete(product.id, product.name)}
+                              className="p-1.5 rounded-md hover:bg-red-50 text-[#6B7280] hover:text-red-500 transition-all"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {showForm && (
@@ -311,6 +312,8 @@ export default function Products() {
           initial={editProduct}
           onSave={handleSave}
           onClose={() => { setShowForm(false); setEditProduct(null); }}
+          saving={saving}
+          token={token}
         />
       )}
     </div>

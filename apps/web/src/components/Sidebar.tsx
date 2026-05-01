@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { NavLink, useNavigate, useLocation } from 'react-router';
+import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Package, ShoppingCart, Sparkles,
   CheckSquare, Calendar, BarChart2, Settings, LogOut,
@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from './AuthContext';
 import { useStore } from '../data/store';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 
 // ─── Logo ─────────────────────────────────────────────────────────────────────
 function BLogo({ size = 30 }: { size?: number }) {
@@ -78,7 +78,7 @@ function NavItem({
 
 // ─── Sidebar ───────────────────────────────────────────────────────────────────
 export function Sidebar() {
-  const { user, logout } = useAuth();
+  const { user, signOut } = useAuth();
   const { contentItems } = useStore();
   const navigate   = useNavigate();
   const location   = useLocation();
@@ -105,8 +105,8 @@ export function Sidebar() {
   const isAdmin       = user?.role === 'admin';
   const pendingCount  = contentItems.filter(c => c.status === 'pending').length;
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await signOut();
     toast.success('Signed out');
     navigate('/login');
   };

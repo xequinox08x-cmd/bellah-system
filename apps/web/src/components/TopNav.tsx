@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { Search, Bell, ChevronDown, User, Settings, LogOut, Plus, X } from 'lucide-react';
 import { useAuth } from './AuthContext';
 import { useStore } from '../data/store';
-import { useNavigate, useLocation } from 'react-router';
-import { toast } from 'sonner@2.0.3';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { toast } from 'sonner';
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
   '/dashboard':  { title: 'Dashboard',          sub: 'Overview of your store performance'      },
@@ -18,7 +18,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
 };
 
 export function TopNav() {
-  const { user, logout }      = useAuth();
+  const { user, signOut }      = useAuth();
   const { contentItems, products } = useStore();
   const navigate              = useNavigate();
   const location              = useLocation();
@@ -31,8 +31,8 @@ export function TopNav() {
 
   const meta = PAGE_META[location.pathname] ?? { title: 'Dashboard', sub: '' };
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await signOut();
     toast.success('Signed out successfully');
     navigate('/login');
     setShowProfile(false);

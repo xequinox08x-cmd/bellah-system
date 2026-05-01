@@ -1,104 +1,77 @@
-import { createContext, useContext, useState, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
+import { Session, User } from '@supabase/supabase-js';
+import { supabase } from '../lib/supabase';
 
-export type UserRole = 'admin' | 'staff';
-
-export interface AuthUser {
-  id:        string;
-  name:      string;
-  username:  string;
-  email:     string;
-  role:      UserRole;
-  avatar?:   string;
-  /** Mirrors Clerk's publicMetadata.role field for future real Clerk integration */
-  publicMetadata?: { role: UserRole };
+interface AuthUser {
+  id: string;
+  email: string;
+  name: string;
+  role: 'admin' | 'staff';
 }
 
 interface AuthContextType {
-  user:            AuthUser | null;
-  /** Sign in by username OR full email address. Any password accepted (demo mode). */
-  login:           (identifier: string, password: string) => boolean;
-  /** Resolve which role an email belongs to without fully signing in (used in 2-step flow) */
-  resolveEmail:    (email: string) => AuthUser | null;
-  logout:          () => void;
-  isAuthenticated: boolean;
-  /** Clerk-compatible: true once auth state is determined */
-  isLoaded:        boolean;
+  user: AuthUser | null;
+  session: Session | null;
+  loading: boolean;
+  signIn: (email: string, password: string) => Promise<void>;
+  signOut: () => Promise<void>;
 }
 
-// ─── Mock user registry ───────────────────────────────────────────────────────
-// In a real Clerk integration these come from Clerk's user object + publicMetadata.role
-const MOCK_USERS: AuthUser[] = [
-  {
-    id:       'user_admin_001',
-    name:     'Admin User',
-    username: 'admin',
-    email:    'admin@bellabeatrix.com',
-    role:     'admin',
-    avatar:   'https://api.dicebear.com/7.x/avataaars/svg?seed=admin',
-    publicMetadata: { role: 'admin' },
-  },
-  {
-    id:       'user_staff_001',
-    name:     'Staff Member',
-    username: 'staff',
-    email:    'staff@bellabeatrix.com',
-    role:     'staff',
-    avatar:   'https://api.dicebear.com/7.x/avataaars/svg?seed=staff',
-    publicMetadata: { role: 'staff' },
-  },
-];
+const AuthContext = createContext<AuthContextType | null>(null);
 
-/** Normalise an identifier → look up by username OR by email (case-insensitive) */
-function findUser(identifier: string): AuthUser | null {
-  const key = identifier.toLowerCase().trim();
-  return (
-    MOCK_USERS.find(u => u.username === key) ??
-    MOCK_USERS.find(u => u.email === key) ??
-    null
-  );
-}
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(true);
 
-// ─── Context ──────────────────────────────────────────────────────────────────
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
-
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(() => {
-    try {
-      const saved = localStorage.getItem('bb_clerk_session');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
+  async function loadUser(supabaseUser: User | null, sess: Session | null) {
+    if (!supabaseUser) {
+      setUser(null);
+      setSession(null);
+      return;
     }
-  });
 
-  const login = (identifier: string, _password: string): boolean => {
-    const found = findUser(identifier);
-    if (found) {
-      setUser(found);
-      localStorage.setItem('bb_clerk_session', JSON.stringify(found));
-      return true;
-    }
-    return false;
+    const email = supabaseUser.email || '';
+    // Basic mapping: customize these emails to your actual admin accounts
+    const role = (email === 'admin@bellah.com' || email === 'admin@gmail.com' || email === 'admin@bellah.test') ? 'admin' : 'staff';
+
+    setUser({
+      id: supabaseUser.id,
+      email: email,
+      name: email.split('@')[0],
+      role: role,
+    });
+    setSession(sess);
+  }
+
+  useEffect(() => {
+    // Initial session check
+    supabase.auth.getSession().then(({ data: { session: sess } }) => {
+      loadUser(sess?.user ?? null, sess).finally(() => setLoading(false));
+    });
+
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, sess) => {
+      loadUser(sess?.user ?? null, sess);
+      setLoading(false);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const signIn = async (email: string, password: string) => {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw new Error(error.message);
   };
 
-  const resolveEmail = (email: string): AuthUser | null => findUser(email);
-
-  const logout = () => {
+  const signOut = async () => {
+    await supabase.auth.signOut();
     setUser(null);
-    localStorage.removeItem('bb_clerk_session');
+    setSession(null);
   };
 
   return (
-    <AuthContext.Provider
-      value={{
-        user,
-        login,
-        resolveEmail,
-        logout,
-        isAuthenticated: !!user,
-        isLoaded: true,
-      }}
-    >
+    <AuthContext.Provider value={{ user, session, loading, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   );
@@ -106,6 +79,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 export function useAuth() {
   const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
+  if (!ctx) throw new Error('useAuth must be used inside AuthProvider');
   return ctx;
 }

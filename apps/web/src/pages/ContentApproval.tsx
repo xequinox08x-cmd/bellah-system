@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { CheckCircle, XCircle, Clock, Calendar, X, Eye } from 'lucide-react';
 import { useAuth } from '../components/AuthContext';
-import { Navigate } from 'react-router';
+import { Navigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { api } from '../lib/api';
 import { ContentItem } from '../types/content';

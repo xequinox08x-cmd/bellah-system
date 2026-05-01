@@ -1,10 +1,10 @@
 -- USERS
 CREATE TABLE IF NOT EXISTS users (
-  id SERIAL PRIMARY KEY,
-  clerk_id TEXT UNIQUE NOT NULL,
-  name TEXT NOT NULL,
-  email TEXT UNIQUE NOT NULL,
-  role TEXT NOT NULL DEFAULT 'staff',
+  id         SERIAL PRIMARY KEY,
+  auth_id    TEXT UNIQUE,                        -- Supabase auth UUID
+  name       TEXT NOT NULL DEFAULT '',
+  email      TEXT UNIQUE NOT NULL DEFAULT '',
+  role       TEXT NOT NULL DEFAULT 'staff',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -96,3 +96,4 @@ CREATE TABLE IF NOT EXISTS ai_forecast (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(product_id, forecast_date)
 );
+

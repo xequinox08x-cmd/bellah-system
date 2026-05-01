@@ -10,8 +10,9 @@ productsRouter.get('/api/products', async (_req, res) => {
       SELECT
         id, sku, name, category, price, cost, stock,
         low_stock_threshold AS "lowStockThreshold",
-        description, created_at, updated_at
+        description, image_url AS "imageUrl", created_at, updated_at
       FROM products
+      WHERE is_active = TRUE
       ORDER BY id DESC
     `);
     res.json(result.rows);
@@ -24,19 +25,19 @@ productsRouter.get('/api/products', async (_req, res) => {
 // POST /api/products
 productsRouter.post('/api/products', async (req, res) => {
   try {
-    const { sku, name, category, price, cost, stock, lowStockThreshold, description } = req.body;
+    const { sku, name, category, price, cost, stock, lowStockThreshold, description, imageUrl } = req.body;
 
     if (!sku || !name) {
       return res.status(400).json({ error: 'SKU and name are required' });
     }
 
     const result = await pool.query(
-      `INSERT INTO products (sku, name, category, price, cost, stock, low_stock_threshold, description)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      `INSERT INTO products (sku, name, category, price, cost, stock, low_stock_threshold, description, image_url)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        RETURNING
          id, sku, name, category, price, cost, stock,
          low_stock_threshold AS "lowStockThreshold",
-         description, created_at, updated_at`,
+         description, image_url AS "imageUrl", created_at, updated_at`,
       [
         sku, name,
         category ?? 'Skincare',
@@ -45,6 +46,7 @@ productsRouter.post('/api/products', async (req, res) => {
         stock ?? 0,
         lowStockThreshold ?? 20,
         description ?? '',
+        imageUrl ?? null,
       ]
     );
 
@@ -63,7 +65,7 @@ productsRouter.post('/api/products', async (req, res) => {
 productsRouter.put('/api/products/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { sku, name, category, price, cost, stock, lowStockThreshold, description } = req.body;
+    const { sku, name, category, price, cost, stock, lowStockThreshold, description, imageUrl } = req.body;
 
     if (!id) return res.status(400).json({ error: 'Invalid id' });
     if (!sku || !name) return res.status(400).json({ error: 'SKU and name are required' });
@@ -73,12 +75,12 @@ productsRouter.put('/api/products/:id', async (req, res) => {
        SET
          sku = $1, name = $2, category = $3, price = $4,
          cost = $5, stock = $6, low_stock_threshold = $7,
-         description = $8, updated_at = NOW()
-       WHERE id = $9
+         description = $8, image_url = $9, updated_at = NOW()
+       WHERE id = $10
        RETURNING
          id, sku, name, category, price, cost, stock,
          low_stock_threshold AS "lowStockThreshold",
-         description, created_at, updated_at`,
+         description, image_url AS "imageUrl", created_at, updated_at`,
       [
         sku, name,
         category ?? 'Skincare',
@@ -87,6 +89,7 @@ productsRouter.put('/api/products/:id', async (req, res) => {
         stock ?? 0,
         lowStockThreshold ?? 20,
         description ?? '',
+        imageUrl ?? null,
         id,
       ]
     );
@@ -122,8 +125,14 @@ productsRouter.delete('/api/products/:id', async (req, res) => {
     }
 
     res.json({ ok: true, deletedId: result.rows[0].id });
-  } catch (err) {
+  } catch (err: any) {
+    // Product is referenced by sale_items — cannot hard-delete
+    if (err.code === '23503') {
+      return res.status(409).json({
+        error: 'Cannot delete this product because it has existing sales records. Archive it instead.',
+      });
+    }
     console.error('[DELETE /api/products/:id]', err);
     res.status(500).json({ error: 'Server error' });
   }
-});
+});

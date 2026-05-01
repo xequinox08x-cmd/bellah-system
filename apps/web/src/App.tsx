@@ -1,5 +1,7 @@
-import { RouterProvider } from 'react-router';
+import { RouterProvider } from 'react-router-dom';
 import { AuthProvider } from './components/AuthContext';
+
+
 import { StoreProvider } from './data/store';
 import { Toaster } from './components/ui/sonner';
 import { router } from './routes';

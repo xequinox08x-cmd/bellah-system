@@ -8,8 +8,8 @@ PERN-stack monorepo for a beauty/skincare business.
 - `apps/web` — React 18, Vite 6, Tailwind v4, shadcn/Radix, TypeScript
 - `apps/api` — Express 4, TypeScript, pg (node-postgres), Neon (serverless Postgres)
 - Two roles: `admin` (full access) and `staff` (sales + inventory + dashboard only)
-- Auth: Clerk (being integrated — do not remove or bypass auth checks)
-- DB: Neon (SSL required in pool config)
+- Auth: Supabase Auth — `@supabase/supabase-js` on web, JWT verified manually on API
+- DB: Supabase Postgres (SSL required in pool config)
 
 ---
 
@@ -180,14 +180,15 @@ if (role !== 'admin') return <Navigate to="/dashboard" replace />;
 Staff **cannot**: delete products, view Users page, approve/reject content, manage campaigns, access admin settings.
 
 ### Backend
-- `requireAuth` on every protected route (verifies Clerk JWT)
-- `requireAdmin` on admin-only routes
-- Get `userId` and `role` from `req.auth` (Clerk middleware) — never from `req.body`
-- Default to least privilege if role is missing
+- Verify Supabase JWT on every protected route: decode `Authorization: Bearer <token>`, extract `sub` as the user's `auth_id`
+- `requireAdmin` middleware checks `users` table role for the `auth_id`
+- Get `authId` from the decoded JWT — never from `req.body`
+- Default to least privilege if role is missing or lookup fails
 
 ### Frontend
 - Hide admin UI for staff — UX only, not a security boundary
-- Use `useUser()` / `useAuth()` from Clerk once integrated
+- Use `useAuth()` from `components/AuthContext.tsx` to get `user` and `loading`
+- `user.role` determines access; `user.id` is the Supabase UUID (`auth_id`)
 
 ---
 
@@ -248,8 +249,8 @@ Staff **cannot**: delete products, view Users page, approve/reject content, mana
 | UI primitives | shadcn/Radix in `components/ui/` |
 | Charts | `recharts` |
 | Toasts | `sonner` |
-| Auth (web) | `@clerk/clerk-react` |
-| Auth (api) | `@clerk/express` |
+| Auth (web) | `@supabase/supabase-js` — `supabase.auth.*` |
+| Auth (api) | Decode Supabase JWT manually via `Buffer.from(token.split('.')[1], 'base64')` |
 | HTTP client | native `fetch` via `lib/api.ts` — no axios |
 
 Do not add new packages without explicitly listing name + minimum version.

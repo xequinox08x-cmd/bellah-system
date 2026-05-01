@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Sparkles, Send, Edit3, RefreshCw, Clock, CheckCircle, XCircle, Calendar } from 'lucide-react';
 import { useStore, ContentItem } from '../data/store';
 import { useAuth } from '../components/AuthContext';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 import { api } from '../lib/api';
 
 type Tone = 'fun' | 'professional' | 'romantic' | 'urgent';

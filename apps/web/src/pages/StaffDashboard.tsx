@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useNavigate } from 'react-router';
+import { useNavigate } from 'react-router-dom';
 import {
   ShoppingCart, Sparkles, Calendar, Clock, FileText,
   TrendingUp, CheckCircle, AlertCircle, ArrowRight,

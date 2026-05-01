@@ -4,10 +4,14 @@ import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import {
   Search, ShoppingCart, TrendingUp, ChevronDown,
   Plus, Minus, AlertTriangle, CheckCircle, X, User,
-  Tag, Receipt, Filter,
+  Tag, Receipt, Filter, DollarSign, BarChart2,
 } from "lucide-react";
 import { useAuth } from "../components/AuthContext";
 import { toast } from "sonner";
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip,
+  ResponsiveContainer, CartesianGrid,
+} from "recharts";
 
 type Product = {
   id: string;
@@ -22,7 +26,7 @@ type Product = {
 };
 
 // ─── constants ────────────────────────────────────────────────────────────────
-const TODAY = '2026-02-26';
+const TODAY = new Date().toISOString().split('T')[0];
 
 // ─── Searchable Product Combobox ──────────────────────────────────────────────
 function ProductCombobox({
@@ -262,44 +266,42 @@ function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: stri
 
 // ─── Sales Page ───────────────────────────────────────────────────────────────
 export default function Sales() {
-  // backend state (replaces useStore)
-const [products, setProducts] = useState<Product[]>([]);
-const [sales, setSales] = useState<any[]>([]);
-const [loading, setLoading] = useState(true);
+  const { user, session } = useAuth();
+  const token = session?.access_token ?? '';
 
-// load products + sales from backend on page load
-useEffect(() => {
-  async function load() {
-    try {
-      setLoading(true);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [sales, setSales] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
-      const rawProducts = await api.getProducts();
-      const normalizedProducts: Product[] = rawProducts.map((p: any) => ({
-        id: String(p.id),
-        sku: p.sku,
-        name: p.name,
-        category: p.category,
-        price: Number(p.price),
-        cost: Number(p.cost),
-        stock: Number(p.stock),
-        lowStockThreshold: Number(p.lowStockThreshold),
-        description: p.description ?? "",
-      }));
-      setProducts(normalizedProducts);
-
-      const rawSales = await api.getSales();
-      setSales(rawSales);
-    } catch (err: any) {
-      console.error(err);
-      toast.error(err.message || "Failed to load from backend");
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    if (!token) return;
+    async function load() {
+      try {
+        setLoading(true);
+        const rawProducts = await api.getProducts(token);
+        const normalizedProducts: Product[] = rawProducts.map((p: any) => ({
+          id: String(p.id),
+          sku: p.sku,
+          name: p.name,
+          category: p.category,
+          price: Number(p.price),
+          cost: Number(p.cost),
+          stock: Number(p.stock),
+          lowStockThreshold: Number(p.lowStockThreshold),
+          description: p.description ?? "",
+        }));
+        setProducts(normalizedProducts);
+        const rawSales = await api.getSales(token);
+        setSales(rawSales);
+      } catch (err: any) {
+        console.error(err);
+        toast.error(err.message || "Failed to load from backend");
+      } finally {
+        setLoading(false);
+      }
     }
-  }
-
-  load();
-}, []);
-  const { user } = useAuth();
+    load();
+  }, [token]);
 
   // ── Form state ─────────────────────────────────────────────────────────
   const [productId,      setProductId]      = useState('');
@@ -354,53 +356,29 @@ useEffect(() => {
 
   // ── Submit ─────────────────────────────────────────────────────────────
   const handleSubmit = async (e: React.FormEvent) => {
-  e.preventDefault();
-
-  if (!productId) { toast.error("Please select a product"); return; }
-  if (quantity < 1) { toast.error("Quantity must be at least 1"); return; }
-  if (!selectedProduct) return;
-
-  try {
-    setSubmitting(true);
-
-    await api.createSale({
-      items: [
-        {
-          productId: Number(productId),
-          qty: quantity,
-          unitPrice: selectedProduct.price,
-        },
-      ],
-    });
-
-    // refresh products (stock updated)
-  const rawProducts = await api.getProducts();
-  const normalizedProducts = rawProducts.map((p: any) => ({
-    id: String(p.id),
-    sku: p.sku,
-    name: p.name,
-    category: p.category,
-    price: Number(p.price),
-    cost: Number(p.cost),
-    stock: Number(p.stock),
-    lowStockThreshold: Number(p.lowStockThreshold),
-   description: p.description ?? '',
-  }));
-  setProducts(normalizedProducts);
-
-  // refresh sales table
-  setSales(await api.getSales());
-
-    toast.success(`Sale recorded — ${selectedProduct.name} ×${quantity}`);
-
-    resetForm();
-  } catch (err: any) {
-    console.error(err);
-    toast.error(err.message || "Failed to record sale");
-  } finally {
-    setSubmitting(false);
-  }
-};
+    e.preventDefault();
+    if (!productId) { toast.error("Please select a product"); return; }
+    if (quantity < 1) { toast.error("Quantity must be at least 1"); return; }
+    if (!selectedProduct) return;
+    try {
+      setSubmitting(true);
+      await api.createSale({ items: [{ productId: Number(productId), qty: quantity, unitPrice: selectedProduct.price }] }, token);
+      const rawProducts = await api.getProducts(token);
+      setProducts(rawProducts.map((p: any) => ({
+        id: String(p.id), sku: p.sku, name: p.name, category: p.category,
+        price: Number(p.price), cost: Number(p.cost), stock: Number(p.stock),
+        lowStockThreshold: Number(p.lowStockThreshold), description: p.description ?? '',
+      })));
+      setSales(await api.getSales(token));
+      toast.success(`Sale recorded — ${selectedProduct.name} ×${quantity}`);
+      resetForm();
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || "Failed to record sale");
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   // ── Sorted stock list ─────────────────────────────────────────────────
   const sortedByStock = useMemo(
@@ -416,14 +394,30 @@ useEffect(() => {
 
   // ── KPIs ──────────────────────────────────────────────────────────────
   const kpis = useMemo(() => {
-    const todaySales = sales.filter(s => s.date === TODAY);
-    const monthSales = sales.filter(s => s.date >= '2026-02-01');
+    const now = new Date();
+    const startOfToday = new Date(now); startOfToday.setHours(0,0,0,0);
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const todaySales  = sales.filter(s => s.created_at && new Date(s.created_at) >= startOfToday);
+    const monthSales  = sales.filter(s => s.created_at && new Date(s.created_at) >= startOfMonth);
     return {
       todayCount:   todaySales.length,
-      todayRevenue: todaySales.reduce((s, x) => s + x.total, 0),
-      monthRevenue: monthSales.reduce((s, x) => s + x.total, 0),
-      monthProfit:  monthSales.reduce((s, x) => s + x.profit, 0),
+      todayRevenue: todaySales.reduce((acc, x) => acc + Number(x.total ?? 0), 0),
+      monthRevenue: monthSales.reduce((acc, x) => acc + Number(x.total ?? 0), 0),
+      monthProfit:  monthSales.reduce((acc, x) => acc + Number(x.profit ?? 0), 0),
     };
+  }, [sales]);
+
+  // ── 7-day chart data ──────────────────────────────────────────────────
+  const chartData = useMemo(() => {
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(); d.setDate(d.getDate() - (6 - i));
+      const dateStr = d.toISOString().split('T')[0];
+      const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const revenue = sales
+        .filter((s: any) => s.created_at?.startsWith(dateStr))
+        .reduce((sum: number, s: any) => sum + Number(s.total ?? 0), 0);
+      return { label, Revenue: parseFloat(revenue.toFixed(2)) };
+    });
   }, [sales]);
 
   // ── Filtered recent sales ─────────────────────────────────────────────
@@ -476,22 +470,46 @@ useEffect(() => {
           <h1 className="text-[#111827] text-xl" style={{ fontWeight: 700 }}>Sales Recording</h1>
           <p className="text-[#6B7280] text-sm mt-0.5">Log a new transaction and auto-update inventory</p>
         </div>
-        <div className="flex gap-2 flex-wrap justify-end">
-          <div className="flex items-center gap-1.5 px-3 py-2 bg-white border border-[#E5E7EB] rounded-lg text-xs text-[#6B7280]">
-            <ShoppingCart className="w-3.5 h-3.5 text-[#EC4899]" />
-            <span style={{ fontWeight: 600 }}>{kpis.todayCount}</span> sales today
+        {lowStockCount > 0 && (
+          <div className="flex items-center gap-1.5 px-3 py-2 bg-red-50 border border-red-100 rounded-lg text-xs text-red-600">
+            <AlertTriangle className="w-3.5 h-3.5" />
+            <span style={{ fontWeight: 600 }}>{lowStockCount}</span> low stock
           </div>
-          <div className="flex items-center gap-1.5 px-3 py-2 bg-white border border-[#E5E7EB] rounded-lg text-xs text-[#6B7280]">
-            <TrendingUp className="w-3.5 h-3.5 text-emerald-500" />
-            <span style={{ fontWeight: 600 }}>₱{kpis.todayRevenue.toFixed(2)}</span> today
-          </div>
-          {lowStockCount > 0 && (
-            <div className="flex items-center gap-1.5 px-3 py-2 bg-red-50 border border-red-100 rounded-lg text-xs text-red-600">
-              <AlertTriangle className="w-3.5 h-3.5" />
-              <span style={{ fontWeight: 600 }}>{lowStockCount}</span> low stock
+        )}
+      </div>
+
+      {/* ── KPI Cards ─────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label: "Today's Sales", value: kpis.todayCount, prefix: '', suffix: ' txns', icon: ShoppingCart, bg: 'bg-pink-50', color: 'text-[#EC4899]' },
+          { label: "Today's Revenue", value: kpis.todayRevenue.toFixed(2), prefix: '₱', suffix: '', icon: DollarSign, bg: 'bg-yellow-50', color: 'text-yellow-600' },
+          { label: 'Month Revenue', value: kpis.monthRevenue.toFixed(2), prefix: '₱', suffix: '', icon: TrendingUp, bg: 'bg-emerald-50', color: 'text-emerald-600' },
+          { label: 'Month Profit', value: kpis.monthProfit.toFixed(2), prefix: '₱', suffix: '', icon: BarChart2, bg: 'bg-purple-50', color: 'text-purple-600' },
+        ].map(({ label, value, prefix, suffix, icon: Icon, bg, color }) => (
+          <div key={label} className="bg-white rounded-xl border border-[#E5E7EB] px-5 py-4 flex items-center gap-4">
+            <div className={`w-9 h-9 rounded-lg ${bg} flex items-center justify-center shrink-0`}>
+              <Icon className={`${color}`} style={{ width: 18, height: 18 }} />
             </div>
-          )}
-        </div>
+            <div className="min-w-0">
+              <p className="text-base text-[#111827]" style={{ fontWeight: 700 }}>{prefix}{value}{suffix}</p>
+              <p className="text-[10px] text-[#6B7280]">{label}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── 7-Day Revenue Chart ────────────────────────────────────────── */}
+      <div className="bg-white rounded-xl border border-[#E5E7EB] p-5">
+        <h3 className="text-[#111827] text-sm font-semibold mb-4">Revenue — Last 7 Days</h3>
+        <ResponsiveContainer width="100%" height={180}>
+          <BarChart data={chartData} barSize={28}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F3F4F6" />
+            <XAxis dataKey="label" fontSize={10} axisLine={false} tickLine={false} />
+            <YAxis fontSize={10} axisLine={false} tickLine={false} tickFormatter={v => `₱${v.toLocaleString()}`} />
+            <Tooltip formatter={(v: number) => [`₱${v.toLocaleString()}`, 'Revenue']} />
+            <Bar dataKey="Revenue" fill="#EC4899" radius={[6,6,0,0]} />
+          </BarChart>
+        </ResponsiveContainer>
       </div>
 
       {/* ── Main: Form + Stock Panel ───────────────────────────────────── */}
@@ -873,7 +891,7 @@ useEffect(() => {
                     type="button"
                     onClick={async () => {
                       try {
-                        const details = await api.getSaleById(s.id);
+                        const details = await api.getSaleById(s.id, token);
                         toast.success(`Loaded sale #${s.id} (check console)`);
                         console.log("Sale details:", details);
                       } catch (err: any) {

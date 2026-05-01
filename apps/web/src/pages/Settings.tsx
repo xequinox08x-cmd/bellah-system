@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { User, Bell, Shield, Palette, Save, Check } from 'lucide-react';
 import { useAuth } from '../components/AuthContext';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 
 type Section = 'profile' | 'notifications' | 'security' | 'appearance';
 
