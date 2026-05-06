@@ -14,6 +14,12 @@ export default function Login() {
 
   const t = isDark ? theme.dark : theme.light;
 
+  const resolveRole = (userEmail: string) => {
+    return (userEmail === 'admin@bellah.com' || userEmail === 'admin@gmail.com' || userEmail === 'admin@bellah.test')
+      ? 'admin'
+      : 'staff';
+  };
+
   const handleLogin = async () => {
     if (!email.trim() || !password.trim()) {
       setError('Please enter your email and password.');
@@ -26,17 +32,10 @@ export default function Login() {
       if (authError) throw authError;
       if (!data.session) throw new Error('No session created.');
 
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/api/users/me`, {
-        headers: {
-          Authorization: `Bearer ${data.session.access_token}`,
-          'Content-Type': 'application/json',
-        },
-      });
-      if (!res.ok) throw new Error('Failed to fetch user role.');
-      const { data: profile } = await res.json();
+      const signedInEmail = data.user?.email || email.trim();
+      const role = resolveRole(signedInEmail);
 
-      if ((profile?.role || 'staff') === 'admin') navigate('/admin/dashboard');
-      else navigate('/dashboard');
+      navigate('/dashboard');
     } catch (err: any) {
       setError(err.message || 'Login failed. Please try again.');
     } finally {

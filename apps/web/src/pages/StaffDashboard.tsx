@@ -1,5 +1,5 @@
-import { useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router';
 import {
   ShoppingCart, Sparkles, Calendar, Clock, FileText,
   TrendingUp, CheckCircle, AlertCircle, ArrowRight,
@@ -7,30 +7,28 @@ import {
 } from 'lucide-react';
 import { useStore } from '../data/store';
 import { useAuth } from '../components/AuthContext';
+import { getStaffTodaySales, type StaffTodaySales } from '../api/dashboard';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const TODAY       = '2026-02-26';
-const TODAY_LABEL = 'Thursday, February 26, 2026';
-
 const STATUS_STYLES: Record<string, { pill: string; dot: string }> = {
-  draft:     { pill: 'bg-gray-100 text-gray-600',      dot: 'bg-gray-400' },
-  pending:   { pill: 'bg-amber-100 text-amber-700',    dot: 'bg-amber-400' },
-  approved:  { pill: 'bg-emerald-100 text-emerald-700', dot: 'bg-emerald-400' },
-  rejected:  { pill: 'bg-red-100 text-red-500',        dot: 'bg-red-400' },
-  scheduled: { pill: 'bg-blue-100 text-blue-700',      dot: 'bg-blue-400' },
-  published: { pill: 'bg-purple-100 text-purple-700',  dot: 'bg-purple-400' },
+  draft: { pill: 'bg-gray-100 text-gray-600', dot: 'bg-gray-400' },
+  pending: { pill: 'bg-amber-100 text-amber-700', dot: 'bg-amber-400' },
+  approved: { pill: 'bg-emerald-100 text-emerald-700', dot: 'bg-emerald-400' },
+  rejected: { pill: 'bg-red-100 text-red-500', dot: 'bg-red-400' },
+  scheduled: { pill: 'bg-blue-100 text-blue-700', dot: 'bg-blue-400' },
+  published: { pill: 'bg-purple-100 text-purple-700', dot: 'bg-purple-400' },
 };
 
 const PLATFORM_LABEL: Record<string, string> = {
   instagram: 'Instagram',
-  facebook:  'Facebook',
-  both:      'IG + FB',
+  facebook: 'Facebook',
+  both: 'IG + FB',
 };
 
 const PLATFORM_COLOR: Record<string, string> = {
   instagram: 'bg-pink-500',
-  facebook:  'bg-blue-500',
-  both:      'bg-purple-500',
+  facebook: 'bg-blue-500',
+  both: 'bg-purple-500',
 };
 
 // ─── Quick Action Card ────────────────────────────────────────────────────────
@@ -125,18 +123,64 @@ function Empty({ message }: { message: string }) {
 
 // ─── Staff Dashboard ──────────────────────────────────────────────────────────
 export default function StaffDashboard() {
-  const { sales, products, contentItems } = useStore();
+  const { products, contentItems } = useStore();
   const { user } = useAuth();
   const navigate = useNavigate();
-
-  // ── Today's sales ──────────────────────────────────────────────────────
-  const todaySales = useMemo(
-    () => sales.filter(s => s.date === TODAY),
-    [sales]
+  const todayLabel = useMemo(
+    () =>
+      new Date().toLocaleDateString('en-US', {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+      }),
+    []
   );
-  const todayRevenue   = todaySales.reduce((sum, s) => sum + s.total, 0);
-  const todayProfit    = todaySales.reduce((sum, s) => sum + s.profit, 0);
-  const todayUnits     = todaySales.reduce((sum, s) => sum + s.quantity, 0);
+
+  const [todaySales, setTodaySales] = useState<StaffTodaySales>({
+    transactionCount: 0,
+    unitsSold: 0,
+    revenueTotal: 0,
+    profitTotal: 0,
+    items: [],
+  });
+  const [todaySalesLoading, setTodaySalesLoading] = useState(true);
+  const [todaySalesError, setTodaySalesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadTodaySales() {
+      try {
+        setTodaySalesLoading(true);
+        setTodaySalesError(null);
+        const response = await getStaffTodaySales();
+        if (!cancelled) {
+          setTodaySales(response);
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setTodaySalesError(e?.message || "Failed to load today's sales");
+          setTodaySales({
+            transactionCount: 0,
+            unitsSold: 0,
+            revenueTotal: 0,
+            profitTotal: 0,
+            items: [],
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          setTodaySalesLoading(false);
+        }
+      }
+    }
+
+    loadTodaySales();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ── My drafts (content created by staff role) ──────────────────────────
   const myDrafts = useMemo(
@@ -162,7 +206,7 @@ export default function StaffDashboard() {
   const lowStockCount = products.filter(p => p.stock <= p.lowStockThreshold).length;
 
   // ── Draft needs-action counts ─────────────────────────────────────────
-  const pendingCount  = myDrafts.filter(c => c.status === 'pending').length;
+  const pendingCount = myDrafts.filter(c => c.status === 'pending').length;
   const rejectedCount = myDrafts.filter(c => c.status === 'rejected').length;
 
   return (
@@ -174,7 +218,7 @@ export default function StaffDashboard() {
           <h1 className="text-[#111827] text-xl" style={{ fontWeight: 700 }}>
             Good morning, {user?.name?.split(' ')[0]} 👋
           </h1>
-          <p className="text-[#6B7280] text-sm mt-0.5">{TODAY_LABEL}</p>
+          <p className="text-[#6B7280] text-sm mt-0.5">{todayLabel}</p>
         </div>
         {/* Subtle role badge */}
         <span className="flex items-center gap-1.5 text-[10px] px-2.5 py-1 bg-[#FCE7F3] text-[#EC4899] rounded-full border border-[#F9A8C0]/40 mt-1">
@@ -191,7 +235,7 @@ export default function StaffDashboard() {
             icon={ShoppingCart}
             label="Record a Sale"
             description="Log a new customer transaction"
-            gradient="linear-gradient(90deg, #EC4899, #F9A8C0)"
+            gradient="linear-gradient(90deg, var(--chart-1), color-mix(in srgb, var(--chart-1) 35%, white 65%))"
             iconBg="bg-[#FCE7F3]"
             iconColor="text-[#EC4899]"
             onClick={() => navigate('/sales')}
@@ -200,7 +244,7 @@ export default function StaffDashboard() {
             icon={Sparkles}
             label="Generate Content"
             description="Use AI to create marketing copy"
-            gradient="linear-gradient(90deg, #D4A373, #F5C49A)"
+            gradient="linear-gradient(90deg, var(--chart-2), color-mix(in srgb, var(--chart-2) 35%, white 65%))"
             iconBg="bg-[#FEF3C7]"
             iconColor="text-[#D97706]"
             onClick={() => navigate('/marketing')}
@@ -209,7 +253,7 @@ export default function StaffDashboard() {
             icon={Calendar}
             label="Schedule a Post"
             description="Pick a date & platform to publish"
-            gradient="linear-gradient(90deg, #4A90D9, #7BB3F0)"
+            gradient="linear-gradient(90deg, var(--chart-3), color-mix(in srgb, var(--chart-3) 35%, white 65%))"
             iconBg="bg-blue-50"
             iconColor="text-blue-600"
             onClick={() => navigate('/scheduling')}
@@ -218,22 +262,14 @@ export default function StaffDashboard() {
       </div>
 
       {/* ── KPI Mini Stats ───────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <MiniStat
-          label="Sales Today"
-          value={String(todaySales.length)}
-          icon={ShoppingCart}
-          iconBg="bg-[#FCE7F3]"
-          iconColor="text-[#EC4899]"
-          note={`${todayUnits} units`}
-        />
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         <MiniStat
           label="Revenue Today"
-          value={`₱${todayRevenue.toFixed(2)}`}
+          value={todaySalesLoading ? '...' : `₱${todaySales.revenueTotal.toFixed(2)}`}
           icon={TrendingUp}
           iconBg="bg-[#FEF9C3]"
           iconColor="text-[#D97706]"
-          note={`₱${todayProfit.toFixed(2)} profit`}
+          note={todaySalesLoading ? 'Loading...' : `₱${todaySales.profitTotal.toFixed(2)} profit`}
         />
         <MiniStat
           label="My Drafts"
@@ -292,9 +328,13 @@ export default function StaffDashboard() {
         <div className="lg:col-span-3">
           <SectionCard
             title="Today's Sales"
-            sub={`${todaySales.length} transaction${todaySales.length !== 1 ? 's' : ''} · ₱${todayRevenue.toFixed(2)} total`}
+            sub={
+              todaySalesLoading
+                ? "Loading today's sales..."
+                : `${todaySales.transactionCount} transaction${todaySales.transactionCount !== 1 ? 's' : ''} · ₱${todaySales.revenueTotal.toFixed(2)} total`
+            }
             badge={
-              todaySales.length > 0 ? (
+              !todaySalesLoading && todaySales.items.length > 0 ? (
                 <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 bg-emerald-50 text-emerald-600 rounded-full border border-emerald-100">
                   <CheckCircle className="w-3 h-3" />
                   Active
@@ -302,8 +342,14 @@ export default function StaffDashboard() {
               ) : undefined
             }
           >
-            {todaySales.length === 0 ? (
-              <Empty message="No sales recorded today yet. Tap 'Record a Sale' to get started." />
+            {todaySalesLoading ? (
+              <Empty message="Loading today's sales..." />
+            ) : todaySalesError ? (
+              <div className="px-5 py-10 text-center">
+                <p className="text-xs text-red-500">{todaySalesError}</p>
+              </div>
+            ) : todaySales.items.length === 0 ? (
+              <Empty message="No sales recorded today" />
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full">
@@ -320,9 +366,9 @@ export default function StaffDashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {todaySales.map((s, i) => (
+                    {todaySales.items.map((s, i) => (
                       <tr
-                        key={s.id}
+                        key={`${s.saleId}-${s.productId}-${i}`}
                         className={`border-t border-[#F3F4F6] ${i % 2 === 0 ? 'bg-white' : 'bg-[#FAFAFA]'}`}
                       >
                         <td className="px-4 py-3">
@@ -335,14 +381,14 @@ export default function StaffDashboard() {
                           {s.customerName}
                         </td>
                         <td className="px-4 py-3 text-xs text-right text-[#374151]">
-                          ×{s.quantity}
+                          ×{s.qty}
                         </td>
                         <td className="px-4 py-3 text-right">
                           <p className="text-xs text-[#111827]" style={{ fontWeight: 600 }}>
-                            ₱{s.total.toFixed(2)}
+                            ₱{s.lineTotal.toFixed(2)}
                           </p>
                           <p className="text-[10px] text-emerald-500">
-                            +₱{s.profit.toFixed(2)}
+                            +₱{s.lineProfit.toFixed(2)}
                           </p>
                         </td>
                       </tr>
@@ -352,14 +398,14 @@ export default function StaffDashboard() {
                   <tfoot>
                     <tr className="border-t-2 border-[#E5E7EB] bg-[#F9FAFB]">
                       <td colSpan={2} className="px-4 py-2.5 text-xs text-[#6B7280]" style={{ fontWeight: 500 }}>
-                        {todaySales.length} transaction{todaySales.length !== 1 ? 's' : ''}
+                        {todaySales.transactionCount} transaction{todaySales.transactionCount !== 1 ? 's' : ''}
                       </td>
-                      <td className="px-4 py-2.5 text-right text-xs text-[#374151]">{todayUnits} units</td>
+                      <td className="px-4 py-2.5 text-right text-xs text-[#374151]">{todaySales.unitsSold} units</td>
                       <td className="px-4 py-2.5 text-right">
                         <p className="text-xs text-[#111827]" style={{ fontWeight: 700 }}>
-                          ₱{todayRevenue.toFixed(2)}
+                          ₱{todaySales.revenueTotal.toFixed(2)}
                         </p>
-                        <p className="text-[10px] text-emerald-500">₱{todayProfit.toFixed(2)} profit</p>
+                        <p className="text-[10px] text-emerald-500">₱{todaySales.profitTotal.toFixed(2)} profit</p>
                       </td>
                     </tr>
                   </tfoot>
@@ -491,8 +537,8 @@ export default function StaffDashboard() {
                   <p className="text-[10px] text-[#6B7280]">
                     {c.scheduledAt
                       ? new Date(c.scheduledAt).toLocaleDateString('en-US', {
-                          weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
-                        })
+                        weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+                      })
                       : 'Date TBD'}
                   </p>
                 </div>

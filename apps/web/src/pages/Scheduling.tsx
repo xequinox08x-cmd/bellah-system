@@ -30,6 +30,12 @@ interface ApprovedContent {
   hashtags: string;
 }
 
+function toLocalDateTimeInputValue(date: Date) {
+  const offset = date.getTimezoneOffset();
+  const local = new Date(date.getTime() - offset * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
 // ── Status config ─────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG = {
@@ -104,7 +110,7 @@ function ScheduleModal({
             type="datetime-local"
             value={scheduledAt}
             onChange={e => setScheduledAt(e.target.value)}
-            min={new Date().toISOString().slice(0, 16)}
+            min={toLocalDateTimeInputValue(new Date())}
             className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899]"
           />
         </div>

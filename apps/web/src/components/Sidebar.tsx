@@ -1,34 +1,24 @@
 import { useState, useEffect } from 'react';
-import { NavLink, useNavigate, useLocation } from 'react-router-dom';
+import { NavLink, useNavigate, useLocation } from 'react-router';
 import {
   LayoutDashboard, Package, ShoppingCart, Sparkles,
   CheckSquare, Calendar, BarChart2, Settings, LogOut,
   Shield, Users, ChevronDown, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import { useAuth } from './AuthContext';
-import { useStore } from '../data/store';
+import { BrandLogo } from './BrandLogo';
 import { toast } from 'sonner';
+import { api } from '../lib/api';
 
 // ─── Logo ─────────────────────────────────────────────────────────────────────
-function BLogo({ size = 30 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 52 52" fill="none" className="shrink-0">
-      <path d="M8 6C8 4.895 8.895 4 10 4H26V26H10C8.895 26 8 25.105 8 24V6Z" fill="#4CAF82" />
-      <path d="M26 4H36C40.418 4 44 7.582 44 12C44 16.418 40.418 20 36 20H26V4Z" fill="#E05C5C" />
-      <path d="M26 20H38C42.418 20 46 23.582 46 28C46 32.418 42.418 36 38 36H26V20Z" fill="#F5B942" />
-      <path d="M8 26H26V48H10C8.895 48 8 47.105 8 46V28C8 26.895 8.895 26 10 26Z" fill="#4A90D9" />
-      <path d="M26 36H38C42.418 36 46 39.582 46 44C46 46.209 44.209 48 42 48H26V36Z" fill="#9B59B6" />
-    </svg>
-  );
-}
 
 // ─── Nav helpers ───────────────────────────────────────────────────────────────
-const NAV_BASE    = 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-150 w-full';
-const NAV_ACTIVE  = 'bg-[#FCE7F3] text-[#EC4899]';
-const NAV_IDLE    = 'text-[#6B7280] hover:bg-[#F9FAFB] hover:text-[#111827]';
-const SUB_BASE    = 'flex items-center gap-2 pl-9 pr-3 py-2 rounded-lg text-xs transition-all w-full';
-const SUB_ACTIVE  = 'text-[#EC4899] bg-[#FCE7F3]';
-const SUB_IDLE    = 'text-[#9CA3AF] hover:text-[#374151] hover:bg-[#F9FAFB]';
+const NAV_BASE = 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-150 w-full';
+const NAV_ACTIVE = 'bg-[#FCE7F3] text-[#EC4899]';
+const NAV_IDLE = 'text-[#6B7280] hover:bg-[#F9FAFB] hover:text-[#111827]';
+const SUB_BASE = 'flex items-center gap-2 pl-9 pr-3 py-2 rounded-lg text-xs transition-all w-full';
+const SUB_ACTIVE = 'text-[#EC4899] bg-[#FCE7F3]';
+const SUB_IDLE = 'text-[#9CA3AF] hover:text-[#374151] hover:bg-[#F9FAFB]';
 
 const navClass = ({ isActive }: { isActive: boolean }) =>
   `${NAV_BASE} ${isActive ? NAV_ACTIVE : NAV_IDLE}`;
@@ -78,10 +68,9 @@ function NavItem({
 
 // ─── Sidebar ───────────────────────────────────────────────────────────────────
 export function Sidebar() {
-  const { user, signOut } = useAuth();
-  const { contentItems } = useStore();
-  const navigate   = useNavigate();
-  const location   = useLocation();
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
 
   // Persist collapse state
   const [collapsed, setCollapsed] = useState<boolean>(() =>
@@ -93,6 +82,7 @@ export function Sidebar() {
     p => location.pathname.startsWith(p)
   );
   const [marketingOpen, setMarketingOpen] = useState(isOnMarketing);
+  const [approvalDraftCount, setApprovalDraftCount] = useState(0);
 
   useEffect(() => {
     localStorage.setItem('bb_sidebar_collapsed', String(collapsed));
@@ -102,11 +92,42 @@ export function Sidebar() {
     if (isOnMarketing) setMarketingOpen(true);
   }, [location.pathname, isOnMarketing]);
 
-  const isAdmin       = user?.role === 'admin';
-  const pendingCount  = contentItems.filter(c => c.status === 'pending').length;
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadApprovalCount = async () => {
+      if (user?.role !== 'admin') {
+        setApprovalDraftCount(0);
+        return;
+      }
+
+      try {
+        const res = await api.getContent();
+        if (cancelled) return;
+
+        const items = Array.isArray(res?.data) ? res.data : [];
+        setApprovalDraftCount(items.filter((item: { status?: string }) => item.status === 'draft').length);
+      } catch {
+        if (!cancelled) setApprovalDraftCount(0);
+      }
+    };
+
+    loadApprovalCount();
+    const handleContentUpdated = () => {
+      loadApprovalCount();
+    };
+    window.addEventListener('ai-content-updated', handleContentUpdated);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('ai-content-updated', handleContentUpdated);
+    };
+  }, [user?.role, location.pathname]);
+
+  const isAdmin = user?.role === 'admin';
+  const draftCount = approvalDraftCount;
 
   const handleLogout = async () => {
-    await signOut();
+    await logout();
     toast.success('Signed out');
     navigate('/login');
   };
@@ -125,12 +146,11 @@ export function Sidebar() {
     >
       {/* ── Brand Header ──────────────────────────────────────────────── */}
       <div
-        className={`flex items-center border-b border-[#E5E7EB] h-16 px-4 shrink-0 ${
-          collapsed ? 'justify-center' : 'justify-between'
-        }`}
+        className={`flex items-center border-b border-[#E5E7EB] h-16 px-4 shrink-0 ${collapsed ? 'justify-center' : 'justify-between'
+          }`}
       >
         <div className="flex items-center gap-2.5 min-w-0">
-          <BLogo size={28} />
+          <BrandLogo size={30} className="rounded-lg" />
           {!collapsed && (
             <div className="min-w-0">
               <p className="text-[#111827] text-[13px] leading-tight truncate" style={{ fontWeight: 700 }}>
@@ -170,8 +190,8 @@ export function Sidebar() {
         {collapsed && <div className="h-3" />}
 
         <NavItem to="/dashboard" icon={LayoutDashboard} label="Dashboard" collapsed={collapsed} />
-        <NavItem to="/products"  icon={Package}         label="Inventory"  collapsed={collapsed} />
-        <NavItem to="/sales"     icon={ShoppingCart}    label="Sales"      collapsed={collapsed} />
+        <NavItem to="/products" icon={Package} label="Inventory" collapsed={collapsed} />
+        <NavItem to="/sales" icon={ShoppingCart} label="Sales" collapsed={collapsed} />
 
         {/* Marketing */}
         {!collapsed && <SectionLabel label="Marketing" />}
@@ -187,9 +207,8 @@ export function Sidebar() {
               <Sparkles className="w-4 h-4 shrink-0" />
               <span className="flex-1 text-left truncate">Marketing</span>
               <ChevronDown
-                className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${
-                  marketingOpen ? 'rotate-180' : ''
-                }`}
+                className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${marketingOpen ? 'rotate-180' : ''
+                  }`}
               />
             </button>
 
@@ -199,13 +218,13 @@ export function Sidebar() {
               style={{ maxHeight: marketingOpen ? 200 : 0 }}
             >
               <div className="pt-0.5 space-y-0.5">
-                <NavLink to="/marketing"  className={subNavClass}>Generate Content</NavLink>
+                <NavLink to="/marketing" className={subNavClass}>Generate Content</NavLink>
                 {isAdmin && (
                   <NavLink to="/approvals" className={subNavClass}>
                     Content Approvals
-                    {pendingCount > 0 && (
+                    {draftCount > 0 && (
                       <span className="ml-auto text-[9px] px-1.5 py-0.5 bg-[#EC4899] text-white rounded-full shrink-0">
-                        {pendingCount}
+                        {draftCount}
                       </span>
                     )}
                   </NavLink>
@@ -223,7 +242,7 @@ export function Sidebar() {
               title="Marketing"
             >
               <Sparkles className="w-4 h-4 shrink-0" />
-              {pendingCount > 0 && (
+              {draftCount > 0 && (
                 <span className="absolute top-1 right-1 w-2 h-2 bg-[#EC4899] rounded-full" />
               )}
             </NavLink>
@@ -245,7 +264,7 @@ export function Sidebar() {
             {!collapsed && <SectionLabel label="Administration" />}
             {collapsed && <div className="h-px bg-[#F3F4F6] mx-2 my-2" />}
 
-            <NavItem to="/users"    icon={Users}    label="Users"    collapsed={collapsed} />
+            <NavItem to="/users" icon={Users} label="Users" collapsed={collapsed} />
             <NavItem to="/settings" icon={Settings} label="Settings" collapsed={collapsed} />
           </>
         )}
@@ -285,11 +304,10 @@ export function Sidebar() {
         {/* Logout */}
         <div className="relative group/logout">
           <button
-            onClick={handleLogout}
+            onClick={() => void handleLogout()}
             title={collapsed ? 'Sign Out' : undefined}
-            className={`${NAV_BASE} text-[#9CA3AF] hover:bg-red-50 hover:text-red-500 mt-1 ${
-              collapsed ? 'justify-center' : ''
-            }`}
+            className={`${NAV_BASE} text-[#9CA3AF] hover:bg-red-50 hover:text-red-500 mt-1 ${collapsed ? 'justify-center' : ''
+              }`}
           >
             <LogOut className="w-4 h-4 shrink-0" />
             {!collapsed && <span>Sign Out</span>}
