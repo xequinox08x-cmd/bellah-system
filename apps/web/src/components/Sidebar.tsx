@@ -1,56 +1,58 @@
-import { useState, useEffect } from 'react';
-import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import {
-  LayoutDashboard, Package, ShoppingCart, Sparkles,
-  CheckSquare, Calendar, BarChart2, Settings, LogOut,
-  Shield, Users, ChevronDown, ChevronLeft, ChevronRight,
-} from 'lucide-react';
-import { useAuth } from './AuthContext';
-import { useStore } from '../data/store';
-import { toast } from 'sonner';
+  BarChart2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  LayoutDashboard,
+  LogOut,
+  Package,
+  Settings,
+  Shield,
+  ShoppingCart,
+  Sparkles,
+  Users,
+} from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { NavLink, useLocation, useNavigate } from 'react-router'
+import { toast } from 'sonner'
+import { api } from '../lib/api'
+import { useAuth } from './AuthContext'
+import { BrandLogo } from './BrandLogo'
 
 // ─── Logo ─────────────────────────────────────────────────────────────────────
-function BLogo({ size = 30 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 52 52" fill="none" className="shrink-0">
-      <path d="M8 6C8 4.895 8.895 4 10 4H26V26H10C8.895 26 8 25.105 8 24V6Z" fill="#4CAF82" />
-      <path d="M26 4H36C40.418 4 44 7.582 44 12C44 16.418 40.418 20 36 20H26V4Z" fill="#E05C5C" />
-      <path d="M26 20H38C42.418 20 46 23.582 46 28C46 32.418 42.418 36 38 36H26V20Z" fill="#F5B942" />
-      <path d="M8 26H26V48H10C8.895 48 8 47.105 8 46V28C8 26.895 8.895 26 10 26Z" fill="#4A90D9" />
-      <path d="M26 36H38C42.418 36 46 39.582 46 44C46 46.209 44.209 48 42 48H26V36Z" fill="#9B59B6" />
-    </svg>
-  );
-}
 
 // ─── Nav helpers ───────────────────────────────────────────────────────────────
-const NAV_BASE    = 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-150 w-full';
-const NAV_ACTIVE  = 'bg-[#FCE7F3] text-[#EC4899]';
-const NAV_IDLE    = 'text-[#6B7280] hover:bg-[#F9FAFB] hover:text-[#111827]';
-const SUB_BASE    = 'flex items-center gap-2 pl-9 pr-3 py-2 rounded-lg text-xs transition-all w-full';
-const SUB_ACTIVE  = 'text-[#EC4899] bg-[#FCE7F3]';
-const SUB_IDLE    = 'text-[#9CA3AF] hover:text-[#374151] hover:bg-[#F9FAFB]';
+const NAV_BASE = 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-150 w-full'
+const NAV_ACTIVE = 'bg-[#FCE7F3] text-[#EC4899]'
+const NAV_IDLE = 'text-[#6B7280] hover:bg-[#F9FAFB] hover:text-[#111827]'
+const SUB_BASE = 'flex items-center gap-2 pl-9 pr-3 py-2 rounded-lg text-xs transition-all w-full'
+const SUB_ACTIVE = 'text-[#EC4899] bg-[#FCE7F3]'
+const SUB_IDLE = 'text-[#9CA3AF] hover:text-[#374151] hover:bg-[#F9FAFB]'
 
-const navClass = ({ isActive }: { isActive: boolean }) =>
-  `${NAV_BASE} ${isActive ? NAV_ACTIVE : NAV_IDLE}`;
+const navClass = ({ isActive }: { isActive: boolean }) => `${NAV_BASE} ${isActive ? NAV_ACTIVE : NAV_IDLE}`
 
-const subNavClass = ({ isActive }: { isActive: boolean }) =>
-  `${SUB_BASE} ${isActive ? SUB_ACTIVE : SUB_IDLE}`;
+const subNavClass = ({ isActive }: { isActive: boolean }) => `${SUB_BASE} ${isActive ? SUB_ACTIVE : SUB_IDLE}`
 
 // ─── Section Label ─────────────────────────────────────────────────────────────
 function SectionLabel({ label }: { label: string }) {
-  return (
-    <p className="text-[9px] text-[#9CA3AF] uppercase tracking-widest px-3 pt-4 pb-1 select-none">
-      {label}
-    </p>
-  );
+  return <p className="text-[9px] text-[#9CA3AF] uppercase tracking-widest px-3 pt-4 pb-1 select-none">{label}</p>
 }
 
 // ─── Tooltip wrapper (for collapsed state) ─────────────────────────────────────
 function NavItem({
-  to, icon: Icon, label, badge, collapsed, end,
+  to,
+  icon: Icon,
+  label,
+  badge,
+  collapsed,
+  end,
 }: {
-  to: string; icon: React.ElementType; label: string;
-  badge?: number; collapsed?: boolean; end?: boolean;
+  to: string
+  icon: React.ElementType
+  label: string
+  badge?: number
+  collapsed?: boolean
+  end?: boolean
 }) {
   return (
     <div className="relative group/nav">
@@ -73,50 +75,77 @@ function NavItem({
         </div>
       )}
     </div>
-  );
+  )
 }
 
 // ─── Sidebar ───────────────────────────────────────────────────────────────────
 export function Sidebar() {
-  const { user, signOut } = useAuth();
-  const { contentItems } = useStore();
-  const navigate   = useNavigate();
-  const location   = useLocation();
+  const { user, logout } = useAuth()
+  const navigate = useNavigate()
+  const location = useLocation()
 
   // Persist collapse state
-  const [collapsed, setCollapsed] = useState<boolean>(() =>
-    localStorage.getItem('bb_sidebar_collapsed') === 'true'
-  );
+  const [collapsed, setCollapsed] = useState<boolean>(() => localStorage.getItem('bb_sidebar_collapsed') === 'true')
 
   // Auto-open marketing submenu when on a marketing page
-  const isOnMarketing = ['/marketing', '/approvals', '/scheduling'].some(
-    p => location.pathname.startsWith(p)
-  );
-  const [marketingOpen, setMarketingOpen] = useState(isOnMarketing);
+  const isOnMarketing = ['/marketing', '/approvals', '/scheduling'].some((p) => location.pathname.startsWith(p))
+  const [marketingOpen, setMarketingOpen] = useState(isOnMarketing)
+  const [approvalDraftCount, setApprovalDraftCount] = useState(0)
 
   useEffect(() => {
-    localStorage.setItem('bb_sidebar_collapsed', String(collapsed));
-  }, [collapsed]);
+    localStorage.setItem('bb_sidebar_collapsed', String(collapsed))
+  }, [collapsed])
 
   useEffect(() => {
-    if (isOnMarketing) setMarketingOpen(true);
-  }, [location.pathname, isOnMarketing]);
+    if (isOnMarketing) setMarketingOpen(true)
+  }, [location.pathname, isOnMarketing])
 
-  const isAdmin       = user?.role === 'admin';
-  const pendingCount  = contentItems.filter(c => c.status === 'pending').length;
+  useEffect(() => {
+    let cancelled = false
+
+    const loadApprovalCount = async () => {
+      if (user?.role !== 'admin') {
+        setApprovalDraftCount(0)
+        return
+      }
+
+      try {
+        const res = await api.getContent()
+        if (cancelled) return
+
+        const items = Array.isArray(res?.data) ? res.data : []
+        setApprovalDraftCount(items.filter((item: { status?: string }) => item.status === 'draft').length)
+      } catch {
+        if (!cancelled) setApprovalDraftCount(0)
+      }
+    }
+
+    loadApprovalCount()
+    const handleContentUpdated = () => {
+      loadApprovalCount()
+    }
+    window.addEventListener('ai-content-updated', handleContentUpdated)
+    return () => {
+      cancelled = true
+      window.removeEventListener('ai-content-updated', handleContentUpdated)
+    }
+  }, [user?.role, location.pathname])
+
+  const isAdmin = user?.role === 'admin'
+  const draftCount = approvalDraftCount
 
   const handleLogout = async () => {
-    await signOut();
-    toast.success('Signed out');
-    navigate('/login');
-  };
+    await logout()
+    toast.success('Signed out')
+    navigate('/login')
+  }
 
   const toggleCollapse = () => {
-    setCollapsed(prev => {
-      if (!prev) setMarketingOpen(false); // close submenu on collapse
-      return !prev;
-    });
-  };
+    setCollapsed((prev) => {
+      if (!prev) setMarketingOpen(false) // close submenu on collapse
+      return !prev
+    })
+  }
 
   return (
     <aside
@@ -130,7 +159,7 @@ export function Sidebar() {
         }`}
       >
         <div className="flex items-center gap-2.5 min-w-0">
-          <BLogo size={28} />
+          <BrandLogo size={30} className="rounded-lg" />
           {!collapsed && (
             <div className="min-w-0">
               <p className="text-[#111827] text-[13px] leading-tight truncate" style={{ fontWeight: 700 }}>
@@ -164,14 +193,13 @@ export function Sidebar() {
 
       {/* ── Navigation ────────────────────────────────────────────────── */}
       <nav className="flex-1 overflow-y-auto overflow-x-hidden px-2.5 py-3 space-y-0.5">
-
         {/* Main */}
         {!collapsed && <SectionLabel label="Main" />}
         {collapsed && <div className="h-3" />}
 
         <NavItem to="/dashboard" icon={LayoutDashboard} label="Dashboard" collapsed={collapsed} />
-        <NavItem to="/products"  icon={Package}         label="Inventory"  collapsed={collapsed} />
-        <NavItem to="/sales"     icon={ShoppingCart}    label="Sales"      collapsed={collapsed} />
+        <NavItem to="/products" icon={Package} label="Inventory" collapsed={collapsed} />
+        <NavItem to="/sales" icon={ShoppingCart} label="Sales" collapsed={collapsed} />
 
         {/* Marketing */}
         {!collapsed && <SectionLabel label="Marketing" />}
@@ -181,8 +209,8 @@ export function Sidebar() {
           /* Expanded: collapsible marketing section */
           <div>
             <button
-              onClick={() => setMarketingOpen(prev => !prev)}
-              className={`${NAV_BASE} ${isOnMarketing ? NAV_ACTIVE : NAV_IDLE}`}
+              onClick={() => setMarketingOpen((prev) => !prev)}
+              className={`cursor-pointer ${NAV_BASE} ${isOnMarketing ? NAV_ACTIVE : NAV_IDLE}`}
             >
               <Sparkles className="w-4 h-4 shrink-0" />
               <span className="flex-1 text-left truncate">Marketing</span>
@@ -194,38 +222,33 @@ export function Sidebar() {
             </button>
 
             {/* Sub-items */}
-            <div
-              className="overflow-hidden transition-all duration-200"
-              style={{ maxHeight: marketingOpen ? 200 : 0 }}
-            >
+            <div className="overflow-hidden transition-all duration-200" style={{ maxHeight: marketingOpen ? 200 : 0 }}>
               <div className="pt-0.5 space-y-0.5">
-                <NavLink to="/marketing"  className={subNavClass}>Generate Content</NavLink>
+                <NavLink to="/marketing" className={subNavClass}>
+                  Generate Content
+                </NavLink>
                 {isAdmin && (
                   <NavLink to="/approvals" className={subNavClass}>
                     Content Approvals
-                    {pendingCount > 0 && (
+                    {draftCount > 0 && (
                       <span className="ml-auto text-[9px] px-1.5 py-0.5 bg-[#EC4899] text-white rounded-full shrink-0">
-                        {pendingCount}
+                        {draftCount}
                       </span>
                     )}
                   </NavLink>
                 )}
-                <NavLink to="/scheduling" className={subNavClass}>Scheduling</NavLink>
+                <NavLink to="/scheduling" className={subNavClass}>
+                  Scheduling
+                </NavLink>
               </div>
             </div>
           </div>
         ) : (
           /* Collapsed: just the Sparkles icon */
           <div className="relative group/nav">
-            <NavLink
-              to="/marketing"
-              className={navClass}
-              title="Marketing"
-            >
+            <NavLink to="/marketing" className={navClass} title="Marketing">
               <Sparkles className="w-4 h-4 shrink-0" />
-              {pendingCount > 0 && (
-                <span className="absolute top-1 right-1 w-2 h-2 bg-[#EC4899] rounded-full" />
-              )}
+              {draftCount > 0 && <span className="absolute top-1 right-1 w-2 h-2 bg-[#EC4899] rounded-full" />}
             </NavLink>
             <div className="pointer-events-none absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2 py-1 bg-[#111827] text-white text-xs rounded-md opacity-0 group-hover/nav:opacity-100 transition-opacity whitespace-nowrap z-50 shadow-lg">
               Marketing
@@ -245,7 +268,7 @@ export function Sidebar() {
             {!collapsed && <SectionLabel label="Administration" />}
             {collapsed && <div className="h-px bg-[#F3F4F6] mx-2 my-2" />}
 
-            <NavItem to="/users"    icon={Users}    label="Users"    collapsed={collapsed} />
+            <NavItem to="/users" icon={Users} label="Users" collapsed={collapsed} />
             <NavItem to="/settings" icon={Settings} label="Settings" collapsed={collapsed} />
           </>
         )}
@@ -285,7 +308,7 @@ export function Sidebar() {
         {/* Logout */}
         <div className="relative group/logout">
           <button
-            onClick={handleLogout}
+            onClick={() => void handleLogout()}
             title={collapsed ? 'Sign Out' : undefined}
             className={`${NAV_BASE} text-[#9CA3AF] hover:bg-red-50 hover:text-red-500 mt-1 ${
               collapsed ? 'justify-center' : ''
@@ -302,5 +325,5 @@ export function Sidebar() {
         </div>
       </div>
     </aside>
-  );
+  )
 }

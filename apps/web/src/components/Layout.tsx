@@ -1,6 +1,6 @@
-import { Outlet } from 'react-router-dom';
-import { Sidebar } from './Sidebar';
-import { TopNav }  from './TopNav';
+import { Outlet } from 'react-router-dom'
+import { Sidebar } from './Sidebar'
+import { TopNav } from './TopNav'
 
 export function Layout() {
   return (
@@ -16,5 +16,5 @@ export function Layout() {
         </main>
       </div>
     </div>
-  );
+  )
 }

@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
+import { parseJsonResponse } from '../lib/http';
 
 interface AuthUser {
   id: string;
@@ -33,8 +34,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
-    if (!res.ok) throw new Error('Failed to fetch user profile');
-    const { data } = await res.json();
+    const payload = await parseJsonResponse<{ data?: { name?: string; role?: 'admin' | 'staff' }; error?: string }>(res);
+    if (!res.ok) throw new Error(payload.error || 'Failed to fetch user profile');
+    const data = payload.data || {};
     
     return {
       id: sess.user.id,

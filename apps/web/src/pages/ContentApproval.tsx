@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { CheckCircle, XCircle, Clock, Calendar, X, Eye } from 'lucide-react';
+import { CheckCircle, XCircle, Clock, X, Eye } from 'lucide-react';
 import { useAuth } from '../components/AuthContext';
 import { Navigate } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -21,13 +21,13 @@ const PLATFORM_BADGE: Record<string, { label: string; className: string }> = {
 
 const STATUS_TABS: { key: ContentStatus | 'all'; label: string }[] = [
   { key: 'all', label: 'All' },
-  { key: 'draft', label: 'Draft' },
+  { key: 'pending', label: 'For Review' },
   { key: 'approved', label: 'Approved' },
   { key: 'rejected', label: 'Rejected' },
 ];
 
 const STATUS_CARD_CONFIG: Record<string, { bg: string; text: string }> = {
-  draft: { bg: 'bg-gray-50 border-gray-200', text: 'text-gray-500' },
+  pending: { bg: 'bg-amber-50 border-amber-200', text: 'text-amber-600' },
   approved: { bg: 'bg-emerald-50 border-emerald-200', text: 'text-emerald-600' },
   rejected: { bg: 'bg-red-50 border-red-200', text: 'text-red-500' },
 };
@@ -100,7 +100,7 @@ function ContentCard({
         </button>
 
         {/* Approve and Reject buttons — only shown for drafts */}
-        {item.status === 'draft' && (
+        {item.status === 'pending' && (
           <>
             <button
               onClick={() => onApprove(item.id)}
@@ -188,6 +188,7 @@ function RejectModal({
 
 function ViewModal({ item, onClose }: { item: ContentItem; onClose: () => void }) {
   const plat = PLATFORM_BADGE[item.platform] ?? { label: item.platform, className: 'bg-gray-100 text-gray-500' };
+  const previewImageUrl = item.generatedImageUrl || item.referenceImageUrl || null;
 
   return (
     <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
@@ -219,6 +220,13 @@ function ViewModal({ item, onClose }: { item: ContentItem; onClose: () => void }
             {item.hashtags && (
               <p className="text-xs text-blue-500 mt-3">{item.hashtags}</p>
             )}
+            {previewImageUrl && (
+              <img
+                src={previewImageUrl}
+                alt={item.title ?? 'Generated content preview'}
+                className="w-full rounded-xl border border-[#E5E7EB] object-cover mt-4"
+              />
+            )}
           </div>
 
           <div className="text-xs text-[#9CA3AF] space-y-1">
@@ -240,7 +248,7 @@ export default function ContentApproval() {
   const [contentItems, setContentItems] = useState<ContentItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<ContentStatus | 'all'>('draft');
+  const [activeTab, setActiveTab] = useState<ContentStatus | 'all'>('pending');
   const [rejectItem, setRejectItem] = useState<ContentItem | null>(null);
   const [viewItem, setViewItem] = useState<ContentItem | null>(null);
 
@@ -304,7 +312,7 @@ export default function ContentApproval() {
 
   // Count per status for the summary cards and tab badges
   const counts = {
-    draft: contentItems.filter(c => c.status === 'draft').length,
+    pending: contentItems.filter(c => c.status === 'pending').length,
     approved: contentItems.filter(c => c.status === 'approved').length,
     rejected: contentItems.filter(c => c.status === 'rejected').length,
   };
@@ -319,11 +327,11 @@ export default function ContentApproval() {
           <h1 className="text-[#111827] text-xl" style={{ fontWeight: 700 }}>Content Approvals</h1>
           <p className="text-[#6B7280] text-sm">Review and approve marketing content before publishing</p>
         </div>
-        {counts.draft > 0 && (
+        {counts.pending > 0 && (
           <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 border border-amber-200 rounded-xl">
             <Clock className="w-4 h-4 text-amber-600" />
             <span className="text-sm text-amber-700" style={{ fontWeight: 500 }}>
-              {counts.draft} draft{counts.draft > 1 ? 's' : ''} to review
+              {counts.pending} item{counts.pending > 1 ? 's' : ''} to review
             </span>
           </div>
         )}
@@ -331,7 +339,7 @@ export default function ContentApproval() {
 
       {/* Summary Cards — shows count per status */}
       <div className="grid grid-cols-3 gap-3">
-        {(['draft', 'approved', 'rejected'] as ContentStatus[]).map(status => (
+        {(['pending', 'approved', 'rejected'] as ContentStatus[]).map(status => (
           <div key={status} className={`rounded-xl border p-4 ${STATUS_CARD_CONFIG[status].bg}`}>
             <p className={`text-2xl ${STATUS_CARD_CONFIG[status].text}`} style={{ fontWeight: 700 }}>
               {counts[status as keyof typeof counts] ?? 0}
