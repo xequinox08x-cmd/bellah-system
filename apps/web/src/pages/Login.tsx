@@ -1,51 +1,51 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { supabase } from '../lib/supabase';
-import { Eye, EyeOff, Loader2, AlertCircle, Moon, Sun } from 'lucide-react';
+import { AlertCircle, Eye, EyeOff, Loader2, Moon, Sun } from 'lucide-react'
+import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { supabase } from '../lib/supabase'
 
 export default function Login() {
-  const navigate = useNavigate();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [isDark, setIsDark] = useState(true);
+  const navigate = useNavigate()
+  const [email, setEmail] = useState('admin@gmail.com')
+  const [password, setPassword] = useState('Aerhon08')
+  const [showPassword, setShowPassword] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [isDark, setIsDark] = useState(true)
 
-  const t = isDark ? theme.dark : theme.light;
+  const t = isDark ? theme.dark : theme.light
 
   const resolveRole = (userEmail: string) => {
-    return (userEmail === 'admin@bellah.com' || userEmail === 'admin@gmail.com' || userEmail === 'admin@bellah.test')
+    return userEmail === 'admin@bellah.com' || userEmail === 'admin@gmail.com' || userEmail === 'admin@bellah.test'
       ? 'admin'
-      : 'staff';
-  };
+      : 'staff'
+  }
 
   const handleLogin = async () => {
     if (!email.trim() || !password.trim()) {
-      setError('Please enter your email and password.');
-      return;
+      setError('Please enter your email and password.')
+      return
     }
-    setError(null);
-    setIsLoading(true);
+    setError(null)
+    setIsLoading(true)
     try {
-      const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password });
-      if (authError) throw authError;
-      if (!data.session) throw new Error('No session created.');
+      const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password })
+      if (authError) throw authError
+      if (!data.session) throw new Error('No session created.')
 
-      const signedInEmail = data.user?.email || email.trim();
-      const role = resolveRole(signedInEmail);
+      const signedInEmail = data.user?.email || email.trim()
+      const role = resolveRole(signedInEmail)
 
-      navigate('/dashboard');
+      navigate('/dashboard')
     } catch (err: any) {
-      setError(err.message || 'Login failed. Please try again.');
+      setError(err.message || 'Login failed. Please try again.')
     } finally {
-      setIsLoading(false);
+      setIsLoading(false)
     }
-  };
+  }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') handleLogin();
-  };
+    if (e.key === 'Enter') handleLogin()
+  }
 
   return (
     <div style={{ ...styles.root, background: t.bg }}>
@@ -61,8 +61,13 @@ export default function Login() {
       {/* Theme toggle — top right */}
       <button
         id="theme-toggle"
-        onClick={() => setIsDark(d => !d)}
-        style={{ ...styles.themeToggle, background: t.toggleBg, border: `1px solid ${t.toggleBorder}`, color: t.toggleIcon }}
+        onClick={() => setIsDark((d) => !d)}
+        style={{
+          ...styles.themeToggle,
+          background: t.toggleBg,
+          border: `1px solid ${t.toggleBorder}`,
+          color: t.toggleIcon,
+        }}
         title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
         type="button"
       >
@@ -70,8 +75,9 @@ export default function Login() {
       </button>
 
       {/* Card */}
-      <div style={{ ...styles.card, background: t.cardBg, border: `1px solid ${t.cardBorder}`, boxShadow: t.cardShadow }}>
-
+      <div
+        style={{ ...styles.card, background: t.cardBg, border: `1px solid ${t.cardBorder}`, boxShadow: t.cardShadow }}
+      >
         {/* Brand */}
         <div style={styles.cardHeader}>
           <span style={{ ...styles.brandText, ...(isDark ? styles.brandTextDark : styles.brandTextLight) }}>
@@ -90,7 +96,9 @@ export default function Login() {
 
         {/* Email field */}
         <div style={styles.fieldGroup}>
-          <label style={{ ...styles.fieldLabel, color: t.labelColor }} htmlFor="login-email">Email address</label>
+          <label style={{ ...styles.fieldLabel, color: t.labelColor }} htmlFor="login-email">
+            Email address
+          </label>
           <div
             style={{ ...styles.inputWrap, background: t.inputBg, border: `1px solid ${t.inputBorder}` }}
             className="login-input-wrap"
@@ -99,7 +107,7 @@ export default function Login() {
               id="login-email"
               type="email"
               value={email}
-              onChange={e => setEmail(e.target.value)}
+              onChange={(e) => setEmail(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="you@example.com"
               style={{ ...styles.input, color: t.inputText }}
@@ -110,23 +118,30 @@ export default function Login() {
 
         {/* Password field */}
         <div style={styles.fieldGroup}>
-          <label style={{ ...styles.fieldLabel, color: t.labelColor }} htmlFor="login-password">Password</label>
+          <label style={{ ...styles.fieldLabel, color: t.labelColor }} htmlFor="login-password">
+            Password
+          </label>
           <div
-            style={{ ...styles.inputWrap, background: t.inputBg, border: `1px solid ${t.inputBorder}`, position: 'relative' }}
+            style={{
+              ...styles.inputWrap,
+              background: t.inputBg,
+              border: `1px solid ${t.inputBorder}`,
+              position: 'relative',
+            }}
             className="login-input-wrap"
           >
             <input
               id="login-password"
               type={showPassword ? 'text' : 'password'}
               value={password}
-              onChange={e => setPassword(e.target.value)}
+              onChange={(e) => setPassword(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="••••••••"
               style={{ ...styles.input, color: t.inputText, paddingRight: 42 }}
               autoComplete="current-password"
             />
             <button
-              onClick={() => setShowPassword(p => !p)}
+              onClick={() => setShowPassword((p) => !p)}
               style={{ ...styles.eyeBtn, color: t.eyeIcon }}
               type="button"
               aria-label="Toggle password visibility"
@@ -138,17 +153,13 @@ export default function Login() {
 
         {/* Forgot */}
         <div style={styles.forgotRow}>
-          <button style={styles.forgotBtn} type="button">Forgot password?</button>
+          <button style={styles.forgotBtn} type="button">
+            Forgot password?
+          </button>
         </div>
 
         {/* Submit */}
-        <button
-          id="login-submit"
-          onClick={handleLogin}
-          disabled={isLoading}
-          style={styles.submitBtn}
-          type="button"
-        >
+        <button id="login-submit" onClick={handleLogin} disabled={isLoading} style={styles.submitBtn} type="button">
           {isLoading ? (
             <>
               <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} />
@@ -193,7 +204,7 @@ export default function Login() {
         }
       `}</style>
     </div>
-  );
+  )
 }
 
 /* ── Theme tokens ── */
@@ -230,11 +241,11 @@ const theme = {
     toggleBorder: 'rgba(0,0,0,0.1)',
     toggleIcon: 'rgba(0,0,0,0.6)',
   },
-};
+}
 
 /* ── Static styles ── */
-const PINK = '#e91e8c';
-const PINK_DARK = '#c2185b';
+const PINK = '#e91e8c'
+const PINK_DARK = '#c2185b'
 
 const styles: Record<string, React.CSSProperties> = {
   root: {
@@ -259,21 +270,27 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 0,
   },
   orb1: {
-    width: 480, height: 480,
+    width: 480,
+    height: 480,
     background: 'rgba(233,30,140,0.18)',
-    top: '-120px', left: '-80px',
+    top: '-120px',
+    left: '-80px',
     animation: 'orb-float-1 9s ease-in-out infinite',
   },
   orb2: {
-    width: 340, height: 340,
+    width: 340,
+    height: 340,
     background: 'rgba(140,30,233,0.12)',
-    bottom: '-80px', right: '10%',
+    bottom: '-80px',
+    right: '10%',
     animation: 'orb-float-2 12s ease-in-out infinite',
   },
   orb3: {
-    width: 260, height: 260,
+    width: 260,
+    height: 260,
     background: 'rgba(233,30,140,0.09)',
-    top: '40%', right: '5%',
+    top: '40%',
+    right: '5%',
     animation: 'orb-float-3 10s ease-in-out infinite',
   },
 
@@ -454,4 +471,4 @@ const styles: Record<string, React.CSSProperties> = {
     textTransform: 'uppercase' as const,
     margin: 0,
   },
-};
+}

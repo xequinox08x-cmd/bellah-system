@@ -1,46 +1,58 @@
-import { useState, useEffect } from 'react';
-import { NavLink, useNavigate, useLocation } from 'react-router';
 import {
-  LayoutDashboard, Package, ShoppingCart, Sparkles,
-  CheckSquare, Calendar, BarChart2, Settings, LogOut,
-  Shield, Users, ChevronDown, ChevronLeft, ChevronRight,
-} from 'lucide-react';
-import { useAuth } from './AuthContext';
-import { BrandLogo } from './BrandLogo';
-import { toast } from 'sonner';
-import { api } from '../lib/api';
+  BarChart2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  LayoutDashboard,
+  LogOut,
+  Package,
+  Settings,
+  Shield,
+  ShoppingCart,
+  Sparkles,
+  Users,
+} from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { NavLink, useLocation, useNavigate } from 'react-router'
+import { toast } from 'sonner'
+import { api } from '../lib/api'
+import { useAuth } from './AuthContext'
+import { BrandLogo } from './BrandLogo'
 
 // ─── Logo ─────────────────────────────────────────────────────────────────────
 
 // ─── Nav helpers ───────────────────────────────────────────────────────────────
-const NAV_BASE = 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-150 w-full';
-const NAV_ACTIVE = 'bg-[#FCE7F3] text-[#EC4899]';
-const NAV_IDLE = 'text-[#6B7280] hover:bg-[#F9FAFB] hover:text-[#111827]';
-const SUB_BASE = 'flex items-center gap-2 pl-9 pr-3 py-2 rounded-lg text-xs transition-all w-full';
-const SUB_ACTIVE = 'text-[#EC4899] bg-[#FCE7F3]';
-const SUB_IDLE = 'text-[#9CA3AF] hover:text-[#374151] hover:bg-[#F9FAFB]';
+const NAV_BASE = 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-150 w-full'
+const NAV_ACTIVE = 'bg-[#FCE7F3] text-[#EC4899]'
+const NAV_IDLE = 'text-[#6B7280] hover:bg-[#F9FAFB] hover:text-[#111827]'
+const SUB_BASE = 'flex items-center gap-2 pl-9 pr-3 py-2 rounded-lg text-xs transition-all w-full'
+const SUB_ACTIVE = 'text-[#EC4899] bg-[#FCE7F3]'
+const SUB_IDLE = 'text-[#9CA3AF] hover:text-[#374151] hover:bg-[#F9FAFB]'
 
-const navClass = ({ isActive }: { isActive: boolean }) =>
-  `${NAV_BASE} ${isActive ? NAV_ACTIVE : NAV_IDLE}`;
+const navClass = ({ isActive }: { isActive: boolean }) => `${NAV_BASE} ${isActive ? NAV_ACTIVE : NAV_IDLE}`
 
-const subNavClass = ({ isActive }: { isActive: boolean }) =>
-  `${SUB_BASE} ${isActive ? SUB_ACTIVE : SUB_IDLE}`;
+const subNavClass = ({ isActive }: { isActive: boolean }) => `${SUB_BASE} ${isActive ? SUB_ACTIVE : SUB_IDLE}`
 
 // ─── Section Label ─────────────────────────────────────────────────────────────
 function SectionLabel({ label }: { label: string }) {
-  return (
-    <p className="text-[9px] text-[#9CA3AF] uppercase tracking-widest px-3 pt-4 pb-1 select-none">
-      {label}
-    </p>
-  );
+  return <p className="text-[9px] text-[#9CA3AF] uppercase tracking-widest px-3 pt-4 pb-1 select-none">{label}</p>
 }
 
 // ─── Tooltip wrapper (for collapsed state) ─────────────────────────────────────
 function NavItem({
-  to, icon: Icon, label, badge, collapsed, end,
+  to,
+  icon: Icon,
+  label,
+  badge,
+  collapsed,
+  end,
 }: {
-  to: string; icon: React.ElementType; label: string;
-  badge?: number; collapsed?: boolean; end?: boolean;
+  to: string
+  icon: React.ElementType
+  label: string
+  badge?: number
+  collapsed?: boolean
+  end?: boolean
 }) {
   return (
     <div className="relative group/nav">
@@ -63,81 +75,77 @@ function NavItem({
         </div>
       )}
     </div>
-  );
+  )
 }
 
 // ─── Sidebar ───────────────────────────────────────────────────────────────────
 export function Sidebar() {
-  const { user, logout } = useAuth();
-  const navigate = useNavigate();
-  const location = useLocation();
+  const { user, logout } = useAuth()
+  const navigate = useNavigate()
+  const location = useLocation()
 
   // Persist collapse state
-  const [collapsed, setCollapsed] = useState<boolean>(() =>
-    localStorage.getItem('bb_sidebar_collapsed') === 'true'
-  );
+  const [collapsed, setCollapsed] = useState<boolean>(() => localStorage.getItem('bb_sidebar_collapsed') === 'true')
 
   // Auto-open marketing submenu when on a marketing page
-  const isOnMarketing = ['/marketing', '/approvals', '/scheduling'].some(
-    p => location.pathname.startsWith(p)
-  );
-  const [marketingOpen, setMarketingOpen] = useState(isOnMarketing);
-  const [approvalDraftCount, setApprovalDraftCount] = useState(0);
+  const isOnMarketing = ['/marketing', '/approvals', '/scheduling'].some((p) => location.pathname.startsWith(p))
+  const [marketingOpen, setMarketingOpen] = useState(isOnMarketing)
+  const [approvalDraftCount, setApprovalDraftCount] = useState(0)
 
   useEffect(() => {
-    localStorage.setItem('bb_sidebar_collapsed', String(collapsed));
-  }, [collapsed]);
+    localStorage.setItem('bb_sidebar_collapsed', String(collapsed))
+  }, [collapsed])
 
   useEffect(() => {
-    if (isOnMarketing) setMarketingOpen(true);
-  }, [location.pathname, isOnMarketing]);
+    if (isOnMarketing) setMarketingOpen(true)
+  }, [location.pathname, isOnMarketing])
 
   useEffect(() => {
-    let cancelled = false;
+    let cancelled = false
 
     const loadApprovalCount = async () => {
       if (user?.role !== 'admin') {
-        setApprovalDraftCount(0);
-        return;
+        setApprovalDraftCount(0)
+        return
       }
 
       try {
-        const res = await api.getContent();
-        if (cancelled) return;
+        const res = await api.getContent()
+        if (cancelled) return
 
-        const items = Array.isArray(res?.data) ? res.data : [];
-        setApprovalDraftCount(items.filter((item: { status?: string }) => item.status === 'draft').length);
+        const items = Array.isArray(res?.data) ? res.data : []
+        setApprovalDraftCount(items.filter((item: { status?: string }) => item.status === 'draft').length)
       } catch {
-        if (!cancelled) setApprovalDraftCount(0);
+        if (!cancelled) setApprovalDraftCount(0)
       }
-    };
+    }
 
-    loadApprovalCount();
+    loadApprovalCount()
     const handleContentUpdated = () => {
-      loadApprovalCount();
-    };
-    window.addEventListener('ai-content-updated', handleContentUpdated);
+      loadApprovalCount()
+    }
+    window.addEventListener('ai-content-updated', handleContentUpdated)
     return () => {
-      cancelled = true;
-      window.removeEventListener('ai-content-updated', handleContentUpdated);
-    };
-  }, [user?.role, location.pathname]);
+      cancelled = true
+      window.removeEventListener('ai-content-updated', handleContentUpdated)
+    }
+  }, [user?.role, location.pathname])
 
-  const isAdmin = user?.role === 'admin';
-  const draftCount = approvalDraftCount;
+  const isAdmin = user?.role === 'admin'
+  const draftCount = approvalDraftCount
 
   const handleLogout = async () => {
-    await logout();
-    toast.success('Signed out');
-    navigate('/login');
-  };
+    await logout()
+    toast.success('Signed out')
+    navigate('/login')
+  }
 
   const toggleCollapse = () => {
-    setCollapsed(prev => {
-      if (!prev) setMarketingOpen(false); // close submenu on collapse
-      return !prev;
-    });
-  };
+    setCollapsed((prev) => {
+      if (!prev) setMarketingOpen(false) // close submenu on collapse
+      return !prev
+    })
+  }
 
   return (
     <aside
@@ -146,8 +154,9 @@ export function Sidebar() {
     >
       {/* ── Brand Header ──────────────────────────────────────────────── */}
       <div
-        className={`flex items-center border-b border-[#E5E7EB] h-16 px-4 shrink-0 ${collapsed ? 'justify-center' : 'justify-between'
-          }`}
+        className={`flex items-center border-b border-[#E5E7EB] h-16 px-4 shrink-0 ${
+          collapsed ? 'justify-center' : 'justify-between'
+        }`}
       >
         <div className="flex items-center gap-2.5 min-w-0">
           <BrandLogo size={30} className="rounded-lg" />
@@ -184,7 +193,6 @@ export function Sidebar() {
 
       {/* ── Navigation ────────────────────────────────────────────────── */}
       <nav className="flex-1 overflow-y-auto overflow-x-hidden px-2.5 py-3 space-y-0.5">
-
         {/* Main */}
         {!collapsed && <SectionLabel label="Main" />}
         {collapsed && <div className="h-3" />}
@@ -201,24 +209,24 @@ export function Sidebar() {
           /* Expanded: collapsible marketing section */
           <div>
             <button
-              onClick={() => setMarketingOpen(prev => !prev)}
-              className={`${NAV_BASE} ${isOnMarketing ? NAV_ACTIVE : NAV_IDLE}`}
+              onClick={() => setMarketingOpen((prev) => !prev)}
+              className={`cursor-pointer ${NAV_BASE} ${isOnMarketing ? NAV_ACTIVE : NAV_IDLE}`}
             >
               <Sparkles className="w-4 h-4 shrink-0" />
               <span className="flex-1 text-left truncate">Marketing</span>
               <ChevronDown
-                className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${marketingOpen ? 'rotate-180' : ''
-                  }`}
+                className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${
+                  marketingOpen ? 'rotate-180' : ''
+                }`}
               />
             </button>
 
             {/* Sub-items */}
-            <div
-              className="overflow-hidden transition-all duration-200"
-              style={{ maxHeight: marketingOpen ? 200 : 0 }}
-            >
+            <div className="overflow-hidden transition-all duration-200" style={{ maxHeight: marketingOpen ? 200 : 0 }}>
               <div className="pt-0.5 space-y-0.5">
-                <NavLink to="/marketing" className={subNavClass}>Generate Content</NavLink>
+                <NavLink to="/marketing" className={subNavClass}>
+                  Generate Content
+                </NavLink>
                 {isAdmin && (
                   <NavLink to="/approvals" className={subNavClass}>
                     Content Approvals
@@ -229,22 +237,18 @@ export function Sidebar() {
                     )}
                   </NavLink>
                 )}
-                <NavLink to="/scheduling" className={subNavClass}>Scheduling</NavLink>
+                <NavLink to="/scheduling" className={subNavClass}>
+                  Scheduling
+                </NavLink>
               </div>
             </div>
           </div>
         ) : (
           /* Collapsed: just the Sparkles icon */
           <div className="relative group/nav">
-            <NavLink
-              to="/marketing"
-              className={navClass}
-              title="Marketing"
-            >
+            <NavLink to="/marketing" className={navClass} title="Marketing">
               <Sparkles className="w-4 h-4 shrink-0" />
-              {draftCount > 0 && (
-                <span className="absolute top-1 right-1 w-2 h-2 bg-[#EC4899] rounded-full" />
-              )}
+              {draftCount > 0 && <span className="absolute top-1 right-1 w-2 h-2 bg-[#EC4899] rounded-full" />}
             </NavLink>
             <div className="pointer-events-none absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2 py-1 bg-[#111827] text-white text-xs rounded-md opacity-0 group-hover/nav:opacity-100 transition-opacity whitespace-nowrap z-50 shadow-lg">
               Marketing
@@ -306,8 +310,9 @@ export function Sidebar() {
           <button
             onClick={() => void handleLogout()}
             title={collapsed ? 'Sign Out' : undefined}
-            className={`${NAV_BASE} text-[#9CA3AF] hover:bg-red-50 hover:text-red-500 mt-1 ${collapsed ? 'justify-center' : ''
-              }`}
+            className={`${NAV_BASE} text-[#9CA3AF] hover:bg-red-50 hover:text-red-500 mt-1 ${
+              collapsed ? 'justify-center' : ''
+            }`}
           >
             <LogOut className="w-4 h-4 shrink-0" />
             {!collapsed && <span>Sign Out</span>}
@@ -320,5 +325,5 @@ export function Sidebar() {
         </div>
       </div>
     </aside>
-  );
+  )
 }
