@@ -581,6 +581,29 @@ async function generateMarketingAssets(options: {
   return { content, generatedImageUrl, providers };
 }
 
+function buildAutoPrompt(product: ProductRecord, contentType: string, tone: string): string {
+  const category = product.category?.trim() || 'beauty';
+  const description = product.description?.trim();
+  const price = Number(product.price ?? 0).toFixed(2);
+  const contentLabel = formatLabel(contentType || 'caption');
+
+  const parts: string[] = [
+    `Create a ${tone || 'fun'} Facebook ${contentLabel} for ${product.name}, a ${category} product priced at PHP ${price}.`,
+  ];
+
+  if (description) {
+    parts.push(`Product details: ${description}.`);
+  }
+
+  parts.push(
+    'Use warm beauty-brand styling, soft lighting, and a clean composition.',
+    'Make the product the clear hero. Include the product name prominently.',
+    'Keep the tone upbeat and conversion-focused for a Filipino beauty audience.',
+  );
+
+  return parts.join(' ');
+}
+
 function validateGenerateBody(body: GenerateRequestBody) {
   const productId = Number(body.productId);
   const promptText = typeof body.promptText === "string" ? body.promptText.trim() : "";
@@ -595,12 +618,13 @@ function validateGenerateBody(body: GenerateRequestBody) {
       ? body.referenceImageUrl.trim()
       : null;
 
-  if (!Number.isInteger(productId) || productId <= 0 || !promptText) {
+  const productIdNum = Number(body.productId);
+  if (!productIdNum || !Number.isFinite(productIdNum) || !Number.isInteger(productIdNum) || productIdNum <= 0) {
     return null;
   }
 
   return {
-    productId,
+    productId: productIdNum,
     promptText,
     contentType: contentType || "caption",
     tone: tone || "fun",
@@ -619,7 +643,7 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
       return res.status(400).json({
         ok: false,
         data: null,
-        message: "productId and promptText are required",
+        message: "productId is required and must be a valid product id",
       });
     }
 
@@ -637,9 +661,10 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
     }
 
     const product = productResult.rows[0];
+    const effectivePromptText = parsed.promptText || buildAutoPrompt(product, parsed.contentType, parsed.tone);
     const prompt = buildPrompt(
       product,
-      parsed.promptText,
+      effectivePromptText,
       parsed.contentType,
       parsed.tone,
       parsed.platform,
@@ -649,7 +674,7 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
     const title = buildTitle(product, parsed.contentType, parsed.tone);
     const imagePrompt = buildImagePrompt(
       product,
-      parsed.promptText,
+      effectivePromptText,
       parsed.tone,
       parsed.platform,
       parsed.outputMode,
@@ -659,7 +684,7 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
     const { content, generatedImageUrl, providers } = await generateMarketingAssets({
       product,
       prompt,
-      promptText: parsed.promptText,
+      promptText: effectivePromptText,
       contentType: parsed.contentType,
       tone: parsed.tone,
       platform: parsed.platform,

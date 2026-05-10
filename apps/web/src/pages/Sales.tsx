@@ -274,7 +274,6 @@ export default function Sales() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!token) return;
     async function load() {
       try {
         setLoading(true);
@@ -310,6 +309,7 @@ export default function Sales() {
   const [discountType,   setDiscountType]   = useState<'%' | '₱'>('%');
   const [discountValue,  setDiscountValue]  = useState<number | ''>('');
   const [submitting,     setSubmitting]     = useState(false);
+  const [modalSale,      setModalSale]      = useState<any>(null);
 
   // ── Table state ────────────────────────────────────────────────────────
   const [search,     setSearch]     = useState('');
@@ -467,8 +467,8 @@ export default function Sales() {
       {/* ── Page Header ───────────────────────────────────────────────── */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-[#111827] text-xl" style={{ fontWeight: 700 }}>Sales Recording</h1>
-          <p className="text-[#6B7280] text-sm mt-0.5">Log a new transaction and auto-update inventory</p>
+          <h1 className="text-[#111827] text-xl" style={{ fontWeight: 700 }}>Point of Sale</h1>
+          <p className="text-[#6B7280] text-sm mt-0.5">Record a transaction — inventory updates automatically</p>
         </div>
         {lowStockCount > 0 && (
           <div className="flex items-center gap-1.5 px-3 py-2 bg-red-50 border border-red-100 rounded-lg text-xs text-red-600">
@@ -476,40 +476,6 @@ export default function Sales() {
             <span style={{ fontWeight: 600 }}>{lowStockCount}</span> low stock
           </div>
         )}
-      </div>
-
-      {/* ── KPI Cards ─────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[
-          { label: "Today's Sales", value: kpis.todayCount, prefix: '', suffix: ' txns', icon: ShoppingCart, bg: 'bg-pink-50', color: 'text-[#EC4899]' },
-          { label: "Today's Revenue", value: kpis.todayRevenue.toFixed(2), prefix: '₱', suffix: '', icon: DollarSign, bg: 'bg-yellow-50', color: 'text-yellow-600' },
-          { label: 'Month Revenue', value: kpis.monthRevenue.toFixed(2), prefix: '₱', suffix: '', icon: TrendingUp, bg: 'bg-emerald-50', color: 'text-emerald-600' },
-          { label: 'Month Profit', value: kpis.monthProfit.toFixed(2), prefix: '₱', suffix: '', icon: BarChart2, bg: 'bg-purple-50', color: 'text-purple-600' },
-        ].map(({ label, value, prefix, suffix, icon: Icon, bg, color }) => (
-          <div key={label} className="bg-white rounded-xl border border-[#E5E7EB] px-5 py-4 flex items-center gap-4">
-            <div className={`w-9 h-9 rounded-lg ${bg} flex items-center justify-center shrink-0`}>
-              <Icon className={`${color}`} style={{ width: 18, height: 18 }} />
-            </div>
-            <div className="min-w-0">
-              <p className="text-base text-[#111827]" style={{ fontWeight: 700 }}>{prefix}{value}{suffix}</p>
-              <p className="text-[10px] text-[#6B7280]">{label}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* ── 7-Day Revenue Chart ────────────────────────────────────────── */}
-      <div className="bg-white rounded-xl border border-[#E5E7EB] p-5">
-        <h3 className="text-[#111827] text-sm font-semibold mb-4">Revenue — Last 7 Days</h3>
-        <ResponsiveContainer width="100%" height={180}>
-          <BarChart data={chartData} barSize={28}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F3F4F6" />
-            <XAxis dataKey="label" fontSize={10} axisLine={false} tickLine={false} />
-            <YAxis fontSize={10} axisLine={false} tickLine={false} tickFormatter={v => `₱${v.toLocaleString()}`} />
-            <Tooltip formatter={(v: number) => [`₱${v.toLocaleString()}`, 'Revenue']} />
-            <Bar dataKey="Revenue" fill="#EC4899" radius={[6,6,0,0]} />
-          </BarChart>
-        </ResponsiveContainer>
       </div>
 
       {/* ── Main: Form + Stock Panel ───────────────────────────────────── */}
@@ -790,7 +756,7 @@ export default function Sales() {
                 <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" /> OK</span>
               </div>
             </div>
-            <div className="px-5 py-2 divide-y divide-[#F9FAFB]">
+            <div className="px-5 py-2 divide-y divide-[#F9FAFB] max-h-[420px] overflow-y-auto">
               {sortedByStock.map(p => (
                 <StockBar key={p.id} product={p} />
               ))}
@@ -799,7 +765,46 @@ export default function Sales() {
         </div>
       </div>
 
-      
+      {/* ── KPI Cards ─────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label: "Today's Sales", value: loading ? '—' : String(kpis.todayCount), prefix: '', suffix: loading ? '' : ' txns', icon: ShoppingCart, bg: 'bg-pink-50', color: 'text-[#EC4899]' },
+          { label: "Today's Revenue", value: loading ? '—' : kpis.todayRevenue.toFixed(2), prefix: loading ? '' : '₱', suffix: '', icon: DollarSign, bg: 'bg-yellow-50', color: 'text-yellow-600' },
+          { label: 'Month Revenue', value: loading ? '—' : kpis.monthRevenue.toFixed(2), prefix: loading ? '' : '₱', suffix: '', icon: TrendingUp, bg: 'bg-emerald-50', color: 'text-emerald-600' },
+          { label: 'Month Profit', value: loading ? '—' : kpis.monthProfit.toFixed(2), prefix: loading ? '' : '₱', suffix: '', icon: BarChart2, bg: 'bg-purple-50', color: 'text-purple-600' },
+        ].map(({ label, value, prefix, suffix, icon: Icon, bg, color }) => (
+          <div key={label} className="bg-white rounded-xl border border-[#E5E7EB] px-5 py-4 flex items-center gap-4">
+            <div className={`w-9 h-9 rounded-lg ${bg} flex items-center justify-center shrink-0`}>
+              <Icon className={`${color}`} style={{ width: 18, height: 18 }} />
+            </div>
+            <div className="min-w-0">
+              <p className="text-base text-[#111827]" style={{ fontWeight: 700 }}>{prefix}{value}{suffix}</p>
+              <p className="text-[10px] text-[#6B7280]">{label}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── 7-Day Revenue Chart ────────────────────────────────────────── */}
+      <div className="bg-white rounded-xl border border-[#E5E7EB] p-5">
+        <h3 className="text-[#111827] text-sm font-semibold mb-4">Revenue — Last 7 Days</h3>
+        {chartData.every(d => d.Revenue === 0) ? (
+          <div className="h-[180px] flex items-center justify-center">
+            <p className="text-xs text-[#9CA3AF]">No sales data for the past 7 days</p>
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height={180}>
+            <BarChart data={chartData} barSize={28}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F3F4F6" />
+              <XAxis dataKey="label" fontSize={10} axisLine={false} tickLine={false} />
+              <YAxis fontSize={10} axisLine={false} tickLine={false} tickFormatter={v => `₱${v.toLocaleString()}`} />
+              <Tooltip formatter={(v: number) => [`₱${v.toLocaleString()}`, 'Revenue']} />
+              <Bar dataKey="Revenue" fill="#EC4899" radius={[6,6,0,0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+
 {/* ── Recent Sales Table ─────────────────────────────────────────── */}
 <div className="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden">
   {/* Table toolbar */}
@@ -850,18 +855,11 @@ export default function Sales() {
     <table className="w-full">
       <thead>
         <tr className="bg-[#F9FAFB] border-b border-[#F3F4F6]">
-          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-left">
-            ID
-          </th>
-          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-left">
-            Created
-          </th>
-          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-right">
-            Total
-          </th>
-          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-right">
-            View
-          </th>
+          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-left">ID</th>
+          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-left">Date &amp; Time</th>
+          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-right">Total</th>
+          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-right">Profit</th>
+          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-right">Action</th>
         </tr>
       </thead>
 
@@ -877,14 +875,15 @@ export default function Sales() {
             const created = s.created_at ? new Date(s.created_at) : null;
             return (
               <tr key={s.id} className="hover:bg-[#FAFAFA] transition-colors">
-                <td className="px-4 py-3 text-xs text-[#111827] whitespace-nowrap" style={{ fontWeight: 600 }}>
-                  #{s.id}
-                </td>
-                <td className="px-4 py-3 text-xs text-[#6B7280] whitespace-nowrap">
-                  {created ? created.toLocaleString() : "—"}
-                </td>
-                <td className="px-4 py-3 text-xs text-right text-[#111827] whitespace-nowrap" style={{ fontWeight: 700 }}>
-                  ₱{Number(s.total ?? 0).toFixed(2)}
+                <td className="px-4 py-3 text-xs text-[#111827] whitespace-nowrap" style={{ fontWeight: 600 }}>#{s.id}</td>
+                <td className="px-4 py-3 text-xs text-[#6B7280] whitespace-nowrap">{created ? created.toLocaleString() : '—'}</td>
+                <td className="px-4 py-3 text-xs text-right text-[#111827] whitespace-nowrap" style={{ fontWeight: 700 }}>₱{Number(s.total ?? 0).toFixed(2)}</td>
+                <td className="px-4 py-3 text-xs text-right whitespace-nowrap">
+                  {s.profit != null ? (
+                    <span className={Number(s.profit) >= 0 ? 'text-emerald-600' : 'text-red-500'} style={{ fontWeight: 600 }}>
+                      {Number(s.profit) >= 0 ? '+' : ''}₱{Number(s.profit).toFixed(2)}
+                    </span>
+                  ) : <span className="text-[#9CA3AF]">—</span>}
                 </td>
                 <td className="px-4 py-3 text-xs text-right whitespace-nowrap">
                   <button
@@ -892,15 +891,14 @@ export default function Sales() {
                     onClick={async () => {
                       try {
                         const details = await api.getSaleById(s.id, token);
-                        toast.success(`Loaded sale #${s.id} (check console)`);
-                        console.log("Sale details:", details);
+                        setModalSale({ ...s, items: details.items ?? [] });
                       } catch (err: any) {
-                        toast.error(err.message || "Failed to load sale details");
+                        toast.error(err.message || 'Failed to load sale details');
                       }
                     }}
-                    className="px-3 py-1.5 rounded-lg border border-[#E5E7EB] text-[#6B7280] hover:bg-[#F9FAFB]"
+                    className="px-3 py-1.5 rounded-lg border border-[#EC4899]/30 text-[#EC4899] hover:bg-[#FDF2F8] text-xs transition-colors"
                   >
-                    Details
+                    View
                   </button>
                 </td>
               </tr>
@@ -928,6 +926,60 @@ export default function Sales() {
   )}
 </div>
 
+      {/* ── Sale Detail Modal ──────────────────────────────────────────── */}
+      {modalSale && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setModalSale(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-[#F3F4F6] flex items-center justify-between">
+              <div>
+                <h2 className="text-[#111827] text-sm" style={{ fontWeight: 700 }}>Sale #{modalSale.id}</h2>
+                <p className="text-[10px] text-[#9CA3AF] mt-0.5">{modalSale.created_at ? new Date(modalSale.created_at).toLocaleString() : '—'}</p>
+              </div>
+              <button onClick={() => setModalSale(null)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[#F3F4F6] transition-colors">
+                <X className="w-4 h-4 text-[#6B7280]" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              {(modalSale.items ?? []).length > 0 ? (
+                <div className="space-y-2">
+                  {(modalSale.items ?? []).map((item: any, i: number) => (
+                    <div key={i} className="flex items-center justify-between py-2 border-b border-[#F9FAFB] last:border-0">
+                      <div>
+                        <p className="text-xs text-[#111827]" style={{ fontWeight: 600 }}>{item.product_name ?? `Product #${item.product_id}`}</p>
+                        <p className="text-[10px] text-[#9CA3AF]">Qty: {item.qty} × ₱{Number(item.unit_price ?? 0).toFixed(2)}</p>
+                      </div>
+                      <p className="text-xs text-[#111827]" style={{ fontWeight: 700 }}>₱{(Number(item.qty) * Number(item.unit_price ?? 0)).toFixed(2)}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-[#9CA3AF] text-center py-4">No item breakdown available</p>
+              )}
+              <div className="border-t border-dashed border-[#E5E7EB] pt-4 space-y-2">
+                <div className="flex justify-between text-xs">
+                  <span className="text-[#6B7280]">Total</span>
+                  <span className="text-[#111827]" style={{ fontWeight: 700 }}>₱{Number(modalSale.total ?? 0).toFixed(2)}</span>
+                </div>
+                {modalSale.profit != null && (
+                  <div className="flex justify-between text-xs">
+                    <span className="text-[#6B7280]">Profit</span>
+                    <span className={Number(modalSale.profit) >= 0 ? 'text-emerald-600' : 'text-red-500'} style={{ fontWeight: 600 }}>
+                      {Number(modalSale.profit) >= 0 ? '+' : ''}₱{Number(modalSale.profit).toFixed(2)}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="px-6 pb-5">
+              <button
+                onClick={() => setModalSale(null)}
+                className="w-full py-2.5 rounded-xl text-sm text-white transition-all"
+                style={{ background: 'linear-gradient(135deg, #F9A8C0 0%, #EC4899 100%)', fontWeight: 600 }}
+              >Close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

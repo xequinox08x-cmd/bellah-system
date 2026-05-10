@@ -165,7 +165,7 @@ export default function ProductFormModal({ initial, onSave, onClose, saving, tok
           {/* BASIC INFO */}
           <Section label="Basic Info" />
 
-          {/* Image Upload — horizontal strip, not a giant square */}
+          {/* Image Upload — optional, horizontal strip */}
           <div
             className="w-full h-24 rounded-2xl border-2 border-dashed border-[#F0F0F0] bg-[#FAFAFA] flex items-center gap-4 px-5 cursor-pointer hover:border-[#ec4899] hover:bg-[#FFF5F9] transition-all overflow-hidden group"
             onClick={() => document.getElementById('prod-img-input')?.click()}
@@ -190,7 +190,7 @@ export default function ProductFormModal({ initial, onSave, onClose, saving, tok
                   <ImagePlus className="w-5 h-5 text-[#ec4899]" />
                 </div>
                 <div>
-                  <p className="text-sm font-medium text-[#374151]">Upload Product Image</p>
+                  <p className="text-sm font-medium text-[#374151]">Upload Product Image <span className="text-[11px] font-normal text-[#B0B7C3]">· Optional</span></p>
                   <p className="text-xs text-[#B0B7C3] mt-0.5">Click to browse · PNG, JPG, WEBP</p>
                 </div>
               </>

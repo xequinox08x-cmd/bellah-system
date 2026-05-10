@@ -23,6 +23,7 @@ type MarketingProduct = {
   category: string;
   price: number;
   description?: string;
+  imageUrl?: string;
 };
 
 type FeedContentItem = {
@@ -127,8 +128,10 @@ export default function AIMarketing() {
   const [type, setType] = useState<ContentType>('caption');
   const [outputMode, setOutputMode] = useState<OutputMode>('text');
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
-  const [referenceImageName, setReferenceImageName] = useState('');
-  const [referenceImagePreviewUrl, setReferenceImagePreviewUrl] = useState('');
+  const [useCustomPrompt, setUseCustomPrompt] = useState(false);
+  const [manualImagePreview, setManualImagePreview] = useState<string>('');
+  const [manualImageFile, setManualImageFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [generated, setGenerated] = useState<GeneratedContent | null>(null);
   const [editCaption, setEditCaption] = useState('');
   const [editHashtags, setEditHashtags] = useState('');
@@ -139,7 +142,7 @@ export default function AIMarketing() {
   const [feedItems, setFeedItems] = useState<FeedContentItem[]>([]);
   const [feedLoading, setFeedLoading] = useState(false);
   const [feedError, setFeedError] = useState('');
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
 
   useEffect(() => {
     let cancelled = false;
@@ -158,6 +161,7 @@ export default function AIMarketing() {
             category: String(item.category ?? ''),
             price: Number(item.price ?? 0),
             description: item.description ? String(item.description) : '',
+            imageUrl: item.image_url ? String(item.image_url) : undefined,
           }))
         );
       } catch (err) {
@@ -222,57 +226,41 @@ export default function AIMarketing() {
   };
   const usedFallback = generatedProviders.text === 'fallback' || generatedProviders.image === 'fallback';
 
-  const clearReferenceImage = () => {
-    setReferenceImageName('');
-    setReferenceImagePreviewUrl('');
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+  const clearManualImage = () => {
+    setManualImagePreview('');
+    setManualImageFile(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleReferenceImageChange = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleManualImageChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = () => {
-      if (typeof reader.result !== 'string') {
-        toast.error('Failed to read selected image');
-        return;
+      if (typeof reader.result === 'string') {
+        setManualImagePreview(reader.result);
+        setManualImageFile(file);
       }
-
-      setReferenceImageName(file.name);
-      setReferenceImagePreviewUrl(reader.result);
-    };
-    reader.onerror = () => {
-      toast.error('Failed to read selected image');
     };
     reader.readAsDataURL(file);
   };
-
-  const selectedTl: { name: string; department: string } | null = null;
 
   const handleGenerate = async () => {
     if (!productId) {
       toast.error('Please select a product first');
       return;
     }
-    if (!promptText.trim()) {
-      toast.error('Please enter prompt / instructions first');
-      return;
-    }
 
     setIsGenerating(true);
     try {
-      const tlContext = selectedTl ? `\n[TL: ${selectedTl.name} – ${selectedTl.department}]` : '';
       const response = await api.generateMarketingContent({
         productId: Number(productId),
-        promptText: promptText.trim(),
+        promptText: useCustomPrompt ? promptText.trim() : '',
         contentType: type,
         tone,
         platform,
         outputMode,
-        referenceImageUrl: referenceImagePreviewUrl || undefined,
+        referenceImageUrl: manualImagePreview || selectedProduct?.imageUrl || undefined,
       });
 
       setGeneratedContentId(response.data.id);
@@ -340,7 +328,7 @@ export default function AIMarketing() {
       setTitle('');
       setEditCaption('');
       setEditHashtags('');
-      clearReferenceImage();
+      clearManualImage();
     } catch (err) {
       console.error(err);
       toast.error(err instanceof Error ? err.message : 'Failed to submit content. Please try again.');
@@ -380,16 +368,35 @@ export default function AIMarketing() {
 
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs text-[#374151]" style={{ fontWeight: 500 }}>Prompt / Instructions</label>
-                  <span className="text-[10px] text-[#9CA3AF]">Primary input</span>
+                  <label className="block text-xs text-[#374151]" style={{ fontWeight: 500 }}>Poster Prompt</label>
+                  <button
+                    type="button"
+                    title={useCustomPrompt ? 'Switch to auto-generate' : 'Switch to custom prompt'}
+                    onClick={() => setUseCustomPrompt((prev) => !prev)}
+                    className={`cursor-pointer flex items-center gap-1 text-[10px] px-2.5 py-1 rounded-full border shadow-sm transition-all active:scale-95 select-none ${
+                      useCustomPrompt
+                        ? 'bg-[#EC4899] text-white border-[#EC4899] hover:bg-[#DB2777]'
+                        : 'bg-white text-[#6B7280] border-[#E5E7EB] hover:border-[#EC4899] hover:text-[#EC4899] hover:bg-[#FFF5F9]'
+                    }`}
+                  >
+                    {useCustomPrompt
+                      ? <><Edit3 className="w-2.5 h-2.5" /> Custom</>
+                      : <><Sparkles className="w-2.5 h-2.5" /> Auto</>}
+                  </button>
                 </div>
-                <textarea
-                  value={promptText}
-                  onChange={(e) => setPromptText(e.target.value)}
-                  rows={5}
-                  placeholder="Tell the AI what kind of caption or poster you want. Include audience, tone, visual style, colors, layout, offer, or message."
-                  className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899] resize-none transition-all"
-                />
+                {useCustomPrompt ? (
+                  <textarea
+                    value={promptText}
+                    onChange={(e) => setPromptText(e.target.value)}
+                    rows={4}
+                    placeholder="Describe the poster style, colors, layout, message, or target audience..."
+                    className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899] resize-none transition-all"
+                  />
+                ) : (
+                  <div className="rounded-lg border border-dashed border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3">
+                    <p className="text-xs text-[#9CA3AF]">AI will auto-generate a smart prompt based on the selected product’s name, category, and description. Switch to custom mode for full control.</p>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -418,53 +425,61 @@ export default function AIMarketing() {
                 </div>
               </div>
 
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <label className="block text-xs text-[#374151]" style={{ fontWeight: 500 }}>Product Reference Image</label>
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="flex items-center gap-1.5 text-xs text-[#EC4899] hover:text-[#DB2777] transition-all"
-                  >
-                    <ImagePlus className="w-3.5 h-3.5" />
-                    {referenceImagePreviewUrl ? 'Replace image' : 'Upload image'}
-                  </button>
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs text-[#374151]" style={{ fontWeight: 500 }}>Reference Image</label>
+                  {manualImagePreview && (
+                    <button
+                      type="button"
+                      onClick={clearManualImage}
+                      className="flex items-center gap-1 text-[10px] text-red-400 hover:text-red-500 transition-colors"
+                    >
+                      <Trash2 className="w-3 h-3" /> Remove upload
+                    </button>
+                  )}
                 </div>
 
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleReferenceImageChange}
-                  className="hidden"
-                />
-
-                {referenceImagePreviewUrl ? (
-                  <div className="rounded-xl border border-[#E5E7EB] p-3 space-y-3 bg-[#FCFCFD]">
-                    <img
-                      src={referenceImagePreviewUrl}
-                      alt={referenceImageName || 'Reference preview'}
-                      className="w-full h-48 object-cover rounded-lg border border-[#E5E7EB]"
-                    />
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-xs text-[#111827] truncate" style={{ fontWeight: 500 }}>{referenceImageName}</p>
-                        <p className="text-[10px] text-[#9CA3AF]">Ready to use as a poster reference later</p>
-                      </div>
+                {manualImagePreview ? (
+                  <div className="rounded-xl border border-[#E5E7EB] overflow-hidden">
+                    <img src={manualImagePreview} alt="Manual reference" className="w-full h-44 object-cover" />
+                    <div className="px-3 py-2 bg-[#F9FAFB] border-t border-[#E5E7EB] flex items-center justify-between">
+                      <p className="text-[10px] text-[#9CA3AF]">Manual upload · overrides inventory image</p>
                       <button
                         type="button"
-                        onClick={clearReferenceImage}
-                        className="inline-flex items-center gap-1 rounded-lg border border-[#E5E7EB] px-2.5 py-1.5 text-xs text-[#6B7280] hover:bg-[#F9FAFB] transition-all"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="text-[10px] text-[#EC4899] hover:text-[#DB2777] flex items-center gap-0.5 transition-colors"
                       >
-                        <Trash2 className="w-3.5 h-3.5" /> Remove
+                        <ImagePlus className="w-3 h-3" /> Replace
+                      </button>
+                    </div>
+                  </div>
+                ) : selectedProduct?.imageUrl ? (
+                  <div className="rounded-xl border border-[#E5E7EB] overflow-hidden">
+                    <img src={selectedProduct.imageUrl} alt={selectedProduct.name} className="w-full h-44 object-cover" />
+                    <div className="px-3 py-2 bg-[#F9FAFB] border-t border-[#E5E7EB] flex items-center justify-between">
+                      <p className="text-[10px] text-[#9CA3AF]">From inventory · {selectedProduct.name}</p>
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="text-[10px] text-[#EC4899] hover:text-[#DB2777] flex items-center gap-0.5 transition-colors"
+                      >
+                        <ImagePlus className="w-3 h-3" /> Override
                       </button>
                     </div>
                   </div>
                 ) : (
-                  <div className="rounded-xl border border-dashed border-[#E5E7EB] bg-[#F9FAFB] px-4 py-6 text-center">
-                    <p className="text-xs text-[#6B7280]">Upload a real product image to prepare for future poster generation.</p>
+                  <div
+                    onClick={() => fileInputRef.current?.click()}
+                    className="rounded-xl border-2 border-dashed border-[#E5E7EB] bg-[#F9FAFB] px-4 py-6 text-center cursor-pointer hover:border-[#EC4899] hover:bg-[#FFF5F9] transition-all group"
+                  >
+                    <ImagePlus className="w-5 h-5 text-[#EC4899] mx-auto mb-1.5 opacity-60 group-hover:opacity-100 transition-opacity" />
+                    <p className="text-xs text-[#9CA3AF] group-hover:text-[#6B7280] transition-colors">
+                      {productId ? 'No inventory image — click to upload manually' : 'Select a product, or click to upload manually'}
+                    </p>
                   </div>
                 )}
+
+                <input ref={fileInputRef} type="file" accept="image/*" onChange={handleManualImageChange} className="hidden" />
               </div>
 
               <div className="rounded-xl border border-[#E5E7EB] overflow-hidden">
@@ -673,7 +688,7 @@ export default function AIMarketing() {
                 <Sparkles className="w-7 h-7 text-[#EC4899]" />
               </div>
               <p className="text-[#111827] text-sm" style={{ fontWeight: 500 }}>No content generated yet</p>
-              <p className="text-[#9CA3AF] text-xs mt-1">Add a prompt, optionally upload a product image, and click Generate Facebook Content</p>
+              <p className="text-[#9CA3AF] text-xs mt-1">Select a product and click Generate — the AI will auto-generate a smart prompt. Switch to custom prompt mode for full control.</p>
               <div className="mt-6 w-full max-w-sm aspect-[4/5] rounded-xl border border-dashed border-[#E5E7EB] bg-[#F9FAFB] flex items-center justify-center px-6">
                 <p className="text-sm text-[#9CA3AF]">Generated poster preview will appear here</p>
               </div>
