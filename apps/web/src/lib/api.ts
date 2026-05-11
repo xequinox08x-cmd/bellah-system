@@ -23,8 +23,13 @@ type GenerationProviders = {
 
 export const api = {
   // PRODUCTS
-  async getProducts() {
-    const res = await fetch(`${API_BASE}/products`);
+  async getProducts(token?: string) {
+    const res = await fetch(`${API_BASE}/products`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        'Content-Type': 'application/json',
+      },
+    });
     if (!res.ok) throw new Error('Failed to fetch products');
     return res.json();
   },

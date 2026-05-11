@@ -1,16 +1,15 @@
 import { useEffect, useState } from 'react';
-import { User, Bell, Shield, Palette, Save, Check, Link2, RefreshCw, AlertCircle } from 'lucide-react';
+import { User, Shield, Palette, Save, Check, Link2, RefreshCw, AlertCircle } from 'lucide-react';
 import { APP_THEME_PALETTES, useAppTheme } from '../components/AppThemeProvider';
 import { useAuth } from '../components/AuthContext';
 import { api } from '../lib/api';
 import { supabase } from '../lib/supabase';
 import { toast } from 'sonner';
 
-type Section = 'profile' | 'notifications' | 'security' | 'appearance';
+type Section = 'profile' | 'security' | 'appearance';
 
 const SECTIONS: { id: Section; label: string; icon: React.ElementType }[] = [
   { id: 'profile', label: 'Profile', icon: User },
-  { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'security', label: 'Security & Role', icon: Shield },
   { id: 'appearance', label: 'Appearance', icon: Palette },
 ];
@@ -83,14 +82,7 @@ export default function Settings() {
     confirmPassword: '',
   });
 
-  const [notifs, setNotifs] = useState({
-    newSale: true,
-    lowStock: true,
-    pendingApproval: true,
-    contentPublished: false,
-    weeklyReport: true,
-    dailyDigest: false,
-  });
+
 
   const markSaved = (message: string) => {
     setSaved(true);
@@ -345,33 +337,6 @@ export default function Settings() {
             </div>
           )}
 
-          {activeSection === 'notifications' && (
-            <div className="bg-white rounded-xl border border-[#E5E7EB] p-6 space-y-5">
-              <h2 className="text-[#111827] text-base" style={{ fontWeight: 600 }}>Notification Preferences</h2>
-              <div className="space-y-4">
-                {[
-                  { key: 'newSale' as const, label: 'New Sale Recorded', description: 'Get notified when a sale is recorded' },
-                  { key: 'lowStock' as const, label: 'Low Stock Alerts', description: 'Alert when products fall below threshold' },
-                  { key: 'pendingApproval' as const, label: 'Pending Content Approvals', description: 'Notify when content is submitted for review' },
-                  { key: 'contentPublished' as const, label: 'Content Published', description: 'Notify when scheduled content goes live' },
-                  { key: 'weeklyReport' as const, label: 'Weekly Summary Report', description: 'Receive weekly analytics digest' },
-                  { key: 'dailyDigest' as const, label: 'Daily Digest', description: 'Daily summary of all activity' },
-                ].map((notification) => (
-                  <div key={notification.key} className="flex items-center justify-between py-3 border-b border-[#F3F4F6] last:border-0">
-                    <div>
-                      <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>{notification.label}</p>
-                      <p className="text-xs text-[#9CA3AF]">{notification.description}</p>
-                    </div>
-                    <Toggle
-                      enabled={notifs[notification.key]}
-                      onChange={(value) => setNotifs((prev) => ({ ...prev, [notification.key]: value }))}
-                      activeColor={palette.color}
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
 
           {activeSection === 'security' && (
             <div className="space-y-4">
