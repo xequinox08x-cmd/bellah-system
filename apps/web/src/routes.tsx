@@ -40,6 +40,8 @@ export const router = createBrowserRouter([
     Component: Layout,
     children: [
       { index: true, element: <Navigate to="/dashboard" replace /> },
+      { path: 'admin', element: <Suspense fallback={<PageFallback />}><Dashboard /></Suspense> },
+      { path: 'staff', element: <Suspense fallback={<PageFallback />}><Dashboard /></Suspense> },
       { path: 'dashboard', element: <Suspense fallback={<PageFallback />}><Dashboard /></Suspense> },
       { path: 'products', element: <Suspense fallback={<PageFallback />}><Products /></Suspense> },
       { path: 'sales', element: <Suspense fallback={<PageFallback />}><Sales /></Suspense> },

@@ -369,20 +369,32 @@ export default function AIMarketing() {
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="block text-xs text-[#374151]" style={{ fontWeight: 500 }}>Poster Prompt</label>
-                  <button
-                    type="button"
-                    title={useCustomPrompt ? 'Switch to auto-generate' : 'Switch to custom prompt'}
-                    onClick={() => setUseCustomPrompt((prev) => !prev)}
-                    className={`cursor-pointer flex items-center gap-1 text-[10px] px-2.5 py-1 rounded-full border shadow-sm transition-all active:scale-95 select-none ${
-                      useCustomPrompt
-                        ? 'bg-[#EC4899] text-white border-[#EC4899] hover:bg-[#DB2777]'
-                        : 'bg-white text-[#6B7280] border-[#E5E7EB] hover:border-[#EC4899] hover:text-[#EC4899] hover:bg-[#FFF5F9]'
-                    }`}
-                  >
-                    {useCustomPrompt
-                      ? <><Edit3 className="w-2.5 h-2.5" /> Custom</>
-                      : <><Sparkles className="w-2.5 h-2.5" /> Auto</>}
-                  </button>
+                  <div className="flex items-center gap-1 rounded-full border border-[#E5E7EB] bg-white p-0.5 shadow-sm">
+                    <button
+                      type="button"
+                      title="Use OpenAI auto prompt"
+                      onClick={() => setUseCustomPrompt(false)}
+                      className={`cursor-pointer flex items-center gap-1 text-[10px] px-2.5 py-1 rounded-full transition-all active:scale-95 select-none ${
+                        !useCustomPrompt
+                          ? 'bg-[#EC4899] text-white'
+                          : 'text-[#6B7280] hover:text-[#EC4899] hover:bg-[#FFF5F9]'
+                      }`}
+                    >
+                      <Sparkles className="w-2.5 h-2.5" /> Auto
+                    </button>
+                    <button
+                      type="button"
+                      title="Write your own prompt"
+                      onClick={() => setUseCustomPrompt(true)}
+                      className={`cursor-pointer flex items-center gap-1 text-[10px] px-2.5 py-1 rounded-full transition-all active:scale-95 select-none ${
+                        useCustomPrompt
+                          ? 'bg-[#EC4899] text-white'
+                          : 'text-[#6B7280] hover:text-[#EC4899] hover:bg-[#FFF5F9]'
+                      }`}
+                    >
+                      <Edit3 className="w-2.5 h-2.5" /> Custom
+                    </button>
+                  </div>
                 </div>
                 {useCustomPrompt ? (
                   <textarea

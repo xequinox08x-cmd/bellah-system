@@ -66,7 +66,16 @@ export async function processDueScheduledContent() {
     }
 
     schedulerRun = (async () => {
-        const dueIds = await getDueScheduledContentIds(getBatchSize());
+        let dueIds: number[];
+        try {
+            dueIds = await getDueScheduledContentIds(getBatchSize());
+        } catch (error) {
+            console.error("[scheduler.publish] failed to load due scheduled content", {
+                message: error instanceof Error ? error.message : "Failed to load due scheduled content",
+            });
+            return;
+        }
+
         if (!dueIds.length) {
             return;
         }

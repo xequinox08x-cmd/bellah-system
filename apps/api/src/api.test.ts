@@ -17,6 +17,7 @@ describe('API functionality', () => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.AI_API_KEY;
     delete process.env.OPENAI_CAPTION_MODEL;
+    delete process.env.OPENAI_PROMPT_MODEL;
     delete process.env.GEMINI_API_KEY;
     delete process.env.GEMINI_IMAGE_MODEL;
   });
@@ -202,6 +203,56 @@ describe('API functionality', () => {
       });
     }
 
+    it('POST /api/ai/generate auto-generates the prompt with OpenAI using advanced settings', async () => {
+      process.env.OPENAI_API_KEY = 'test-openai-key';
+      process.env.OPENAI_PROMPT_MODEL = 'gpt-4o-mini';
+
+      const autoPrompt =
+        'Create a professional Facebook promotion brief focused on visible hydration results, polished beauty-brand positioning, and a clear shop-now CTA.';
+
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            output_text: autoPrompt,
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            output_text: 'Hydration meets polish with Rose Glow Serum. Shop now and upgrade your skincare routine today.',
+          }),
+        });
+
+      vi.stubGlobal('fetch', fetchMock as any);
+      mockAiContentQueries();
+
+      const app = createApp();
+      const res = await request(app).post('/api/ai/generate').send({
+        productId: 1,
+        promptText: '',
+        contentType: 'promotion',
+        tone: 'professional',
+        outputMode: 'text',
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.caption).toBe(
+        'Hydration meets polish with Rose Glow Serum. Shop now and upgrade your skincare routine today.'
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      const autoPromptRequest = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      expect(autoPromptRequest.input).toContain('Content type: promotion');
+      expect(autoPromptRequest.input).toContain('Tone: professional');
+      expect(autoPromptRequest.input).toContain('Output mode: caption-only brief');
+
+      const insertCall = queryMock.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO ai_contents'));
+      const insertParams = insertCall?.[1] as unknown[] | undefined;
+      expect(insertParams?.[6]).toBe(autoPrompt);
+    });
+
     it('POST /api/ai/generate uses OpenAI for captions in text mode', async () => {
       process.env.OPENAI_API_KEY = 'test-openai-key';
 
@@ -370,6 +421,27 @@ describe('API functionality', () => {
         })
       );
       expect(geminiRequest.contents[0].parts[2].text).toContain('Preserve the same product identity');
+    });
+
+    it('POST /api/ai/generate stores a non-blank fallback prompt in auto mode when OpenAI prompt generation is unavailable', async () => {
+      mockAiContentQueries();
+
+      const app = createApp();
+      const res = await request(app).post('/api/ai/generate').send({
+        productId: 1,
+        promptText: '',
+        contentType: 'product_highlight',
+        tone: 'professional',
+        outputMode: 'text',
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.caption).toContain('Create a professional Facebook product highlight');
+
+      const insertCall = queryMock.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO ai_contents'));
+      const insertParams = insertCall?.[1] as unknown[] | undefined;
+      expect(String(insertParams?.[6] ?? '')).toContain('Create a professional Facebook product highlight');
+      expect(String(insertParams?.[6] ?? '')).toContain('Platform: facebook.');
     });
 
     it('POST /api/ai/generate falls back for text_image mode when AI keys are missing', async () => {
