@@ -1,7 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
-import { parseJsonResponse } from '../lib/http';
 
 export interface AuthUser {
   id: string;
@@ -24,43 +23,45 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
-type UserProfileResponse = {
-  data?: {
-    id?: number;
-    authId?: string;
-    name?: string;
-    email?: string;
-    role?: 'admin' | 'staff';
-    username?: string;
-    bio?: string;
-  };
-  error?: string;
-};
+type UserRole = 'admin' | 'staff';
+
+function isUserRole(role: unknown): role is UserRole {
+  return role === 'admin' || role === 'staff';
+}
 
 async function fetchUserProfile(sess: Session): Promise<AuthUser> {
-  const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:4000'}/api/users/me`, {
-    headers: {
-      Authorization: `Bearer ${sess.access_token}`,
-      'Content-Type': 'application/json',
-    },
-  });
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+  if (authError) throw new Error(authError.message);
 
-  const payload = await parseJsonResponse<UserProfileResponse>(res);
-  if (!res.ok) {
-    throw new Error(payload.error || 'Failed to fetch user profile');
+  const currentUser = authData.user;
+  if (!currentUser || currentUser.id !== sess.user.id) {
+    throw new Error('Unable to verify authenticated user');
   }
 
-  const data = payload.data || {};
-  const fallbackEmail = sess.user.email || '';
+  const { data, error } = await supabase
+    .from('users')
+    .select('name, email, role')
+    .eq('auth_id', currentUser.id)
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (!data || !isUserRole(data.role)) {
+    throw new Error('User role not found');
+  }
+
+  const fallbackEmail = currentUser.email || sess.user.email || '';
   const fallbackUsername = fallbackEmail.split('@')[0] || 'user';
 
   return {
-    id: sess.user.id,
+    id: currentUser.id,
     email: data.email || fallbackEmail,
     name: data.name || fallbackUsername,
-    role: data.role || 'staff',
-    username: data.username || fallbackUsername,
-    bio: data.bio || '',
+    role: data.role,
+    username: fallbackUsername,
+    bio: '',
   };
 }
 
@@ -83,17 +84,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSession(sess);
     } catch (error) {
       console.error('Error loading user profile:', error);
-      const fallbackEmail = supabaseUser.email || '';
-      const fallbackUsername = fallbackEmail.split('@')[0] || 'user';
-
-      setUser({
-        id: supabaseUser.id,
-        email: fallbackEmail,
-        name: fallbackUsername,
-        role: 'staff',
-        username: fallbackUsername,
-        bio: '',
-      });
+      setUser(null);
       setSession(sess);
     } finally {
       setLoading(false);

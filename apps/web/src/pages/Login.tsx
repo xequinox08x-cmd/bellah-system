@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { supabase } from '../lib/supabase';
+import { useAuth } from '../components/AuthContext';
 import { Eye, EyeOff, Loader2, AlertCircle, Moon, Sun } from 'lucide-react';
 
 export default function Login() {
   const navigate = useNavigate();
+  const { signIn } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -14,12 +15,6 @@ export default function Login() {
 
   const t = isDark ? theme.dark : theme.light;
 
-  const resolveRole = (userEmail: string) => {
-    return (userEmail === 'admin@bellah.com' || userEmail === 'admin@gmail.com' || userEmail === 'admin@bellah.test')
-      ? 'admin'
-      : 'staff';
-  };
-
   const handleLogin = async () => {
     if (!email.trim() || !password.trim()) {
       setError('Please enter your email and password.');
@@ -28,14 +23,8 @@ export default function Login() {
     setError(null);
     setIsLoading(true);
     try {
-      const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password });
-      if (authError) throw authError;
-      if (!data.session) throw new Error('No session created.');
-
-      const signedInEmail = data.user?.email || email.trim();
-      const role = resolveRole(signedInEmail);
-
-      navigate('/dashboard');
+      const profile = await signIn(email.trim(), password);
+      navigate(profile.role === 'admin' ? '/admin' : '/staff');
     } catch (err: any) {
       setError(err.message || 'Login failed. Please try again.');
     } finally {

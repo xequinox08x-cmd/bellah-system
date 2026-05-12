@@ -374,12 +374,99 @@ function getOpenAiCaptionModel() {
   return process.env.OPENAI_CAPTION_MODEL?.trim() || "gpt-4o-mini";
 }
 
+function getOpenAiPromptModel() {
+  return process.env.OPENAI_PROMPT_MODEL?.trim() || getOpenAiCaptionModel();
+}
+
 function getGeminiApiKey() {
   return process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || "";
 }
 
 function getGeminiImageModel() {
   return process.env.GEMINI_IMAGE_MODEL?.trim() || "gemini-3.1-flash-image-preview";
+}
+
+function getSupabaseUrl() {
+  return process.env.SUPABASE_URL?.trim() || "";
+}
+
+function getSupabaseServiceKey() {
+  return process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || "";
+}
+
+async function supabaseRest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const supabaseUrl = getSupabaseUrl();
+  const serviceKey = getSupabaseServiceKey();
+  if (!supabaseUrl || !serviceKey) {
+    throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
+  }
+
+  const response = await fetch(`${supabaseUrl}/rest/v1${path}`, {
+    ...options,
+    headers: {
+      apikey: serviceKey,
+      Authorization: `Bearer ${serviceKey}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || response.statusText);
+  }
+
+  return response.json() as Promise<T>;
+}
+
+async function getProductForGeneration(productId: number): Promise<ProductRecord | null> {
+  const rows = await supabaseRest<ProductRecord[]>(
+    `/products?select=id,name,category,price,description&id=eq.${productId}&limit=1`
+  );
+
+  return rows[0] ?? null;
+}
+
+async function saveGeneratedContent(payload: {
+  product: ProductRecord;
+  title: string;
+  content: string;
+  contentType: string;
+  tone: string;
+  platform: string;
+  promptText: string;
+  outputMode: OutputMode;
+  referenceImageUrl: string | null;
+  generatedImageUrl: string | null;
+  imagePrompt: string | null;
+  hashtags: string;
+}) {
+  const rows = await supabaseRest<Array<{ id: number; status: string | null }>>(
+    "/ai_contents?select=id,status",
+    {
+      method: "POST",
+      headers: {
+        Prefer: "return=representation",
+      },
+      body: JSON.stringify({
+        product_id: payload.product.id,
+        title: payload.title,
+        content: payload.content,
+        content_type: payload.contentType,
+        tone: payload.tone,
+        platform: payload.platform,
+        prompt_text: payload.promptText,
+        output_mode: payload.outputMode,
+        reference_image_url: payload.referenceImageUrl,
+        generated_image_url: payload.generatedImageUrl,
+        image_prompt: payload.imagePrompt,
+        hashtags: payload.hashtags,
+        status: GENERATED_CONTENT_STATUS,
+      }),
+    }
+  );
+
+  return rows[0] ?? null;
 }
 
 function extractOpenAiText(data: any) {
@@ -433,6 +520,78 @@ async function generateCaptionWithOpenAi(prompt: string) {
   }
 
   return content;
+}
+
+async function generateAutoPromptWithOpenAi(options: {
+  product: ProductRecord;
+  contentType: string;
+  tone: string;
+  platform: string;
+  outputMode: OutputMode;
+}) {
+  const apiKey = getOpenAiApiKey();
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY (or AI_API_KEY) is not configured");
+  }
+
+  const { product, contentType, tone, platform, outputMode } = options;
+  const contentLabel = formatLabel(contentType || "caption");
+  const modeLabel =
+    outputMode === "image"
+      ? "image-only poster brief"
+      : outputMode === "text_image"
+        ? "caption and poster brief"
+        : "caption-only brief";
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: getOpenAiPromptModel(),
+      instructions: [
+        "You create compact creative briefs for a Facebook beauty-product marketing generator.",
+        "Return only one plain-text prompt.",
+        "Do not write the final caption, hashtags, JSON, bullets, labels, or quotation marks.",
+        "Make the prompt directly usable as the primary instruction for a downstream AI content generator.",
+      ].join(" "),
+      input: [
+        `Platform: ${platform || FACEBOOK_PLATFORM}`,
+        `Content type: ${contentLabel}`,
+        `Tone: ${tone || "fun"}`,
+        `Output mode: ${modeLabel}`,
+        `Product name: ${product.name}`,
+        `Category: ${product.category?.trim() || "Beauty"}`,
+        `Price: PHP ${Number(product.price ?? 0).toFixed(2)}`,
+        `Description: ${product.description?.trim() || "No description provided."}`,
+        "Requirements:",
+        "- Keep it concise at 2 to 4 sentences.",
+        "- Align the message angle with the selected content type.",
+        "- Match the selected tone exactly.",
+        "- Include a clear CTA direction.",
+        outputMode === "text"
+          ? "- Focus on copy direction, audience intent, and the strongest conversion angle."
+          : "- Include visual direction for a Facebook beauty poster: composition, mood, lighting, and on-brand styling.",
+        "- Stay grounded in the provided product facts and do not invent claims.",
+        "- Keep the brand feel premium, beauty-focused, and suitable for a Filipino audience.",
+      ].join("\n"),
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`OpenAI prompt request failed: ${errorText || response.statusText}`);
+  }
+
+  const data = await response.json();
+  const content = extractOpenAiText(data);
+  if (!content) {
+    throw new Error("OpenAI returned an empty auto prompt");
+  }
+
+  return normalizeWhitespace(content);
 }
 
 async function generateImageWithGemini(prompt: string, referenceImageUrl?: string | null) {
@@ -581,14 +740,24 @@ async function generateMarketingAssets(options: {
   return { content, generatedImageUrl, providers };
 }
 
-function buildAutoPrompt(product: ProductRecord, contentType: string, tone: string): string {
-  const category = product.category?.trim() || 'beauty';
+function buildAutoPrompt(
+  product: ProductRecord,
+  contentType: string,
+  tone: string,
+  platform: string,
+  outputMode: OutputMode
+): string {
+  const category = product.category?.trim() || "beauty";
   const description = product.description?.trim();
   const price = Number(product.price ?? 0).toFixed(2);
-  const contentLabel = formatLabel(contentType || 'caption');
+  const contentLabel = formatLabel(contentType || "caption");
+  const modeInstruction =
+    outputMode === "text"
+      ? "Focus on a strong caption angle, emotional hook, and a clear CTA."
+      : "Include visual direction for a clean Facebook beauty poster with premium styling, soft lighting, and the product as the hero.";
 
   const parts: string[] = [
-    `Create a ${tone || 'fun'} Facebook ${contentLabel} for ${product.name}, a ${category} product priced at PHP ${price}.`,
+    `Create a ${tone || "fun"} Facebook ${contentLabel} for ${product.name}, a ${category} product priced at PHP ${price}.`,
   ];
 
   if (description) {
@@ -596,12 +765,13 @@ function buildAutoPrompt(product: ProductRecord, contentType: string, tone: stri
   }
 
   parts.push(
-    'Use warm beauty-brand styling, soft lighting, and a clean composition.',
-    'Make the product the clear hero. Include the product name prominently.',
-    'Keep the tone upbeat and conversion-focused for a Filipino beauty audience.',
+    `Platform: ${platform || FACEBOOK_PLATFORM}.`,
+    modeInstruction,
+    "Keep the tone conversion-focused for a Filipino beauty audience.",
+    "Make the product name clear and keep the brief grounded in the provided product details.",
   );
 
-  return parts.join(' ');
+  return parts.join(" ");
 }
 
 function validateGenerateBody(body: GenerateRequestBody) {
@@ -636,8 +806,6 @@ function validateGenerateBody(body: GenerateRequestBody) {
 
 aiRouter.post("/generate", async (req: Request, res: Response) => {
   try {
-    await ensureAiSchema();
-
     const parsed = validateGenerateBody(req.body ?? {});
     if (!parsed) {
       return res.status(400).json({
@@ -647,21 +815,39 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
       });
     }
 
-    const productResult = await pool.query<ProductRecord>(
-      `
-      SELECT id, name, category, price, description
-      FROM products
-      WHERE id = $1
-      `,
-      [parsed.productId]
-    );
-
-    if (!productResult.rows.length) {
+    const product = await getProductForGeneration(parsed.productId);
+    if (!product) {
       return res.status(404).json({ ok: false, data: null, message: "Product not found" });
     }
 
-    const product = productResult.rows[0];
-    const effectivePromptText = parsed.promptText || buildAutoPrompt(product, parsed.contentType, parsed.tone);
+    let effectivePromptText = parsed.promptText;
+
+    if (!effectivePromptText) {
+      try {
+        if (getOpenAiApiKey()) {
+          effectivePromptText = await generateAutoPromptWithOpenAi({
+            product,
+            contentType: parsed.contentType,
+            tone: parsed.tone,
+            platform: parsed.platform,
+            outputMode: parsed.outputMode,
+          });
+        }
+      } catch (err) {
+        console.error("[POST /api/ai/generate] OpenAI prompt fallback", err);
+      }
+    }
+
+    if (!effectivePromptText) {
+      effectivePromptText = buildAutoPrompt(
+        product,
+        parsed.contentType,
+        parsed.tone,
+        parsed.platform,
+        parsed.outputMode
+      );
+    }
+
     const prompt = buildPrompt(
       product,
       effectivePromptText,
@@ -693,47 +879,28 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
       referenceImageUrl: parsed.referenceImageUrl,
     });
 
-    const insertResult = await pool.query(
-      `
-      INSERT INTO ai_contents (
-        product_id,
-        title,
-        content,
-        content_type,
-        tone,
-        platform,
-        prompt_text,
-        output_mode,
-        reference_image_url,
-        generated_image_url,
-        image_prompt,
-        hashtags,
-        status
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-      RETURNING id, status
-      `,
-      [
-        product.id,
-        title,
-        content,
-        parsed.contentType,
-        parsed.tone,
-        parsed.platform,
-        parsed.promptText,
-        parsed.outputMode,
-        parsed.referenceImageUrl,
-        generatedImageUrl,
-        imagePrompt,
-        hashtags,
-        GENERATED_CONTENT_STATUS,
-      ]
-    );
+    const savedContent = await saveGeneratedContent({
+      product,
+      title,
+      content,
+      contentType: parsed.contentType,
+      tone: parsed.tone,
+      platform: parsed.platform,
+      promptText: effectivePromptText,
+      outputMode: parsed.outputMode,
+      referenceImageUrl: parsed.referenceImageUrl,
+      generatedImageUrl,
+      imagePrompt,
+      hashtags,
+    });
+    if (!savedContent?.id) {
+      throw new Error("Generated content was not saved");
+    }
 
     return res.json({
       ok: true,
       data: {
-        id: Number(insertResult.rows[0].id),
+        id: Number(savedContent?.id),
         title,
         caption: content,
         hashtags,
@@ -741,7 +908,7 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
         referenceImageUrl: parsed.referenceImageUrl,
         outputMode: parsed.outputMode,
         providers,
-        status: String(insertResult.rows[0].status ?? GENERATED_CONTENT_STATUS),
+        status: String(savedContent?.status ?? GENERATED_CONTENT_STATUS),
       },
       message: null,
     });
