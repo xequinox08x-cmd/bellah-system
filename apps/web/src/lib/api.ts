@@ -187,7 +187,7 @@ async function getSupabaseDashboardSummary(start?: string, end?: string) {
   };
 }
 
-async function getSupabaseAnalytics() {
+async function getSupabaseAnalytics(trendDays = 7) {
   const [{ data: contents, error: contentError }, { data: metrics, error: metricsError }] = await Promise.all([
     supabase.from('ai_contents').select('*').order('created_at', { ascending: false }),
     supabase.from('ai_content_metrics').select('*').order('snapshot_at', { ascending: false }),
@@ -245,21 +245,53 @@ async function getSupabaseAnalytics() {
     ? Number((((summary.likes + summary.comments + summary.shares) / summary.reach) * 100).toFixed(2))
     : 0;
 
-  const labels = Array.from({ length: 7 }, (_, index) => {
+  const dailyMetrics = new Map<string, { likes: number; comments: number; shares: number; reach: number }>();
+  const latestMetricByContentDate = new Map<string, any>();
+  const trackedContentIds = new Set(posts.map((post) => post.id));
+
+  for (const metric of metrics || []) {
+    const contentId = Number(metric.ai_content_id);
+    const snapshotAt = metric.snapshot_at || metric.fetched_at || metric.created_at;
+    if (!trackedContentIds.has(contentId) || !snapshotAt) continue;
+
+    const day = String(snapshotAt).slice(0, 10);
+    const key = `${contentId}:${day}`;
+    if (!latestMetricByContentDate.has(key)) latestMetricByContentDate.set(key, metric);
+  }
+
+  for (const metric of latestMetricByContentDate.values()) {
+    const day = String(metric.snapshot_at || metric.fetched_at || metric.created_at).slice(0, 10);
+    const current = dailyMetrics.get(day) || { likes: 0, comments: 0, shares: 0, reach: 0 };
+    current.likes += Number(metric.likes ?? metric.likes_count ?? 0);
+    current.comments += Number(metric.comments ?? metric.comments_count ?? 0);
+    current.shares += Number(metric.shares ?? metric.shares_count ?? 0);
+    current.reach += Number(metric.reach ?? metric.reach_count ?? 0);
+    dailyMetrics.set(day, current);
+  }
+
+  const days = Math.max(7, trendDays);
+  const labels = Array.from({ length: days }, (_, index) => {
     const date = new Date();
-    date.setDate(date.getDate() - (6 - index));
+    date.setDate(date.getDate() - ((days - 1) - index));
     return dateKey(date);
   });
 
-  const trend = labels.map((date) => ({
-    date,
-    label: new Date(`${date}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: '2-digit' }),
-    likes: 0,
-    comments: 0,
-    shares: 0,
-    reach: 0,
-    engagementRate: 0,
-  }));
+  const trend = labels.map((date) => {
+    const metricsForDate = dailyMetrics.get(date) || { likes: 0, comments: 0, shares: 0, reach: 0 };
+    const engagementRate = metricsForDate.reach > 0
+      ? ((metricsForDate.likes + metricsForDate.comments + metricsForDate.shares) / metricsForDate.reach) * 100
+      : 0;
+
+    return {
+      date,
+      label: new Date(`${date}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: '2-digit' }),
+      likes: metricsForDate.likes,
+      comments: metricsForDate.comments,
+      shares: metricsForDate.shares,
+      reach: metricsForDate.reach,
+      engagementRate: Number(engagementRate.toFixed(2)),
+    };
+  });
 
   return { summary, posts, trend };
 }
@@ -303,6 +335,83 @@ async function getSupabaseAiContentFeed() {
   };
 }
 
+function normalizeAiContentItem(item: any) {
+  return {
+    id: Number(item.id),
+    title: String(item.title || 'Untitled Content'),
+    prompt: String(item.prompt_text || ''),
+    output: String(item.content || ''),
+    platform: String(item.platform || 'facebook'),
+    hashtags: String(item.hashtags || ''),
+    outputMode: String(item.output_mode || 'text'),
+    referenceImageUrl: item.reference_image_url ?? null,
+    generatedImageUrl: item.generated_image_url ?? null,
+    status: String(item.status || 'draft'),
+    createdAt: item.created_at,
+    approvedAt: item.approved_at ?? null,
+    scheduledAt: item.scheduled_at ?? null,
+    publishedAt: item.published_at ?? null,
+  };
+}
+
+async function getSupabaseContent(status?: string, page = 1) {
+  const limit = 20;
+  const offset = (Math.max(1, page) - 1) * limit;
+  let query = supabase
+    .from('ai_contents')
+    .select('id, title, content, platform, prompt_text, hashtags, output_mode, reference_image_url, generated_image_url, status, created_at, approved_at, scheduled_at, published_at')
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
+
+  if (status && status !== 'all') query = query.eq('status', status);
+
+  const { data, error } = await query;
+  if (error) throw new Error(error.message);
+
+  return {
+    ok: true,
+    data: (data || []).map(normalizeAiContentItem),
+    total: data?.length || 0,
+    page,
+    limit,
+    message: null,
+  };
+}
+
+async function getSupabaseScheduledPosts() {
+  const { data, error } = await supabase
+    .from('ai_contents')
+    .select('id, title, content, hashtags, platform, status, scheduled_at, published_at, created_at')
+    .order('created_at', { ascending: false })
+    .limit(500);
+
+  if (error) throw new Error(error.message);
+
+  const scheduledStatuses = new Set(['scheduled', 'published', 'failed', 'cancelled']);
+  const posts = (data || [])
+    .filter((item: any) => item.scheduled_at || scheduledStatuses.has(String(item.status || '')))
+    .map((item: any) => ({
+      id: Number(item.id),
+      content_id: Number(item.id),
+      campaign_id: null,
+      scheduled_at: item.scheduled_at,
+      platform: String(item.platform || 'facebook'),
+      status: item.status === 'published' || item.status === 'failed' || item.status === 'cancelled'
+        ? item.status
+        : 'pending',
+      facebook_post_id: null,
+      published_at: item.published_at ?? null,
+      error_message: null,
+      created_at: item.created_at,
+      content_title: String(item.title || 'Untitled Content'),
+      content_output: String(item.content || ''),
+      content_hashtags: String(item.hashtags || ''),
+      campaign_name: null,
+    }));
+
+  return { data: posts };
+}
+
 async function withSupabaseFallback<T>(request: () => Promise<T>, fallback: () => Promise<T>) {
   try {
     return await request();
@@ -331,6 +440,49 @@ type GenerationProviders = {
   image: GenerationProvider;
   usedReferenceImage: boolean;
 };
+
+type AutoPromptProduct = {
+  name: string;
+  category?: string;
+  price?: number;
+  description?: string;
+};
+
+function formatAutoPromptLabel(value?: string) {
+  return String(value || 'caption').replace(/_/g, ' ');
+}
+
+function buildLocalAutoMarketingPrompt(body: {
+  product?: AutoPromptProduct;
+  contentType?: string;
+  tone?: string;
+  platform?: string;
+  outputMode: string;
+  referenceImageUrl?: string;
+}) {
+  const product = body.product;
+  const productName = product?.name?.trim() || 'the selected product';
+  const category = product?.category?.trim() || 'beauty';
+  const price = Number(product?.price ?? 0);
+  const description = product?.description?.trim();
+  const contentType = formatAutoPromptLabel(body.contentType);
+  const tone = body.tone || 'fun';
+  const hasReferenceImage = Boolean(body.referenceImageUrl);
+  const modeInstruction = body.outputMode === 'text'
+    ? 'Focus on a strong Facebook caption angle, emotional hook, concise benefit framing, and a clear shop-now CTA.'
+    : 'Create a clean 4:5 Facebook beauty poster concept with the product as the hero, premium styling, flattering lighting, and readable minimal text.';
+  const referenceInstruction = hasReferenceImage
+    ? 'Use the uploaded/reference image as the visual source of truth: preserve the actual product identity, packaging shape, label placement, and dominant product colors.'
+    : 'No reference image is provided, so base the creative direction only on the product name, category, price, and description.';
+
+  return [
+    `Create a ${tone} Facebook ${contentType} brief for ${productName}, a ${category} product${price > 0 ? ` priced at PHP ${price.toFixed(2)}` : ''}.`,
+    description ? `Product details: ${description}.` : '',
+    modeInstruction,
+    referenceInstruction,
+    'Keep the message premium, beauty-focused, conversion-oriented, and suitable for a Filipino audience. Do not invent product claims.',
+  ].filter(Boolean).join(' ');
+}
 
 export const api = {
   // PRODUCTS
@@ -435,12 +587,17 @@ export const api = {
 
   // AI CONTENT
   async getContent(status?: string, page = 1) {
-    const params = new URLSearchParams({ page: String(page), limit: '20' });
-    if (status && status !== 'all') params.set('status', status);
-    const res = await fetch(`${API_BASE}/ai/contents?${params}`);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || 'Failed to fetch content');
-    return data;
+    return withSupabaseFallback(
+      async () => {
+        const params = new URLSearchParams({ page: String(page), limit: '20' });
+        if (status && status !== 'all') params.set('status', status);
+        const res = await fetch(`${API_BASE}/ai/contents?${params}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || 'Failed to fetch content');
+        return data;
+      },
+      () => getSupabaseContent(status, page)
+    );
   },
 
   async createContent(body: {
@@ -525,12 +682,73 @@ export const api = {
         hashtags: string;
         generatedImageUrl: string | null;
         referenceImageUrl: string | null;
+        promptText: string;
+        promptProvider: GenerationProvider | null;
         outputMode: string;
         providers: GenerationProviders;
         status: string;
       };
       message: string | null;
     };
+  },
+
+  async generateAutoMarketingPrompt(body: {
+    productId: number;
+    product?: AutoPromptProduct;
+    contentType?: string;
+    tone?: string;
+    platform: string;
+    outputMode: string;
+    referenceImageUrl?: string;
+  }) {
+    try {
+      const res = await fetch(`${API_ROOT}/api/ai/auto-prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      let data: any = null;
+      try {
+        data = await res.json();
+      } catch {
+        data = null;
+      }
+
+      if (!res.ok) {
+        if (res.status === 404) {
+          return {
+            ok: true,
+            data: {
+              promptText: buildLocalAutoMarketingPrompt(body),
+              provider: 'fallback' as GenerationProvider,
+            },
+            message: null,
+          };
+        }
+
+        throw new Error(data?.message || 'Failed to generate auto prompt');
+      }
+
+      return data as {
+        ok: boolean;
+        data: {
+          promptText: string;
+          provider: GenerationProvider;
+        };
+        message: string | null;
+      };
+    } catch (error) {
+      console.warn('[api] auto prompt endpoint unavailable, using local fallback', error);
+      return {
+        ok: true,
+        data: {
+          promptText: buildLocalAutoMarketingPrompt(body),
+          provider: 'fallback' as GenerationProvider,
+        },
+        message: null,
+      };
+    }
   },
 
   async getAiContentFeed(): Promise<{
@@ -659,7 +877,7 @@ export const api = {
   },
 
   async getAnalyticsTrend(days = 7) {
-    return { ok: true, data: (await getSupabaseAnalytics()).trend.slice(-days), message: null } as {
+    return { ok: true, data: (await getSupabaseAnalytics(days)).trend, message: null } as {
       ok: boolean;
       data: Array<{
         date: string;
@@ -879,8 +1097,15 @@ export const api = {
 
   // SCHEDULED POSTS
   getScheduledPosts: async () => {
-    const res = await fetch(`${API_BASE}/scheduled-posts`);
-    return res.json();
+    return withSupabaseFallback(
+      async () => {
+        const res = await fetch(`${API_BASE}/scheduled-posts`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to load scheduled posts');
+        return data;
+      },
+      getSupabaseScheduledPosts
+    );
   },
 
   createScheduledPost: async (data: {
@@ -894,7 +1119,9 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
-    return res.json();
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || 'Failed to schedule post');
+    return payload;
   },
 
   updatePostStatus: async (id: number, status: string) => {
@@ -903,12 +1130,16 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status }),
     });
-    return res.json();
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || 'Failed to update post status');
+    return payload;
   },
 
   deleteScheduledPost: async (id: number) => {
     const res = await fetch(`${API_BASE}/scheduled-posts/${id}`, { method: 'DELETE' });
-    return res.json();
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || 'Failed to cancel scheduled post');
+    return payload;
   },
 
   // FORECASTS

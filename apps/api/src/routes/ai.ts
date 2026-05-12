@@ -1,6 +1,4 @@
 import { Router, type Request, type Response } from "express";
-import { pool } from "../db/pool";
-import { publishSystemContent } from "../services/facebook";
 
 export const aiRouter = Router();
 
@@ -41,20 +39,6 @@ type ProductRecord = {
   description: string | null;
 };
 
-type FeedRow = {
-  id: number;
-  title: string | null;
-  content: string;
-  product_name: string | null;
-  platform: string | null;
-  status: string;
-  created_at: string;
-  approved_at: string | null;
-  scheduled_at: string | null;
-  published_at: string | null;
-  created_by_name: string | null;
-};
-
 type ContentListRow = {
   id: number;
   title: string | null;
@@ -92,69 +76,9 @@ type ScheduleContentBody = {
   scheduled_at?: string;
 };
 
-let aiSchemaReady = false;
-let aiSchemaPromise: Promise<void> | null = null;
-
 function isAdminRequest(req: Request) {
   const roleHeader = req.header("x-user-role");
   return typeof roleHeader === "string" && roleHeader.trim().toLowerCase() === "admin";
-}
-
-function ensureAiSchema() {
-  if (aiSchemaReady) return Promise.resolve();
-  if (aiSchemaPromise) return aiSchemaPromise;
-
-  aiSchemaPromise = (async () => {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS ai_contents (
-        id SERIAL PRIMARY KEY,
-        product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
-        content TEXT NOT NULL,
-        content_type TEXT NOT NULL,
-        tone TEXT NOT NULL,
-        platform TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'draft',
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        approved_at TIMESTAMPTZ,
-        scheduled_at TIMESTAMPTZ
-      )
-    `);
-    await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS title TEXT`);
-    await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL`);
-    await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ`);
-    await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS prompt_text TEXT`);
-    await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS output_mode TEXT NOT NULL DEFAULT 'text'`);
-    await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS reference_image_url TEXT`);
-    await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS generated_image_url TEXT`);
-    await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS image_prompt TEXT`);
-    await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS hashtags TEXT`);
-    await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS facebook_post_id TEXT`);
-    await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS facebook_page_id TEXT`);
-    await pool.query(`ALTER TABLE ai_contents ADD COLUMN IF NOT EXISTS facebook_permalink_url TEXT`);
-    await pool.query(`
-      ALTER TABLE ai_contents
-      ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at AT TIME ZONE 'UTC'
-    `);
-    await pool.query(`
-      ALTER TABLE ai_contents
-      ALTER COLUMN approved_at TYPE TIMESTAMPTZ USING approved_at AT TIME ZONE 'UTC'
-    `);
-    await pool.query(`
-      ALTER TABLE ai_contents
-      ALTER COLUMN scheduled_at TYPE TIMESTAMPTZ USING scheduled_at AT TIME ZONE 'UTC'
-    `);
-    await pool.query(`
-      ALTER TABLE ai_contents
-      ALTER COLUMN published_at TYPE TIMESTAMPTZ USING published_at AT TIME ZONE 'UTC'
-    `);
-
-    aiSchemaReady = true;
-  })().catch((err) => {
-    aiSchemaPromise = null;
-    throw err;
-  });
-
-  return aiSchemaPromise;
 }
 
 export function buildPrompt(
@@ -411,12 +335,54 @@ async function supabaseRest<T>(path: string, options: RequestInit = {}): Promise
     },
   });
 
+  const responseText = await response.text();
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText || response.statusText);
+    throw new Error(responseText || response.statusText);
   }
 
-  return response.json() as Promise<T>;
+  return (responseText ? JSON.parse(responseText) : null) as T;
+}
+
+function aiContentPath(params: Record<string, string | number>) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => search.set(key, String(value)));
+  return `/ai_contents?${search.toString()}`;
+}
+
+const AI_CONTENT_LIST_COLUMNS = [
+  "id",
+  "title",
+  "content",
+  "platform",
+  "prompt_text",
+  "hashtags",
+  "output_mode",
+  "reference_image_url",
+  "generated_image_url",
+  "status",
+  "created_at",
+  "approved_at",
+  "scheduled_at",
+  "published_at",
+].join(",");
+
+function serializeContentListRow(row: ContentListRow) {
+  return {
+    id: Number(row.id),
+    title: String(row.title ?? "Untitled Content"),
+    prompt: String(row.prompt_text ?? ""),
+    output: String(row.content ?? ""),
+    platform: String(row.platform ?? FACEBOOK_PLATFORM),
+    hashtags: String(row.hashtags ?? ""),
+    outputMode: String(row.output_mode ?? "text"),
+    referenceImageUrl: row.reference_image_url ? String(row.reference_image_url) : null,
+    generatedImageUrl: row.generated_image_url ? String(row.generated_image_url) : null,
+    status: String(row.status),
+    createdAt: row.created_at,
+    approvedAt: row.approved_at,
+    scheduledAt: row.scheduled_at,
+    publishedAt: row.published_at,
+  };
 }
 
 async function getProductForGeneration(productId: number): Promise<ProductRecord | null> {
@@ -528,13 +494,15 @@ async function generateAutoPromptWithOpenAi(options: {
   tone: string;
   platform: string;
   outputMode: OutputMode;
+  referenceImageUrl?: string | null;
 }) {
   const apiKey = getOpenAiApiKey();
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY (or AI_API_KEY) is not configured");
   }
 
-  const { product, contentType, tone, platform, outputMode } = options;
+  const { product, contentType, tone, platform, outputMode, referenceImageUrl } = options;
+  const hasReferenceImage = Boolean(referenceImageUrl);
   const contentLabel = formatLabel(contentType || "caption");
   const modeLabel =
     outputMode === "image"
@@ -566,6 +534,7 @@ async function generateAutoPromptWithOpenAi(options: {
         `Category: ${product.category?.trim() || "Beauty"}`,
         `Price: PHP ${Number(product.price ?? 0).toFixed(2)}`,
         `Description: ${product.description?.trim() || "No description provided."}`,
+        `Reference image provided: ${hasReferenceImage ? "yes" : "no"}`,
         "Requirements:",
         "- Keep it concise at 2 to 4 sentences.",
         "- Align the message angle with the selected content type.",
@@ -574,6 +543,9 @@ async function generateAutoPromptWithOpenAi(options: {
         outputMode === "text"
           ? "- Focus on copy direction, audience intent, and the strongest conversion angle."
           : "- Include visual direction for a Facebook beauty poster: composition, mood, lighting, and on-brand styling.",
+        hasReferenceImage
+          ? "- Use the reference image as the visual source of truth; preserve the product identity, packaging, label placement, and dominant colors."
+          : "- If no reference image is available, keep the direction grounded in the product name, category, price, and description.",
         "- Stay grounded in the provided product facts and do not invent claims.",
         "- Keep the brand feel premium, beauty-focused, and suitable for a Filipino audience.",
       ].join("\n"),
@@ -745,16 +717,21 @@ function buildAutoPrompt(
   contentType: string,
   tone: string,
   platform: string,
-  outputMode: OutputMode
+  outputMode: OutputMode,
+  referenceImageUrl?: string | null
 ): string {
   const category = product.category?.trim() || "beauty";
   const description = product.description?.trim();
   const price = Number(product.price ?? 0).toFixed(2);
   const contentLabel = formatLabel(contentType || "caption");
+  const hasReferenceImage = Boolean(referenceImageUrl);
   const modeInstruction =
     outputMode === "text"
       ? "Focus on a strong caption angle, emotional hook, and a clear CTA."
       : "Include visual direction for a clean Facebook beauty poster with premium styling, soft lighting, and the product as the hero.";
+  const referenceInstruction = hasReferenceImage
+    ? "Use the provided reference image as the visual source of truth: preserve the product identity, packaging, label placement, and dominant colors while improving the campaign styling around it."
+    : "No reference image is provided, so base the concept only on the product name, category, price, and description.";
 
   const parts: string[] = [
     `Create a ${tone || "fun"} Facebook ${contentLabel} for ${product.name}, a ${category} product priced at PHP ${price}.`,
@@ -767,11 +744,44 @@ function buildAutoPrompt(
   parts.push(
     `Platform: ${platform || FACEBOOK_PLATFORM}.`,
     modeInstruction,
+    referenceInstruction,
     "Keep the tone conversion-focused for a Filipino beauty audience.",
     "Make the product name clear and keep the brief grounded in the provided product details.",
   );
 
   return parts.join(" ");
+}
+
+async function resolveAutoPrompt(options: {
+  product: ProductRecord;
+  contentType: string;
+  tone: string;
+  platform: string;
+  outputMode: OutputMode;
+  referenceImageUrl?: string | null;
+}) {
+  try {
+    if (getOpenAiApiKey()) {
+      return {
+        promptText: await generateAutoPromptWithOpenAi(options),
+        provider: "openai" as GenerationProvider,
+      };
+    }
+  } catch (err) {
+    console.error("[POST /api/ai/auto-prompt] OpenAI prompt fallback", err);
+  }
+
+  return {
+    promptText: buildAutoPrompt(
+      options.product,
+      options.contentType,
+      options.tone,
+      options.platform,
+      options.outputMode,
+      options.referenceImageUrl
+    ),
+    provider: "fallback" as GenerationProvider,
+  };
 }
 
 function validateGenerateBody(body: GenerateRequestBody) {
@@ -804,6 +814,48 @@ function validateGenerateBody(body: GenerateRequestBody) {
   };
 }
 
+aiRouter.post("/auto-prompt", async (req: Request, res: Response) => {
+  try {
+    const parsed = validateGenerateBody(req.body ?? {});
+    if (!parsed) {
+      return res.status(400).json({
+        ok: false,
+        data: null,
+        message: "productId is required and must be a valid product id",
+      });
+    }
+
+    const product = await getProductForGeneration(parsed.productId);
+    if (!product) {
+      return res.status(404).json({ ok: false, data: null, message: "Product not found" });
+    }
+
+    const autoPrompt = await resolveAutoPrompt({
+      product,
+      contentType: parsed.contentType,
+      tone: parsed.tone,
+      platform: parsed.platform,
+      outputMode: parsed.outputMode,
+      referenceImageUrl: parsed.referenceImageUrl,
+    });
+
+    return res.json({
+      ok: true,
+      data: {
+        promptText: autoPrompt.promptText,
+        provider: autoPrompt.provider,
+      },
+      message: null,
+    });
+  } catch (e: any) {
+    return res.status(500).json({
+      ok: false,
+      data: null,
+      message: e?.message || "Failed to generate auto prompt",
+    });
+  }
+});
+
 aiRouter.post("/generate", async (req: Request, res: Response) => {
   try {
     const parsed = validateGenerateBody(req.body ?? {});
@@ -821,31 +873,19 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
     }
 
     let effectivePromptText = parsed.promptText;
+    let promptProvider: GenerationProvider | null = null;
 
     if (!effectivePromptText) {
-      try {
-        if (getOpenAiApiKey()) {
-          effectivePromptText = await generateAutoPromptWithOpenAi({
-            product,
-            contentType: parsed.contentType,
-            tone: parsed.tone,
-            platform: parsed.platform,
-            outputMode: parsed.outputMode,
-          });
-        }
-      } catch (err) {
-        console.error("[POST /api/ai/generate] OpenAI prompt fallback", err);
-      }
-    }
-
-    if (!effectivePromptText) {
-      effectivePromptText = buildAutoPrompt(
+      const autoPrompt = await resolveAutoPrompt({
         product,
-        parsed.contentType,
-        parsed.tone,
-        parsed.platform,
-        parsed.outputMode
-      );
+        contentType: parsed.contentType,
+        tone: parsed.tone,
+        platform: parsed.platform,
+        outputMode: parsed.outputMode,
+        referenceImageUrl: parsed.referenceImageUrl,
+      });
+      effectivePromptText = autoPrompt.promptText;
+      promptProvider = autoPrompt.provider;
     }
 
     const prompt = buildPrompt(
@@ -906,6 +946,8 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
         hashtags,
         generatedImageUrl,
         referenceImageUrl: parsed.referenceImageUrl,
+        promptText: effectivePromptText,
+        promptProvider,
         outputMode: parsed.outputMode,
         providers,
         status: String(savedContent?.status ?? GENERATED_CONTENT_STATUS),
@@ -923,53 +965,36 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
 
 aiRouter.get("/contents/feed", async (_req: Request, res: Response) => {
   try {
-    await ensureAiSchema();
-
-    const result = await pool.query<FeedRow>(
-      `
-      SELECT
-        ac.id,
-        COALESCE(ac.title, p.name, 'Untitled Content') AS title,
-        ac.content,
-        p.name AS product_name,
-        ac.platform,
-        ac.status,
-        ac.created_at,
-        ac.approved_at,
-        ac.scheduled_at,
-        ac.published_at,
-        u.name AS created_by_name
-      FROM ai_contents ac
-      LEFT JOIN products p ON p.id = ac.product_id
-      LEFT JOIN users u ON u.id = ac.created_by
-      WHERE ac.status IN ('published', 'scheduled', 'approved')
-      ORDER BY
-        CASE ac.status
-          WHEN 'published' THEN 1
-          WHEN 'scheduled' THEN 2
-          WHEN 'approved' THEN 3
-          ELSE 4
-        END,
-        COALESCE(ac.published_at, ac.scheduled_at, ac.approved_at, ac.created_at) DESC,
-        ac.id DESC
-      `
+    const rows = await supabaseRest<ContentListRow[]>(
+      aiContentPath({ select: AI_CONTENT_LIST_COLUMNS, order: "created_at.desc", limit: 500 })
     );
+    const feedStatuses = new Set(["published", "scheduled", "approved"]);
 
     return res.json({
       ok: true,
-      data: result.rows.map((row) => ({
-        id: Number(row.id),
-        title: String(row.title ?? "Untitled Content"),
-        content: String(row.content ?? ""),
-        product_name: row.product_name ? String(row.product_name) : null,
-        platform: row.platform ? String(row.platform) : FACEBOOK_PLATFORM,
-        status: String(row.status),
-        created_at: row.created_at,
-        approved_at: row.approved_at,
-        scheduled_at: row.scheduled_at,
-        published_at: row.published_at,
-        created_by_name: row.created_by_name ? String(row.created_by_name) : "Staff",
-      })),
+      data: rows
+        .filter((row) => feedStatuses.has(String(row.status)))
+        .sort((a, b) => {
+          const statusRank: Record<string, number> = { published: 1, scheduled: 2, approved: 3 };
+          const rankDiff = (statusRank[String(a.status)] ?? 4) - (statusRank[String(b.status)] ?? 4);
+          if (rankDiff !== 0) return rankDiff;
+          const aDate = a.published_at || a.scheduled_at || a.approved_at || a.created_at || "";
+          const bDate = b.published_at || b.scheduled_at || b.approved_at || b.created_at || "";
+          return bDate.localeCompare(aDate) || Number(b.id) - Number(a.id);
+        })
+        .map((row) => ({
+          id: Number(row.id),
+          title: String(row.title ?? "Untitled Content"),
+          content: String(row.content ?? ""),
+          product_name: null,
+          platform: row.platform ? String(row.platform) : FACEBOOK_PLATFORM,
+          status: String(row.status),
+          created_at: row.created_at,
+          approved_at: row.approved_at,
+          scheduled_at: row.scheduled_at,
+          published_at: row.published_at,
+          created_by_name: "Staff",
+        })),
       message: null,
     });
   } catch (e: any) {
@@ -983,73 +1008,28 @@ aiRouter.get("/contents/feed", async (_req: Request, res: Response) => {
 
 aiRouter.get("/contents", async (req: Request, res: Response) => {
   try {
-    await ensureAiSchema();
-
     const page = Math.max(1, Number(req.query.page) || 1);
     const limit = Math.min(100, Number(req.query.limit) || 20);
     const offset = (page - 1) * limit;
     const status = typeof req.query.status === "string" ? req.query.status.trim() : "";
 
-    const params: unknown[] = [];
-    const where: string[] = [];
+    const pathParams: Record<string, string | number> = {
+      select: AI_CONTENT_LIST_COLUMNS,
+      order: "created_at.desc",
+      limit,
+      offset,
+    };
 
     if (status && status !== "all") {
-      params.push(status);
-      where.push(`status = $${params.length}`);
+      pathParams.status = `eq.${status}`;
     }
 
-    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-
-    const countResult = await pool.query(
-      `SELECT COUNT(*) FROM ai_contents ${whereSql}`,
-      params
-    );
-
-    params.push(limit, offset);
-    const result = await pool.query<ContentListRow>(
-      `
-      SELECT
-        id,
-        title,
-        content,
-        platform,
-        prompt_text,
-        hashtags,
-        output_mode,
-        reference_image_url,
-        generated_image_url,
-        status,
-        created_at,
-        approved_at,
-        scheduled_at,
-        published_at
-      FROM ai_contents
-      ${whereSql}
-      ORDER BY created_at DESC, id DESC
-      LIMIT $${params.length - 1} OFFSET $${params.length}
-      `,
-      params
-    );
+    const rows = await supabaseRest<ContentListRow[]>(aiContentPath(pathParams));
 
     return res.json({
       ok: true,
-      data: result.rows.map((row) => ({
-        id: Number(row.id),
-        title: String(row.title ?? "Untitled Content"),
-        prompt: String(row.prompt_text ?? ""),
-        output: String(row.content ?? ""),
-        platform: String(row.platform ?? FACEBOOK_PLATFORM),
-        hashtags: String(row.hashtags ?? ""),
-        outputMode: String(row.output_mode ?? "text"),
-        referenceImageUrl: row.reference_image_url ? String(row.reference_image_url) : null,
-        generatedImageUrl: row.generated_image_url ? String(row.generated_image_url) : null,
-        status: String(row.status),
-        createdAt: row.created_at,
-        approvedAt: row.approved_at,
-        scheduledAt: row.scheduled_at,
-        publishedAt: row.published_at,
-      })),
-      total: Number(countResult.rows[0]?.count ?? 0),
+      data: rows.map(serializeContentListRow),
+      total: rows.length,
       page,
       limit,
       message: null,
@@ -1065,8 +1045,6 @@ aiRouter.get("/contents", async (req: Request, res: Response) => {
 
 aiRouter.patch("/contents/:id/submit", async (req: Request, res: Response) => {
   try {
-    await ensureAiSchema();
-
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ ok: false, data: null, message: "Invalid id" });
@@ -1079,20 +1057,15 @@ aiRouter.patch("/contents/:id/submit", async (req: Request, res: Response) => {
     const platform = FACEBOOK_PLATFORM;
     const hashtags = typeof body.hashtags === "string" ? body.hashtags.trim() : "";
 
-    const existingResult = await pool.query<SubmitTargetRow>(
-      `
-      SELECT id, output_mode, generated_image_url, content
-      FROM ai_contents
-      WHERE id = $1
-      `,
-      [id]
+    const existingRows = await supabaseRest<SubmitTargetRow[]>(
+      aiContentPath({ select: "id,output_mode,generated_image_url,content", id: `eq.${id}`, limit: 1 })
     );
 
-    if (!existingResult.rows.length) {
+    if (!existingRows.length) {
       return res.status(404).json({ ok: false, data: null, message: "Content not found" });
     }
 
-    const existing = existingResult.rows[0];
+    const existing = existingRows[0];
     const isImageOnly = (existing.output_mode ?? "text").trim() === "image";
     const hasGeneratedImage = hasNonEmptyString(existing.generated_image_url);
     const allowBlankContent = isImageOnly && hasGeneratedImage;
@@ -1109,22 +1082,47 @@ aiRouter.patch("/contents/:id/submit", async (req: Request, res: Response) => {
       });
     }
 
-    const result = await pool.query(
-      `
-      UPDATE ai_contents
-      SET
-        title = $1,
-        content = $2,
-        platform = $3,
-        hashtags = $4,
-        status = $5
-      WHERE id = $6
-      RETURNING id, title, content, platform, hashtags, status, created_at AS "createdAt"
-      `,
-      [title, content, platform, hashtags, PENDING_APPROVAL_STATUS, id]
+    const rows = await supabaseRest<Array<{
+      id: number;
+      title: string | null;
+      content: string | null;
+      platform: string | null;
+      hashtags: string | null;
+      status: string;
+      created_at: string;
+    }>>(
+      aiContentPath({ select: "id,title,content,platform,hashtags,status,created_at", id: `eq.${id}` }),
+      {
+        method: "PATCH",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({
+          title,
+          content,
+          platform,
+          hashtags,
+          status: PENDING_APPROVAL_STATUS,
+        }),
+      }
     );
 
-    return res.json({ ok: true, data: result.rows[0], message: null });
+    const updated = rows[0];
+    if (!updated) {
+      return res.status(404).json({ ok: false, data: null, message: "Content not found" });
+    }
+
+    return res.json({
+      ok: true,
+      data: {
+        id: updated.id,
+        title: updated.title,
+        content: updated.content,
+        platform: updated.platform,
+        hashtags: updated.hashtags,
+        status: updated.status,
+        createdAt: updated.created_at,
+      },
+      message: null,
+    });
   } catch (e: any) {
     return res.status(500).json({ ok: false, data: null, message: e?.message || "Failed to submit content" });
   }
@@ -1132,8 +1130,6 @@ aiRouter.patch("/contents/:id/submit", async (req: Request, res: Response) => {
 
 aiRouter.patch("/contents/:id/status", async (req: Request, res: Response) => {
   try {
-    await ensureAiSchema();
-
     const id = Number(req.params.id);
     const status = typeof req.body?.status === "string" ? req.body.status.trim() : "";
     if (!Number.isInteger(id) || id <= 0) {
@@ -1144,47 +1140,41 @@ aiRouter.patch("/contents/:id/status", async (req: Request, res: Response) => {
       return res.status(400).json({ ok: false, data: null, message: "Invalid status" });
     }
 
-    if (status === "published") {
-      // Publish through the backend so the system captures the real Facebook
-      // post ID and immediately marks the generated content as analytics-ready.
-      const published = await publishSystemContent(id);
-
-      return res.json({
-        ok: true,
-        data: {
-          id: published.contentId,
-          title: published.title,
-          status: published.status,
-          publishMode: published.publishMode,
-          approvedAt: published.approvedAt,
-          publishedAt: published.publishedAt,
-          facebookPostId: published.facebookPostId,
-          facebookPageId: published.facebookPageId,
-          facebookPermalinkUrl: published.facebookPermalinkUrl,
-          initialMetricsSynced: published.initialMetricsSynced,
-        },
-        message: null,
-      });
-    }
-
-    const result = await pool.query(
-      `
-      UPDATE ai_contents
-      SET
-        status = $1,
-        approved_at = CASE WHEN $1 = 'approved' THEN NOW() ELSE approved_at END,
-        published_at = CASE WHEN $1 = 'published' THEN NOW() ELSE published_at END
-      WHERE id = $2
-      RETURNING id, title, status, approved_at AS "approvedAt", published_at AS "publishedAt"
-      `,
-      [status, id]
+    const rows = await supabaseRest<Array<{
+      id: number;
+      title: string | null;
+      status: string;
+      approved_at: string | null;
+      published_at: string | null;
+    }>>(
+      aiContentPath({ select: "id,title,status,approved_at,published_at", id: `eq.${id}` }),
+      {
+        method: "PATCH",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({
+          status,
+          ...(status === "approved" ? { approved_at: new Date().toISOString() } : {}),
+          ...(status === "published" ? { published_at: new Date().toISOString() } : {}),
+        }),
+      }
     );
 
-    if (!result.rows.length) {
+    const updated = rows[0];
+    if (!updated) {
       return res.status(404).json({ ok: false, data: null, message: "Content not found" });
     }
 
-    return res.json({ ok: true, data: result.rows[0], message: null });
+    return res.json({
+      ok: true,
+      data: {
+        id: updated.id,
+        title: updated.title,
+        status: updated.status,
+        approvedAt: updated.approved_at,
+        publishedAt: updated.published_at,
+      },
+      message: null,
+    });
   } catch (e: any) {
     return res.status(500).json({ ok: false, data: null, message: e?.message || "Failed to update content status" });
   }
@@ -1192,8 +1182,6 @@ aiRouter.patch("/contents/:id/status", async (req: Request, res: Response) => {
 
 aiRouter.delete("/contents/:id", async (req: Request, res: Response) => {
   try {
-    await ensureAiSchema();
-
     if (!isAdminRequest(req)) {
       return res.status(403).json({ ok: false, data: null, message: "Admin access required" });
     }
@@ -1203,12 +1191,14 @@ aiRouter.delete("/contents/:id", async (req: Request, res: Response) => {
       return res.status(400).json({ ok: false, data: null, message: "Invalid id" });
     }
 
-    const existing = await pool.query(`SELECT id FROM ai_contents WHERE id = $1`, [id]);
-    if (!existing.rows.length) {
+    const existing = await supabaseRest<Array<{ id: number }>>(
+      aiContentPath({ select: "id", id: `eq.${id}`, limit: 1 })
+    );
+    if (!existing.length) {
       return res.status(404).json({ ok: false, data: null, message: "Content not found" });
     }
 
-    await pool.query(`DELETE FROM ai_contents WHERE id = $1`, [id]);
+    await supabaseRest<null>(aiContentPath({ id: `eq.${id}` }), { method: "DELETE" });
 
     return res.json({
       ok: true,
@@ -1234,8 +1224,6 @@ aiRouter.patch("/contents/:id/reject", async (_req: Request, res: Response) => {
 
 aiRouter.patch("/contents/:id/schedule", async (req: Request, res: Response) => {
   try {
-    await ensureAiSchema();
-
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ ok: false, data: null, message: "Invalid id" });
@@ -1258,27 +1246,38 @@ aiRouter.patch("/contents/:id/schedule", async (req: Request, res: Response) => 
       return res.status(400).json({ ok: false, data: null, message: "Invalid scheduledAt" });
     }
 
-    const result = await pool.query(
-      `
-      UPDATE ai_contents
-      SET
-        status = 'scheduled',
-        scheduled_at = $1
-      WHERE id = $2
-      RETURNING
-        id,
-        title,
-        status,
-        scheduled_at AS "scheduledAt"
-      `,
-      [scheduledAt, id]
+    const rows = await supabaseRest<Array<{
+      id: number;
+      title: string | null;
+      status: string;
+      scheduled_at: string | null;
+    }>>(
+      aiContentPath({ select: "id,title,status,scheduled_at", id: `eq.${id}` }),
+      {
+        method: "PATCH",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({
+          status: "scheduled",
+          scheduled_at: scheduledAt.toISOString(),
+        }),
+      }
     );
 
-    if (!result.rows.length) {
+    const updated = rows[0];
+    if (!updated) {
       return res.status(404).json({ ok: false, data: null, message: "Content not found" });
     }
 
-    return res.json({ ok: true, data: result.rows[0], message: null });
+    return res.json({
+      ok: true,
+      data: {
+        id: updated.id,
+        title: updated.title,
+        status: updated.status,
+        scheduledAt: updated.scheduled_at,
+      },
+      message: null,
+    });
   } catch (e: any) {
     return res.status(500).json({ ok: false, data: null, message: e?.message || "Failed to schedule content" });
   }

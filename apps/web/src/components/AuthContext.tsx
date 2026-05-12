@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
+import { API_BASE } from '../lib/api';
 
 export interface AuthUser {
   id: string;
@@ -38,6 +39,32 @@ async function fetchUserProfile(sess: Session): Promise<AuthUser> {
     throw new Error('Unable to verify authenticated user');
   }
 
+  const fallbackEmail = currentUser.email || sess.user.email || '';
+  const fallbackUsername = fallbackEmail.split('@')[0] || 'user';
+
+  try {
+    const response = await fetch(`${API_BASE}/users/me`, {
+      headers: {
+        Authorization: `Bearer ${sess.access_token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+    const payload = await response.json();
+
+    if (response.ok && payload?.data && isUserRole(payload.data.role)) {
+      return {
+        id: currentUser.id,
+        email: payload.data.email || fallbackEmail,
+        name: payload.data.name || fallbackUsername,
+        role: payload.data.role,
+        username: payload.data.username || fallbackUsername,
+        bio: payload.data.bio || '',
+      };
+    }
+  } catch (error) {
+    console.warn('Backend profile lookup failed, falling back to Supabase table lookup:', error);
+  }
+
   const { data, error } = await supabase
     .from('users')
     .select('name, email, role')
@@ -51,9 +78,6 @@ async function fetchUserProfile(sess: Session): Promise<AuthUser> {
   if (!data || !isUserRole(data.role)) {
     throw new Error('User role not found');
   }
-
-  const fallbackEmail = currentUser.email || sess.user.email || '';
-  const fallbackUsername = fallbackEmail.split('@')[0] || 'user';
 
   return {
     id: currentUser.id,

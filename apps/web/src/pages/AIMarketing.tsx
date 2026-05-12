@@ -47,6 +47,8 @@ type GeneratedContent = {
   hashtags: string;
   generatedImageUrl: string | null;
   referenceImageUrl: string | null;
+  promptText: string;
+  promptProvider: GenerationProvider | null;
   outputMode: OutputMode;
   providers: GenerationProviders;
   status: string;
@@ -124,6 +126,8 @@ export default function AIMarketing() {
   const [productsLoading, setProductsLoading] = useState(true);
   const [productId, setProductId] = useState('');
   const [promptText, setPromptText] = useState('');
+  const [autoPromptText, setAutoPromptText] = useState('');
+  const [autoPromptProvider, setAutoPromptProvider] = useState<GenerationProvider | null>(null);
   const [tone, setTone] = useState<Tone>('fun');
   const [type, setType] = useState<ContentType>('caption');
   const [outputMode, setOutputMode] = useState<OutputMode>('text');
@@ -137,6 +141,7 @@ export default function AIMarketing() {
   const [editHashtags, setEditHashtags] = useState('');
   const [title, setTitle] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isGeneratingAutoPrompt, setIsGeneratingAutoPrompt] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [generatedContentId, setGeneratedContentId] = useState<number | null>(null);
   const [feedItems, setFeedItems] = useState<FeedContentItem[]>([]);
@@ -179,6 +184,11 @@ export default function AIMarketing() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    setAutoPromptText('');
+    setAutoPromptProvider(null);
+  }, [productId, type, tone, outputMode, manualImagePreview]);
 
   useEffect(() => {
     let cancelled = false;
@@ -245,6 +255,49 @@ export default function AIMarketing() {
     reader.readAsDataURL(file);
   };
 
+  const handleGenerateAutoPrompt = async () => {
+    if (!productId) {
+      toast.error('Please select a product first');
+      return;
+    }
+
+    const referenceImageUrl = manualImagePreview || selectedProduct?.imageUrl || undefined;
+
+    setUseCustomPrompt(false);
+    setIsGeneratingAutoPrompt(true);
+    try {
+      const response = await api.generateAutoMarketingPrompt({
+        productId: Number(productId),
+        product: selectedProduct
+          ? {
+              name: selectedProduct.name,
+              category: selectedProduct.category,
+              price: selectedProduct.price,
+              description: selectedProduct.description,
+            }
+          : undefined,
+        contentType: type,
+        tone,
+        platform,
+        outputMode,
+        referenceImageUrl,
+      });
+
+      setAutoPromptText(response.data.promptText);
+      setAutoPromptProvider(response.data.provider);
+      toast.success(
+        response.data.provider === 'openai'
+          ? 'OpenAI auto prompt is ready'
+          : 'Auto prompt is ready'
+      );
+    } catch (err) {
+      console.error(err);
+      toast.error(err instanceof Error ? err.message : 'Failed to generate auto prompt');
+    } finally {
+      setIsGeneratingAutoPrompt(false);
+    }
+  };
+
   const handleGenerate = async () => {
     if (!productId) {
       toast.error('Please select a product first');
@@ -255,7 +308,7 @@ export default function AIMarketing() {
     try {
       const response = await api.generateMarketingContent({
         productId: Number(productId),
-        promptText: useCustomPrompt ? promptText.trim() : '',
+        promptText: useCustomPrompt ? promptText.trim() : autoPromptText.trim(),
         contentType: type,
         tone,
         platform,
@@ -268,6 +321,10 @@ export default function AIMarketing() {
       setEditCaption(response.data.caption);
       setEditHashtags(response.data.hashtags);
       setTitle(response.data.title);
+      if (!useCustomPrompt) {
+        setAutoPromptText(response.data.promptText);
+        setAutoPromptProvider(response.data.promptProvider ?? null);
+      }
     } catch (err) {
       console.error(err);
       toast.error(err instanceof Error ? err.message : 'Failed to generate content');
@@ -325,6 +382,8 @@ export default function AIMarketing() {
       setGenerated(null);
       setProductId('');
       setPromptText('');
+      setAutoPromptText('');
+      setAutoPromptProvider(null);
       setTitle('');
       setEditCaption('');
       setEditHashtags('');
@@ -372,15 +431,17 @@ export default function AIMarketing() {
                   <div className="flex items-center gap-1 rounded-full border border-[#E5E7EB] bg-white p-0.5 shadow-sm">
                     <button
                       type="button"
-                      title="Use OpenAI auto prompt"
+                      title="Double-click to generate an OpenAI auto prompt"
                       onClick={() => setUseCustomPrompt(false)}
+                      onDoubleClick={handleGenerateAutoPrompt}
+                      disabled={isGeneratingAutoPrompt}
                       className={`cursor-pointer flex items-center gap-1 text-[10px] px-2.5 py-1 rounded-full transition-all active:scale-95 select-none ${
                         !useCustomPrompt
                           ? 'bg-[#EC4899] text-white'
                           : 'text-[#6B7280] hover:text-[#EC4899] hover:bg-[#FFF5F9]'
-                      }`}
+                      } disabled:cursor-not-allowed disabled:opacity-70`}
                     >
-                      <Sparkles className="w-2.5 h-2.5" /> Auto
+                      {isGeneratingAutoPrompt ? <RefreshCw className="w-2.5 h-2.5 animate-spin" /> : <Sparkles className="w-2.5 h-2.5" />} Auto
                     </button>
                     <button
                       type="button"
@@ -405,8 +466,29 @@ export default function AIMarketing() {
                     className="w-full px-3 py-2 border border-[#E5E7EB] rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899] resize-none transition-all"
                   />
                 ) : (
-                  <div className="rounded-lg border border-dashed border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3">
-                    <p className="text-xs text-[#9CA3AF]">AI will auto-generate a smart prompt based on the selected product’s name, category, and description. Switch to custom mode for full control.</p>
+                  <div className={`rounded-lg border px-4 py-3 transition-all ${
+                    autoPromptText
+                      ? 'border-[#F9A8C0] bg-[#FFF5F9]'
+                      : 'border-dashed border-[#E5E7EB] bg-[#F9FAFB]'
+                  }`}>
+                    {isGeneratingAutoPrompt ? (
+                      <div className="flex items-center gap-2 text-xs text-[#6B7280]">
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin text-[#EC4899]" />
+                        Creating an OpenAI prompt from the selected product and advanced settings...
+                      </div>
+                    ) : autoPromptText ? (
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[10px] text-[#EC4899]" style={{ fontWeight: 700 }}>
+                            {autoPromptProvider === 'openai' ? 'OpenAI Auto Prompt' : 'Auto Prompt'}
+                          </span>
+                          <span className="text-[10px] text-[#9CA3AF]">{advancedSummary}</span>
+                        </div>
+                        <p className="whitespace-pre-wrap text-xs leading-relaxed text-[#374151]">{autoPromptText}</p>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-[#9CA3AF]">Double-click Auto to generate a smart OpenAI prompt based on the selected product's name, category, description, and advanced settings. Switch to custom mode for full control.</p>
+                    )}
                   </div>
                 )}
               </div>
