@@ -54,6 +54,44 @@ async function getSupabaseSales() {
   return data || [];
 }
 
+async function getSupabaseSaleById(id: number) {
+  const { data: sale, error: saleError } = await supabase
+    .from('sales')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (saleError) throw new Error(saleError.message);
+  if (!sale) throw new Error('Sale not found');
+
+  const { data: items, error: itemsError } = await supabase
+    .from('sale_items')
+    .select('id, sale_id, product_id, qty, unit_price, products(id, name, sku)')
+    .eq('sale_id', id)
+    .order('id', { ascending: true });
+
+  if (itemsError) throw new Error(itemsError.message);
+
+  return {
+    sale,
+    items: (items || []).map((row: any) => {
+      const product = Array.isArray(row.products) ? row.products[0] : row.products;
+      const productName = String(product?.name ?? `Product #${row.product_id}`);
+
+      return {
+        id: row.id,
+        sale_id: row.sale_id,
+        product_id: row.product_id,
+        qty: Number(row.qty ?? 0),
+        unit_price: Number(row.unit_price ?? 0),
+        product_name: productName,
+        name: productName,
+        sku: String(product?.sku ?? ''),
+      };
+    }),
+  };
+}
+
 async function getSupabaseDashboardSalesRecords() {
   const { data, error } = await supabase
     .from('sale_items')
@@ -306,9 +344,7 @@ export const api = {
   },
 
   async getSaleById(id: number) {
-    const res = await fetch(`${API_BASE}/sales/${id}`);
-    if (!res.ok) throw new Error('Failed to fetch sale');
-    return res.json();
+    return getSupabaseSaleById(id);
   },
 
   async createSale(data: {

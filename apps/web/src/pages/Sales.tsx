@@ -4,7 +4,7 @@ import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import {
   Search, ShoppingCart, TrendingUp, ChevronDown,
   Plus, Minus, AlertTriangle, CheckCircle, X, User,
-  Tag, Receipt, Filter, DollarSign, BarChart2,
+  Tag, Receipt, Calendar, DollarSign, BarChart2,
 } from "lucide-react";
 import { useAuth } from "../components/AuthContext";
 import { toast } from "sonner";
@@ -26,8 +26,6 @@ type Product = {
 };
 
 // ─── constants ────────────────────────────────────────────────────────────────
-const TODAY = new Date().toISOString().split('T')[0];
-
 // ─── Searchable Product Combobox ──────────────────────────────────────────────
 function ProductCombobox({
   products,
@@ -177,6 +175,13 @@ function ProductCombobox({
   );
 }
 
+function formatDateInput(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 // ─── Qty Stepper ──────────────────────────────────────────────────────────────
 function QtyStepper({
   value, min, max, onChange,
@@ -313,7 +318,9 @@ export default function Sales() {
 
   // ── Table state ────────────────────────────────────────────────────────
   const [search,     setSearch]     = useState('');
-  const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'week' | 'month'>('all');
+  const todayIso = useMemo(() => formatDateInput(new Date()), []);
+  const [salesViewMode, setSalesViewMode] = useState<'overall' | 'date'>('overall');
+  const [selectedDate, setSelectedDate] = useState(todayIso);
 
   // ── Derived product data ───────────────────────────────────────────────
   const selectedProduct = products.find(p => p.id === productId) ?? null;
@@ -421,43 +428,23 @@ export default function Sales() {
   }, [sales]);
 
   // ── Filtered recent sales ─────────────────────────────────────────────
+  const isSelectedDateMode = salesViewMode === 'date';
   const filteredSales = useMemo(() => {
-  const now = new Date();
+    return sales.filter((s: any) => {
+      const q = search.trim().toLowerCase();
 
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
+      const matchSearch =
+        !q ||
+        String(s.id).includes(q) ||
+        String(s.total ?? "").toLowerCase().includes(q);
 
-  const startOfWeek = new Date(now);
-  startOfWeek.setDate(now.getDate() - 7);
+      const created = s.created_at ? new Date(s.created_at) : null;
+      const saleDate = created ? formatDateInput(created) : '';
+      const matchDate = isSelectedDateMode ? saleDate === selectedDate : true;
 
-  const startOfMonth = new Date(now);
-  startOfMonth.setDate(1);
-  startOfMonth.setHours(0, 0, 0, 0);
-
-  return sales.filter((s: any) => {
-    const q = search.trim().toLowerCase();
-
-    const matchSearch =
-      !q ||
-      String(s.id).includes(q) ||
-      String(s.total ?? "").toLowerCase().includes(q);
-
-    const created = s.created_at ? new Date(s.created_at) : null;
-
-    const matchDate =
-      dateFilter === "all"
-        ? true
-        : !created
-        ? false
-        : dateFilter === "today"
-        ? created >= startOfToday
-        : dateFilter === "week"
-        ? created >= startOfWeek
-        : created >= startOfMonth;
-
-    return matchSearch && matchDate;
-  });
-}, [sales, search, dateFilter]);
+      return matchSearch && matchDate;
+    });
+  }, [sales, search, isSelectedDateMode, selectedDate]);
 
   const INPUT_CLS = 'w-full px-3 py-2.5 border border-[#E5E7EB] rounded-lg text-sm text-[#111827] placeholder-[#C5C5C5] focus:outline-none focus:ring-2 focus:ring-[#EC4899]/15 focus:border-[#EC4899] bg-white transition-all';
 
@@ -830,19 +817,46 @@ export default function Sales() {
     </div>
 
     {/* Date filter */}
-    <div className="relative flex items-center">
-      <Filter className="absolute left-2.5 w-3.5 h-3.5 text-[#9CA3AF] pointer-events-none" />
-      <select
-        value={dateFilter}
-        onChange={(e) => setDateFilter(e.target.value as typeof dateFilter)}
-        className="pl-8 pr-3 py-2 text-xs border border-[#E5E7EB] rounded-lg bg-white text-[#374151] focus:outline-none focus:border-[#F9A8C0] appearance-none cursor-pointer"
+    <div className="flex items-center rounded-lg border border-[#E5E7EB] bg-white p-1">
+      <button
+        type="button"
+        onClick={() => setSalesViewMode('overall')}
+        className={`px-3 py-1.5 rounded-md text-xs transition-all ${
+          salesViewMode === 'overall'
+            ? 'bg-[#EC4899] text-white'
+            : 'text-[#6B7280] hover:bg-[#F9FAFB]'
+        }`}
+        style={{ fontWeight: 600 }}
       >
-        <option value="all">All time</option>
-        <option value="today">Today</option>
-        <option value="week">This week</option>
-        <option value="month">This month</option>
-      </select>
+        Overall
+      </button>
+      <button
+        type="button"
+        onClick={() => setSalesViewMode('date')}
+        className={`px-3 py-1.5 rounded-md text-xs transition-all ${
+          salesViewMode === 'date'
+            ? 'bg-[#EC4899] text-white'
+            : 'text-[#6B7280] hover:bg-[#F9FAFB]'
+        }`}
+        style={{ fontWeight: 600 }}
+      >
+        Selected Date
+      </button>
     </div>
+
+    {isSelectedDateMode && (
+      <label className="flex items-center gap-2 px-3 py-2 bg-white border border-[#E5E7EB] rounded-lg text-xs text-[#374151]">
+        <Calendar className="w-3.5 h-3.5 text-[#6B7280]" />
+        <input
+          type="date"
+          value={selectedDate}
+          max={todayIso}
+          onChange={(e) => setSelectedDate(e.target.value)}
+          onInput={(e) => setSelectedDate(e.currentTarget.value)}
+          className="bg-transparent text-xs text-[#111827] focus:outline-none"
+        />
+      </label>
+    )}
 
     <span className="text-xs text-[#9CA3AF] shrink-0">
       {filteredSales.length} record{filteredSales.length !== 1 ? "s" : ""}
@@ -866,7 +880,7 @@ export default function Sales() {
       <tbody className="divide-y divide-[#F3F4F6]">
         {filteredSales.length === 0 ? (
           <tr>
-            <td colSpan={4} className="py-14 text-center text-xs text-[#9CA3AF]">
+            <td colSpan={5} className="py-14 text-center text-xs text-[#9CA3AF]">
               No sales records match your filters
             </td>
           </tr>
