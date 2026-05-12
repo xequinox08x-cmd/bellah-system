@@ -1,76 +1,149 @@
 import { Router, type Request, type Response } from 'express';
-import { pool } from '../db/pool';
+import { supabaseAuthAdmin, supabaseRest } from '../services/supabaseAdmin';
 
 const router = Router();
 
-const SUPABASE_URL = process.env.SUPABASE_URL!;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-
-async function supabaseAdminFetch(path: string, options: RequestInit = {}) {
-  const res = await fetch(`${SUPABASE_URL}/auth/v1${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      apikey: SUPABASE_SERVICE_KEY,
-      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-      ...(options.headers ?? {}),
-    },
-  });
-
-  return res;
-}
-
-function decodeAuthId(req: Request) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return null;
-
-  try {
-    const token = authHeader.replace('Bearer ', '');
-    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
-    return typeof payload.sub === 'string' ? payload.sub : null;
-  } catch {
-    return null;
-  }
-}
+type UserRole = 'admin' | 'staff';
 
 type DbUserRow = {
   id: number;
   auth_id: string;
   name: string;
   email: string;
-  role: 'admin' | 'staff';
+  role: UserRole;
   created_at?: string;
 };
 
 type AuthAdminUserResponse = {
   id?: string;
+  email?: string;
   user_metadata?: Record<string, unknown>;
   user?: {
     id?: string;
+    email?: string;
     user_metadata?: Record<string, unknown>;
   };
 };
 
+const USER_COLUMNS = 'id,auth_id,name,email,role,created_at';
+
+function decodeBase64Url(value: string) {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=');
+  return Buffer.from(padded, 'base64').toString('utf8');
+}
+
+function decodeAuthId(req: Request) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith('Bearer ')) return null;
+
+  try {
+    const token = authHeader.slice('Bearer '.length);
+    const payloadSegment = token.split('.')[1];
+    if (!payloadSegment) return null;
+
+    const payload = JSON.parse(decodeBase64Url(payloadSegment));
+    return typeof payload.sub === 'string' ? payload.sub : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRole(value: unknown): UserRole | null {
+  return value === 'admin' || value === 'staff' ? value : null;
+}
+
+function getAuthUserId(data: AuthAdminUserResponse) {
+  return typeof data.id === 'string' && data.id
+    ? data.id
+    : typeof data.user?.id === 'string' && data.user.id
+      ? data.user.id
+      : null;
+}
+
+function getAuthUserMetadata(data: AuthAdminUserResponse) {
+  return data.user_metadata ?? data.user?.user_metadata ?? {};
+}
+
 async function getSupabaseUserMetadata(authId: string) {
-  const authRes = await supabaseAdminFetch(`/admin/users/${authId}`);
-  if (!authRes.ok) {
+  try {
+    const authData = await supabaseAuthAdmin<AuthAdminUserResponse>(`/admin/users/${authId}`);
+    return getAuthUserMetadata(authData);
+  } catch {
     return {};
   }
+}
 
-  const authData = await authRes.json() as AuthAdminUserResponse;
-  return authData.user_metadata ?? authData.user?.user_metadata ?? {};
+function usersPath(params: Record<string, string | number>) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => search.set(key, String(value)));
+  return `/users?${search.toString()}`;
+}
+
+async function listDbUsers() {
+  return supabaseRest<DbUserRow[]>(
+    usersPath({ select: USER_COLUMNS, order: 'created_at.asc' })
+  );
+}
+
+async function getDbUserByAuthId(authId: string) {
+  const rows = await supabaseRest<DbUserRow[]>(
+    usersPath({ select: USER_COLUMNS, auth_id: `eq.${authId}`, limit: 1 })
+  );
+  return rows[0] ?? null;
+}
+
+async function getDbUserById(id: number) {
+  const rows = await supabaseRest<DbUserRow[]>(
+    usersPath({ select: USER_COLUMNS, id: `eq.${id}`, limit: 1 })
+  );
+  return rows[0] ?? null;
+}
+
+async function upsertDbUser(input: Pick<DbUserRow, 'auth_id' | 'name' | 'email' | 'role'>) {
+  const rows = await supabaseRest<DbUserRow[]>(
+    usersPath({ on_conflict: 'auth_id', select: USER_COLUMNS }),
+    {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: JSON.stringify(input),
+    }
+  );
+  return rows[0] ?? null;
+}
+
+async function updateDbUser(id: number, input: Partial<Pick<DbUserRow, 'name' | 'email' | 'role'>>) {
+  const rows = await supabaseRest<DbUserRow[]>(
+    usersPath({ select: USER_COLUMNS, id: `eq.${id}` }),
+    {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify(input),
+    }
+  );
+  return rows[0] ?? null;
+}
+
+async function deleteDbUser(id: number) {
+  await supabaseRest<null>(
+    usersPath({ id: `eq.${id}` }),
+    { method: 'DELETE' }
+  );
 }
 
 function serializeUser(row: DbUserRow, metadata: Record<string, unknown> = {}) {
+  const username = typeof metadata.username === 'string' && metadata.username.trim()
+    ? metadata.username.trim()
+    : row.email.split('@')[0];
+
   return {
     id: row.id,
+    auth_id: row.auth_id,
     authId: row.auth_id,
     name: row.name,
     email: row.email,
     role: row.role,
-    username: typeof metadata.username === 'string' && metadata.username.trim()
-      ? metadata.username.trim()
-      : row.email.split('@')[0],
+    username,
     bio: typeof metadata.bio === 'string' ? metadata.bio : '',
     created_at: row.created_at,
   };
@@ -78,23 +151,11 @@ function serializeUser(row: DbUserRow, metadata: Record<string, unknown> = {}) {
 
 router.get('/', async (_req: Request, res: Response) => {
   try {
-    const result = await pool.query<DbUserRow>(
-      `SELECT id, auth_id, name, email, role, created_at FROM users ORDER BY created_at ASC`
-    );
-
-    res.json({
-      data: result.rows.map((row) => ({
-        id: row.id,
-        auth_id: row.auth_id,
-        name: row.name,
-        email: row.email,
-        role: row.role,
-        created_at: row.created_at,
-      })),
-    });
+    const rows = await listDbUsers();
+    res.json({ data: rows.map((row) => serializeUser(row)) });
   } catch (err) {
     console.error('GET /api/users error:', err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Server error' });
   }
 });
 
@@ -105,21 +166,16 @@ router.get('/me', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const result = await pool.query<DbUserRow>(
-      `SELECT id, auth_id, name, email, role FROM users WHERE auth_id = $1`,
-      [authId]
-    );
-
-    if (result.rowCount === 0) {
+    const row = await getDbUserByAuthId(authId);
+    if (!row) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const row = result.rows[0];
     const metadata = await getSupabaseUserMetadata(authId);
     res.json({ data: serializeUser(row, metadata) });
   } catch (err) {
     console.error('GET /api/users/me error:', err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Server error' });
   }
 });
 
@@ -137,16 +193,11 @@ router.patch('/me', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const userResult = await pool.query<DbUserRow>(
-      `SELECT id, auth_id, name, email, role FROM users WHERE auth_id = $1`,
-      [authId]
-    );
-
-    if (userResult.rowCount === 0) {
+    const currentUser = await getDbUserByAuthId(authId);
+    if (!currentUser) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const currentUser = userResult.rows[0];
     const trimmedName = typeof name === 'string' ? name.trim() : undefined;
     const trimmedEmail = typeof email === 'string' ? email.trim() : undefined;
     const trimmedUsername = typeof username === 'string' ? username.trim() : undefined;
@@ -168,184 +219,171 @@ router.patch('/me', async (req: Request, res: Response) => {
       ...(trimmedName ? { full_name: trimmedName } : {}),
     };
 
-    const authUpdatePayload: Record<string, unknown> = {
-      user_metadata: nextMetadata,
-    };
-
-    if (trimmedEmail && trimmedEmail !== currentUser.email) {
-      authUpdatePayload.email = trimmedEmail;
-    }
-
-    const authRes = await supabaseAdminFetch(`/admin/users/${authId}`, {
+    await supabaseAuthAdmin<AuthAdminUserResponse>(`/admin/users/${authId}`, {
       method: 'PUT',
-      body: JSON.stringify(authUpdatePayload),
+      body: JSON.stringify({
+        user_metadata: nextMetadata,
+        ...(trimmedEmail && trimmedEmail !== currentUser.email ? { email: trimmedEmail } : {}),
+      }),
     });
 
-    if (!authRes.ok) {
-      const authData = await authRes.json().catch(() => ({}));
-      const message =
-        authData?.msg
-        || authData?.message
-        || authData?.error_description
-        || 'Failed to update auth profile';
-      return res.status(400).json({ error: message });
-    }
+    const updates: Partial<Pick<DbUserRow, 'name' | 'email'>> = {};
+    if (trimmedName) updates.name = trimmedName;
+    if (trimmedEmail && trimmedEmail !== currentUser.email) updates.email = trimmedEmail;
 
-    const fields: string[] = [];
-    const values: unknown[] = [];
-    let index = 1;
+    const updatedRow = Object.keys(updates).length
+      ? await updateDbUser(currentUser.id, updates)
+      : currentUser;
 
-    if (trimmedName) {
-      fields.push(`name = $${index++}`);
-      values.push(trimmedName);
-    }
-
-    if (trimmedEmail && trimmedEmail !== currentUser.email) {
-      fields.push(`email = $${index++}`);
-      values.push(trimmedEmail);
-    }
-
-    let updatedRow = currentUser;
-    if (fields.length > 0) {
-      values.push(currentUser.id);
-      const result = await pool.query<DbUserRow>(
-        `UPDATE users SET ${fields.join(', ')} WHERE id = $${index} RETURNING id, auth_id, name, email, role`,
-        values
-      );
-      updatedRow = result.rows[0];
+    if (!updatedRow) {
+      return res.status(404).json({ error: 'User not found' });
     }
 
     res.json({ data: serializeUser(updatedRow, nextMetadata) });
   } catch (err) {
     console.error('PATCH /api/users/me error:', err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Server error' });
   }
 });
 
 router.post('/', async (req: Request, res: Response) => {
-  const { name, email, password, role = 'staff' } = req.body;
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  const role = normalizeRole(req.body?.role ?? 'staff');
 
   if (!name || !email || !password) {
     return res.status(400).json({ error: 'name, email and password are required' });
   }
 
-  if (!['admin', 'staff'].includes(role)) {
+  if (!email.includes('@')) {
+    return res.status(400).json({ error: 'Valid email is required' });
+  }
+
+  if (!role) {
     return res.status(400).json({ error: 'role must be admin or staff' });
   }
 
   try {
-    const authRes = await supabaseAdminFetch('/admin/users', {
-      method: 'POST',
-      body: JSON.stringify({
-        email,
-        password,
-        email_confirm: true,
-        user_metadata: {
-          username: email.split('@')[0],
-          bio: '',
-          full_name: name,
-        },
-      }),
-    });
-
-    const authData = await authRes.json();
-    if (!authRes.ok) {
-      const msg =
-        authData?.msg
-        || authData?.message
-        || authData?.error_description
-        || 'Failed to create auth user';
-      return res.status(400).json({ error: msg });
+    let authData: AuthAdminUserResponse;
+    try {
+      authData = await supabaseAuthAdmin<AuthAdminUserResponse>('/admin/users', {
+        method: 'POST',
+        body: JSON.stringify({
+          email,
+          password,
+          email_confirm: true,
+          user_metadata: {
+            username: email.split('@')[0],
+            bio: '',
+            full_name: name,
+            role,
+          },
+          app_metadata: { role },
+        }),
+      });
+    } catch (err) {
+      return res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to create auth user' });
     }
 
-    const authId = authData.id;
-    const dbRes = await pool.query<DbUserRow>(
-      `INSERT INTO users (auth_id, name, email, role)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (auth_id) DO UPDATE SET name = $2, email = $3, role = $4
-       RETURNING id, auth_id, name, email, role, created_at`,
-      [authId, name, email, role]
-    );
+    const authId = getAuthUserId(authData);
+    if (!authId) {
+      return res.status(502).json({ error: 'Supabase did not return a user id' });
+    }
 
-    res.status(201).json({ data: serializeUser(dbRes.rows[0], authData.user_metadata ?? {}) });
+    const dbRow = await upsertDbUser({ auth_id: authId, name, email, role });
+    if (!dbRow) {
+      return res.status(500).json({ error: 'User account was created but profile was not saved' });
+    }
+
+    res.status(201).json({ data: serializeUser(dbRow, getAuthUserMetadata(authData)) });
   } catch (err) {
     console.error('POST /api/users error:', err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Server error' });
   }
 });
 
 router.patch('/:id', async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { name, role } = req.body;
+  const id = Number(req.params.id);
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : undefined;
+  const role = req.body?.role === undefined ? undefined : normalizeRole(req.body.role);
+
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: 'Invalid id' });
+  }
+
+  if (req.body?.role !== undefined && !role) {
+    return res.status(400).json({ error: 'role must be admin or staff' });
+  }
 
   try {
-    const fields: string[] = [];
-    const values: unknown[] = [];
-    let index = 1;
-
-    if (name) {
-      fields.push(`name = $${index++}`);
-      values.push(name);
-    }
-
-    if (role) {
-      fields.push(`role = $${index++}`);
-      values.push(role);
-    }
-
-    if (fields.length === 0) {
-      return res.status(400).json({ error: 'Nothing to update' });
-    }
-
-    values.push(id);
-    const result = await pool.query<DbUserRow>(
-      `UPDATE users SET ${fields.join(', ')} WHERE id = $${index} RETURNING id, auth_id, name, email, role, created_at`,
-      values
-    );
-
-    if (result.rowCount === 0) {
+    const currentUser = await getDbUserById(id);
+    if (!currentUser) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    res.json({
-      data: {
-        id: result.rows[0].id,
-        auth_id: result.rows[0].auth_id,
-        name: result.rows[0].name,
-        email: result.rows[0].email,
-        role: result.rows[0].role,
-        created_at: result.rows[0].created_at,
-      },
-    });
+    const updates: Partial<Pick<DbUserRow, 'name' | 'role'>> = {};
+    if (name) updates.name = name;
+    if (role) updates.role = role;
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'Nothing to update' });
+    }
+
+    const updatedRow = await updateDbUser(id, updates);
+    if (!updatedRow) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    try {
+      const metadata = await getSupabaseUserMetadata(currentUser.auth_id);
+      await supabaseAuthAdmin<AuthAdminUserResponse>(`/admin/users/${currentUser.auth_id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          user_metadata: {
+            ...metadata,
+            ...(name ? { full_name: name } : {}),
+            ...(role ? { role } : {}),
+          },
+          ...(role ? { app_metadata: { role } } : {}),
+        }),
+      });
+    } catch (err) {
+      console.warn('Supabase auth metadata update warning:', err);
+    }
+
+    res.json({ data: serializeUser(updatedRow) });
   } catch (err) {
     console.error('PATCH /api/users/:id error:', err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Server error' });
   }
 });
 
 router.delete('/:id', async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: 'Invalid id' });
+  }
 
   try {
-    const userRes = await pool.query<{ auth_id: string }>(`SELECT auth_id FROM users WHERE id = $1`, [id]);
-    if (userRes.rowCount === 0) {
+    const user = await getDbUserById(id);
+    if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const authId = userRes.rows[0].auth_id;
-    if (authId) {
-      const delRes = await supabaseAdminFetch(`/admin/users/${authId}`, { method: 'DELETE' });
-      if (!delRes.ok && delRes.status !== 404) {
-        const msg = await delRes.text();
-        console.warn('Supabase auth delete warning:', msg);
+    if (user.auth_id) {
+      try {
+        await supabaseAuthAdmin<unknown>(`/admin/users/${user.auth_id}`, { method: 'DELETE' });
+      } catch (err) {
+        console.warn('Supabase auth delete warning:', err);
       }
     }
 
-    await pool.query(`DELETE FROM users WHERE id = $1`, [id]);
+    await deleteDbUser(id);
     res.json({ success: true });
   } catch (err) {
     console.error('DELETE /api/users/:id error:', err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Server error' });
   }
 });
 

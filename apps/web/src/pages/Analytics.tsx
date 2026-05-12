@@ -83,7 +83,7 @@ function formatShortTitle(value: string) {
 async function fetchAnalyticsData() {
   const [summaryResponse, trendResponse, postsResponse] = await Promise.all([
     api.getAnalyticsSummary(),
-    api.getAnalyticsTrend(7),
+    api.getAnalyticsTrend(90),
     api.getAnalyticsPosts(),
   ]);
 
@@ -102,6 +102,7 @@ export default function Analytics() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshSummary, setRefreshSummary] = useState<string | null>(null);
+  const [selectedTrendDate, setSelectedTrendDate] = useState('');
 
   async function loadAnalytics(showLoading = true) {
     if (showLoading) {
@@ -168,10 +169,15 @@ export default function Analytics() {
 
   const engagementRate = summary.engagementRate.toFixed(1);
   const PIE_COLORS = ['#EC4899', '#D4A373', '#4A90D9'];
+  const trendDates = useMemo(() => trend.map((item) => item.date), [trend]);
+  const selectedTrend = useMemo(
+    () => (selectedTrendDate ? trend.filter((item) => item.date === selectedTrendDate) : trend.slice(-7)),
+    [selectedTrendDate, trend]
+  );
 
   const engagementMix = useMemo(
     () => [
-      { name: 'Likes', value: summary.likes },
+      { name: 'Reacts', value: summary.likes },
       { name: 'Comments', value: summary.comments },
       { name: 'Shares', value: summary.shares },
     ].filter((item) => item.value > 0),
@@ -180,13 +186,13 @@ export default function Analytics() {
 
   const engagementTrend = useMemo(
     () =>
-      trend.map((item) => ({
+      selectedTrend.map((item) => ({
         day: item.label,
-        Likes: item.likes,
+        Reacts: item.likes,
         Comments: item.comments,
         Shares: item.shares,
       })),
-    [trend]
+    [selectedTrend]
   );
 
   const topPostsData = useMemo(
@@ -196,7 +202,7 @@ export default function Analytics() {
         .slice(0, 5)
         .map((item) => ({
           name: formatShortTitle(item.title),
-          Likes: item.likes,
+          Reacts: item.likes,
           Comments: item.comments,
           Shares: item.shares,
         })),
@@ -241,7 +247,7 @@ export default function Analytics() {
       )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricCard label="Total Likes" value={summary.likes} icon={Heart} color="text-[#EC4899]" bg="bg-[#FCE7F3]" />
+        <MetricCard label="Total Reacts" value={summary.likes} icon={Heart} color="text-[#EC4899]" bg="bg-[#FCE7F3]" />
         <MetricCard label="Comments" value={summary.comments} icon={MessageCircle} color="text-blue-600" bg="bg-blue-50" />
         <MetricCard label="Shares" value={summary.shares} icon={Share2} color="text-[#D97706]" bg="bg-[#FEF3C7]" />
         <MetricCard label="Total Reach" value={summary.reach} icon={Eye} color="text-purple-600" bg="bg-purple-50" />
@@ -276,9 +282,24 @@ export default function Analytics() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 bg-white rounded-xl border border-[#E5E7EB] p-5">
-          <div className="mb-4">
-            <h3 className="text-sm text-[#111827]" style={{ fontWeight: 600 }}>Engagement Trend</h3>
-            <p className="text-xs text-[#9CA3AF]">Last 7 days of Facebook metrics snapshots</p>
+          <div className="mb-4 flex w-full flex-col gap-3 sm:flex-row sm:items-start">
+            <div className="min-w-0">
+              <h3 className="text-sm text-[#111827]" style={{ fontWeight: 600 }}>Engagement Trend</h3>
+              <p className="text-xs text-[#9CA3AF]">
+                {selectedTrendDate ? 'Facebook metrics snapshot for selected date' : 'Last 7 days of Facebook metrics snapshots'}
+              </p>
+            </div>
+            <label className="ml-auto flex max-w-full items-center justify-end gap-2 text-xs text-[#6B7280]">
+              Selected Date
+              <input
+                type="date"
+                value={selectedTrendDate}
+                min={trendDates[0]}
+                max={trendDates[trendDates.length - 1]}
+                onChange={(event) => setSelectedTrendDate(event.target.value)}
+                className="h-8 shrink-0 rounded-lg border border-[#E5E7EB] px-2 text-xs text-[#374151] focus:border-[#EC4899] focus:outline-none focus:ring-2 focus:ring-[#EC4899]/15"
+              />
+            </label>
           </div>
           {engagementTrend.length === 0 ? (
             <div className="flex h-[200px] items-center justify-center text-sm text-[#9CA3AF]">
@@ -292,9 +313,9 @@ export default function Analytics() {
                 <YAxis tick={{ fontSize: 11, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
                 <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #E5E7EB', fontSize: 12 }} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Line type="monotone" dataKey="Likes" stroke="#EC4899" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="Comments" stroke="#4A90D9" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="Shares" stroke="#D4A373" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="Reacts" stroke="#EC4899" strokeWidth={2} dot={Boolean(selectedTrendDate)} />
+                <Line type="monotone" dataKey="Comments" stroke="#4A90D9" strokeWidth={2} dot={Boolean(selectedTrendDate)} />
+                <Line type="monotone" dataKey="Shares" stroke="#D4A373" strokeWidth={2} dot={Boolean(selectedTrendDate)} />
               </LineChart>
             </ResponsiveContainer>
           )}
@@ -303,7 +324,7 @@ export default function Analytics() {
         <div className="bg-white rounded-xl border border-[#E5E7EB] p-5">
           <div className="mb-4">
             <h3 className="text-sm text-[#111827]" style={{ fontWeight: 600 }}>Facebook Engagement Mix</h3>
-            <p className="text-xs text-[#9CA3AF]">Likes, comments, and shares</p>
+            <p className="text-xs text-[#9CA3AF]">Reacts, comments, and shares</p>
           </div>
           {engagementMix.length === 0 ? (
             <div className="flex h-[140px] items-center justify-center text-sm text-[#9CA3AF]">
@@ -321,7 +342,7 @@ export default function Analytics() {
           )}
           <div className="space-y-1.5 mt-2">
             {(engagementMix.length ? engagementMix : [
-              { name: 'Likes', value: 0 },
+              { name: 'Reacts', value: 0 },
               { name: 'Comments', value: 0 },
               { name: 'Shares', value: 0 },
             ]).map((item, i) => (
@@ -340,7 +361,7 @@ export default function Analytics() {
       <div className="bg-white rounded-xl border border-[#E5E7EB] p-5">
         <div className="mb-4">
           <h3 className="text-sm text-[#111827]" style={{ fontWeight: 600 }}>Top Facebook Posts by Engagement</h3>
-          <p className="text-xs text-[#9CA3AF]">Likes, comments, and shares on published posts</p>
+          <p className="text-xs text-[#9CA3AF]">Reacts, comments, and shares on published posts</p>
         </div>
         {topPostsData.length === 0 ? (
           <div className="flex h-[180px] items-center justify-center text-sm text-[#9CA3AF]">
@@ -354,7 +375,7 @@ export default function Analytics() {
               <YAxis tick={{ fontSize: 11, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
               <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #E5E7EB', fontSize: 12 }} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Bar dataKey="Likes" fill="#EC4899" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="Reacts" fill="#EC4899" radius={[3, 3, 0, 0]} />
               <Bar dataKey="Comments" fill="#4A90D9" radius={[3, 3, 0, 0]} />
               <Bar dataKey="Shares" fill="#D4A373" radius={[3, 3, 0, 0]} />
             </BarChart>
@@ -370,7 +391,7 @@ export default function Analytics() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-[#E5E7EB] bg-[#F9FAFB]">
-                {['Post', 'Platform', 'Reach', 'Likes', 'Comments', 'Shares', 'Eng. Rate'].map((heading) => (
+                {['Post', 'Platform', 'Reach', 'Reacts', 'Comments', 'Shares', 'Eng. Rate'].map((heading) => (
                   <th key={heading} className="text-left px-5 py-3 text-xs text-[#6B7280] uppercase tracking-wider" style={{ fontWeight: 600 }}>
                     {heading}
                   </th>
