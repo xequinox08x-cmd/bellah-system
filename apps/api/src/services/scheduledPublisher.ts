@@ -1,11 +1,23 @@
 import { ensureAiAnalyticsSchema } from "../db/aiAnalyticsSchema";
 import { pool } from "../db/pool";
 import { publishSystemContent } from "./facebook";
+import { supabaseRest } from "./supabaseAdmin";
 
 const FACEBOOK_PLATFORM = "facebook";
 const DEFAULT_PUBLISH_INTERVAL_MS = 5_000;
 const STARTUP_DELAY_MS = 1_000;
 const DEFAULT_BATCH_SIZE = 10;
+
+function contentPath(params: Record<string, string | number>) {
+    const search = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => search.set(key, String(value)));
+    return `/ai_contents?${search.toString()}`;
+}
+
+function shouldFallbackToSupabaseRest(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error || "");
+    return /password authentication failed|connect|connection|timeout|timed out|database|ECONN|ENOTFOUND|ETIMEDOUT/i.test(message);
+}
 
 let schedulerStarted = false;
 let schedulerTimer: NodeJS.Timeout | null = null;
@@ -26,38 +38,86 @@ function getBatchSize() {
 }
 
 async function getDueScheduledContentIds(limit: number) {
-    await ensureAiAnalyticsSchema();
+    try {
+        const rows = await supabaseRest<Array<{ id: number; scheduled_at: string | null }>>(
+            contentPath({
+                select: "id,scheduled_at",
+                status: "eq.scheduled",
+                or: `(platform.is.null,platform.eq.${FACEBOOK_PLATFORM})`,
+                order: "scheduled_at.asc",
+                limit,
+            })
+        );
+        const now = Date.now();
+        return rows
+            .filter((row) => row.scheduled_at && new Date(row.scheduled_at).getTime() <= now)
+            .map((row) => Number(row.id));
+    } catch (error) {
+        if (shouldFallbackToSupabaseRest(error)) {
+            console.warn("[scheduler.publish] scheduled content store unavailable", {
+                message: error instanceof Error ? error.message : "Scheduled content store unavailable",
+            });
+            return [];
+        }
 
-    const result = await pool.query<{ id: number }>(
-        `
-    SELECT id
-    FROM ai_contents
-    WHERE COALESCE(platform, $1) = $1
-      AND status = 'scheduled'
-      AND scheduled_at IS NOT NULL
-      AND scheduled_at <= NOW()
-    ORDER BY scheduled_at ASC, id ASC
-    LIMIT $2
-    `,
-        [FACEBOOK_PLATFORM, limit]
-    );
+        console.warn("[scheduler.publish] REST unavailable, loading due content via pool fallback", {
+            message: error instanceof Error ? error.message : "REST unavailable",
+        });
 
-    return result.rows.map((row) => Number(row.id));
+        await ensureAiAnalyticsSchema();
+
+        const result = await pool.query<{ id: number }>(
+            `
+        SELECT id
+        FROM ai_contents
+        WHERE COALESCE(platform, $1) = $1
+          AND status = 'scheduled'
+          AND scheduled_at IS NOT NULL
+          AND scheduled_at <= NOW()
+        ORDER BY scheduled_at ASC, id ASC
+        LIMIT $2
+        `,
+            [FACEBOOK_PLATFORM, limit]
+        );
+
+        return result.rows.map((row) => Number(row.id));
+    }
 }
 
 async function markScheduledContentFailed(contentId: number, errorMessage: string) {
-    await ensureAiAnalyticsSchema();
+    try {
+        await supabaseRest<null>(
+            contentPath({ id: `eq.${contentId}` }),
+            {
+                method: "PATCH",
+                body: JSON.stringify({
+                    status: "failed",
+                    last_publish_error: errorMessage,
+                }),
+            }
+        );
+    } catch (error) {
+        if (shouldFallbackToSupabaseRest(error)) {
+            console.warn("[scheduler.publish] failed to mark content failed because content store is unavailable", {
+                contentId,
+                message: error instanceof Error ? error.message : "Content store unavailable",
+            });
+            return;
+        }
 
-    await pool.query(
-        `
-        UPDATE ai_contents
-        SET
-          status = 'failed',
-          last_publish_error = $2
-        WHERE id = $1
-        `,
-        [contentId, errorMessage]
-    );
+        await ensureAiAnalyticsSchema();
+
+        await pool.query(
+            `
+            UPDATE ai_contents
+            SET
+              status = 'failed',
+              last_publish_error = $2
+            WHERE id = $1
+            `,
+            [contentId, errorMessage]
+        );
+    }
 }
 
 export async function processDueScheduledContent() {

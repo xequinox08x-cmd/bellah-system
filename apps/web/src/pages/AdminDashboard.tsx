@@ -233,13 +233,11 @@ export default function AdminDashboard() {
       setDashboardError(null);
 
       // Run all heavy queries in parallel — no sequential waterfalls
-      const [salesRes, productsRes, contentFeedRes, analyticsRes, forecastRes] =
+      const [salesRes, productsRes, contentFeedRes] =
         await Promise.allSettled([
           getSales(),          // sale_items join (single query)
           getProducts(),       // products (single query)
           api.getAiContentFeed(),
-          api.getAnalyticsSummary().catch(() => ({ ok: false, data: { engagementRate: 0 }, message: null })),
-          api.getForecastAlerts().catch(() => ({ data: [] })),
         ]);
 
       if (cancelled) return;
@@ -308,22 +306,27 @@ export default function AdminDashboard() {
         );
       }
 
-      // Analytics
-      if (analyticsRes.status === 'fulfilled') {
-        setAnalyticsEngagementRate(Number(analyticsRes.value.data?.engagementRate ?? 0));
-      }
-
-      // Forecast alerts
-      if (forecastRes.status === 'fulfilled') {
-        const alerts = Array.isArray(forecastRes.value?.data) ? forecastRes.value.data as ForecastAlert[] : [];
-        setForecastAlerts(alerts);
-      }
-
       if (salesRes.status === 'rejected') {
         setDashboardError(salesRes.reason?.message || 'Failed to load sales data');
       }
 
       setDashboardLoading(false);
+
+      const [analyticsRes, forecastRes] = await Promise.allSettled([
+        api.getAnalyticsSummary(),
+        api.getForecastAlerts(),
+      ]);
+
+      if (cancelled) return;
+
+      if (analyticsRes.status === 'fulfilled') {
+        setAnalyticsEngagementRate(Number(analyticsRes.value.data?.engagementRate ?? 0));
+      }
+
+      if (forecastRes.status === 'fulfilled') {
+        const alerts = Array.isArray(forecastRes.value?.data) ? forecastRes.value.data as ForecastAlert[] : [];
+        setForecastAlerts(alerts);
+      }
     }
 
     loadAll();

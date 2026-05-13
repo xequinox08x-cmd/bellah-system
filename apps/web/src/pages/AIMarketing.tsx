@@ -72,6 +72,8 @@ const OUTPUT_MODE_LABEL: Record<OutputMode, string> = {
 };
 
 const FACEBOOK_PLATFORM = 'facebook';
+const MAX_REFERENCE_IMAGE_SIDE = 1280;
+const REFERENCE_IMAGE_QUALITY = 0.82;
 
 function formatOptionLabel(value: string) {
   return value.replace(/_/g, ' ');
@@ -116,6 +118,47 @@ function FacebookIcon({ className = 'w-5 h-5' }: { className?: string }) {
       />
     </svg>
   );
+}
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Failed to read image'));
+      }
+    };
+    reader.onerror = () => reject(reader.error || new Error('Failed to read image'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImage(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Failed to load image'));
+    image.src = src;
+  });
+}
+
+async function compressReferenceImage(file: File) {
+  const dataUrl = await readFileAsDataUrl(file);
+  const image = await loadImage(dataUrl);
+  const scale = Math.min(1, MAX_REFERENCE_IMAGE_SIDE / Math.max(image.width, image.height));
+  const width = Math.max(1, Math.round(image.width * scale));
+  const height = Math.max(1, Math.round(image.height * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return dataUrl;
+
+  ctx.drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL('image/jpeg', REFERENCE_IMAGE_QUALITY);
 }
 
 export default function AIMarketing() {
@@ -166,7 +209,7 @@ export default function AIMarketing() {
             category: String(item.category ?? ''),
             price: Number(item.price ?? 0),
             description: item.description ? String(item.description) : '',
-            imageUrl: item.image_url ? String(item.image_url) : undefined,
+            imageUrl: item.imageUrl || item.image_url ? String(item.imageUrl ?? item.image_url) : undefined,
           }))
         );
       } catch (err) {
@@ -242,17 +285,22 @@ export default function AIMarketing() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleManualImageChange = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleManualImageChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setManualImagePreview(reader.result);
-        setManualImageFile(file);
-      }
-    };
-    reader.readAsDataURL(file);
+    if (!file.type.startsWith('image/')) {
+      toast.error('Please upload an image file');
+      return;
+    }
+
+    try {
+      const compressed = await compressReferenceImage(file);
+      setManualImagePreview(compressed);
+      setManualImageFile(file);
+    } catch (error) {
+      console.error(error);
+      toast.error('Failed to prepare image');
+    }
   };
 
   const handleGenerateAutoPrompt = async () => {
@@ -352,7 +400,7 @@ export default function AIMarketing() {
       const res = await api.createContent({
         id: generatedContentId,
         title,
-        prompt: promptText.trim(),
+        prompt: useCustomPrompt ? promptText.trim() : (autoPromptText.trim() || generated.promptText),
         output: editCaption,
         platform,
         hashtags: editHashtags,

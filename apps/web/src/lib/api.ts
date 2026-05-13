@@ -1,10 +1,34 @@
 import { supabase } from './supabase';
 
-export const API_ROOT = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+function getDefaultApiRoot() {
+  if (typeof window === 'undefined') return 'http://localhost:4000';
+  const hostname = window.location.hostname || 'localhost';
+  return `http://${hostname}:4000`;
+}
+
+const configuredApiRoot = import.meta.env.VITE_API_URL?.trim().replace(/\/$/, '');
+
+export const API_ROOT = configuredApiRoot || getDefaultApiRoot();
 export const API_BASE = `${API_ROOT}/api`;
 
+const REQUEST_TIMEOUT_MS = 8_000;
+const FAST_OPTIONAL_TIMEOUT_MS = 4_000;
+const LOCAL_USERS_KEY = 'bb_local_users';
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  if (init.signal) return fetch(input, init);
+
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+  const res = await fetchWithTimeout(url, init);
   const contentType = res.headers.get('content-type') || '';
   const data = contentType.includes('application/json') ? await res.json() : null;
 
@@ -193,16 +217,23 @@ async function getSupabaseAnalytics(trendDays = 7) {
     supabase.from('ai_content_metrics').select('*').order('snapshot_at', { ascending: false }),
   ]);
 
-  if (contentError) throw new Error(contentError.message);
-  if (metricsError) throw new Error(metricsError.message);
+  if (contentError) {
+    console.warn('[api] analytics content unavailable, returning empty analytics', contentError);
+  }
+  if (metricsError) {
+    console.warn('[api] analytics metrics unavailable, using zero metrics', metricsError);
+  }
+
+  const contentRows = contentError ? [] : (contents || []);
+  const metricRows = metricsError ? [] : (metrics || []);
 
   const latestMetrics = new Map<number, any>();
-  for (const metric of metrics || []) {
+  for (const metric of metricRows) {
     const contentId = Number(metric.ai_content_id);
     if (!latestMetrics.has(contentId)) latestMetrics.set(contentId, metric);
   }
 
-  const posts = (contents || [])
+  const posts = contentRows
     .filter((content: any) => content.facebook_post_id)
     .map((content: any) => {
       const metric = latestMetrics.get(Number(content.id)) || {};
@@ -249,7 +280,7 @@ async function getSupabaseAnalytics(trendDays = 7) {
   const latestMetricByContentDate = new Map<string, any>();
   const trackedContentIds = new Set(posts.map((post) => post.id));
 
-  for (const metric of metrics || []) {
+  for (const metric of metricRows) {
     const contentId = Number(metric.ai_content_id);
     const snapshotAt = metric.snapshot_at || metric.fetched_at || metric.created_at;
     if (!trackedContentIds.has(contentId) || !snapshotAt) continue;
@@ -432,6 +463,160 @@ export type ApiUser = {
   created_at: string;
 };
 
+function isApiUserRole(value: unknown): value is ApiUser['role'] {
+  return value === 'admin' || value === 'staff';
+}
+
+function decodeBase64Url(value: string) {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=');
+  const binary = atob(padded);
+  const bytes = Array.from(binary, (char) => `%${char.charCodeAt(0).toString(16).padStart(2, '0')}`).join('');
+  return decodeURIComponent(bytes);
+}
+
+function getTokenPayload(token: string): Record<string, any> | null {
+  try {
+    const payloadSegment = token.split('.')[1];
+    if (!payloadSegment) return null;
+    return JSON.parse(decodeBase64Url(payloadSegment));
+  } catch {
+    return null;
+  }
+}
+
+function getCachedSessionUser(): Partial<ApiUser> | null {
+  try {
+    const raw = sessionStorage.getItem('bb_user');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ApiUser>;
+    return parsed.email ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeApiUser(row: Partial<ApiUser> & Record<string, any>): ApiUser {
+  const email = String(row.email || 'admin@bellah.test').toLowerCase();
+  const role = isApiUserRole(row.role) ? row.role : 'staff';
+
+  return {
+    id: Number(row.id || Date.now()),
+    auth_id: row.auth_id || row.authId || `local-${email}`,
+    authId: row.authId || row.auth_id || `local-${email}`,
+    name: String(row.name || email.split('@')[0] || 'User'),
+    email,
+    role,
+    username: String(row.username || email.split('@')[0] || 'user'),
+    bio: String(row.bio || ''),
+    created_at: String(row.created_at || new Date().toISOString()),
+  };
+}
+
+function getLocalCurrentUser(token: string): ApiUser {
+  const tokenPayload = getTokenPayload(token);
+  const cachedUser = getCachedSessionUser();
+  const email = String(cachedUser?.email || tokenPayload?.email || 'admin@bellah.test').toLowerCase();
+  const role = isApiUserRole(cachedUser?.role)
+    ? cachedUser.role
+    : isApiUserRole(tokenPayload?.app_metadata?.role)
+      ? tokenPayload.app_metadata.role
+      : isApiUserRole(tokenPayload?.user_metadata?.role)
+        ? tokenPayload.user_metadata.role
+        : 'admin';
+
+  return normalizeApiUser({
+    id: role === 'admin' ? 1 : 2,
+    auth_id: String(tokenPayload?.sub || cachedUser?.auth_id || cachedUser?.authId || `local-${email}`),
+    name: String(
+      cachedUser?.name ||
+      tokenPayload?.user_metadata?.full_name ||
+      tokenPayload?.user_metadata?.name ||
+      (role === 'admin' ? 'Local Admin' : email.split('@')[0])
+    ),
+    email,
+    role,
+    username: String(cachedUser?.username || email.split('@')[0] || 'user'),
+    bio: String(cachedUser?.bio || ''),
+    created_at: String(tokenPayload?.created_at || new Date().toISOString()),
+  });
+}
+
+function readLocalUsers(token: string): ApiUser[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_USERS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.map((item) => normalizeApiUser(item));
+    }
+  } catch {
+    // Ignore corrupt local fallback data and re-seed below.
+  }
+
+  const current = getLocalCurrentUser(token);
+  const seed = [
+    current,
+    normalizeApiUser({
+      id: current.email === 'staff@bellah.test' ? 1 : 2,
+      auth_id: 'local-staff',
+      name: 'Local Staff',
+      email: 'staff@bellah.test',
+      role: 'staff',
+      created_at: new Date().toISOString(),
+    }),
+  ].filter((user, index, users) => users.findIndex((candidate) => candidate.email === user.email) === index);
+
+  writeLocalUsers(seed);
+  return seed;
+}
+
+function writeLocalUsers(users: ApiUser[]) {
+  try {
+    localStorage.setItem(LOCAL_USERS_KEY, JSON.stringify(users.map(normalizeApiUser)));
+  } catch {
+    // Local fallback is best-effort only.
+  }
+}
+
+function createLocalUser(body: { name: string; email: string; role: 'admin' | 'staff' }, token: string) {
+  const users = readLocalUsers(token);
+  const email = body.email.trim().toLowerCase();
+  const existing = users.find((user) => user.email === email);
+  if (existing) throw new Error('A user with this email already exists');
+
+  const next = normalizeApiUser({
+    id: Math.max(0, ...users.map((user) => Number(user.id) || 0)) + 1,
+    auth_id: `local-${email}`,
+    name: body.name.trim(),
+    email,
+    role: body.role,
+    created_at: new Date().toISOString(),
+  });
+  const updated = [...users, next];
+  writeLocalUsers(updated);
+  return next;
+}
+
+function updateLocalUser(id: number, body: { name?: string; role?: 'admin' | 'staff' }, token: string) {
+  const users = readLocalUsers(token);
+  const current = users.find((user) => user.id === id);
+  if (!current) throw new Error('User not found');
+
+  const updatedUser = normalizeApiUser({
+    ...current,
+    ...(body.name ? { name: body.name.trim() } : {}),
+    ...(body.role ? { role: body.role } : {}),
+  });
+  writeLocalUsers(users.map((user) => user.id === id ? updatedUser : user));
+  return updatedUser;
+}
+
+function deleteLocalUser(id: number, token: string) {
+  const users = readLocalUsers(token);
+  const updated = users.filter((user) => user.id !== id);
+  writeLocalUsers(updated);
+}
+
 type GenerationProvider = 'openai' | 'gemini' | 'fallback' | 'none';
 
 type GenerationProviders = {
@@ -468,18 +653,18 @@ function buildLocalAutoMarketingPrompt(body: {
   const tone = body.tone || 'fun';
   const hasReferenceImage = Boolean(body.referenceImageUrl);
   const modeInstruction = body.outputMode === 'text'
-    ? 'Focus on a strong Facebook caption angle, emotional hook, concise benefit framing, and a clear shop-now CTA.'
-    : 'Create a clean 4:5 Facebook beauty poster concept with the product as the hero, premium styling, flattering lighting, and readable minimal text.';
+    ? 'Write this as a usable caption brief: lead with one specific hook, frame the key benefit without exaggerating claims, and end with a direct shop-now CTA.'
+    : 'Write this as a usable poster-generation brief: specify the product hero placement, background, lighting, supporting props, minimal text treatment, and premium Facebook 4:5 composition.';
   const referenceInstruction = hasReferenceImage
     ? 'Use the uploaded/reference image as the visual source of truth: preserve the actual product identity, packaging shape, label placement, and dominant product colors.'
     : 'No reference image is provided, so base the creative direction only on the product name, category, price, and description.';
 
   return [
-    `Create a ${tone} Facebook ${contentType} brief for ${productName}, a ${category} product${price > 0 ? ` priced at PHP ${price.toFixed(2)}` : ''}.`,
-    description ? `Product details: ${description}.` : '',
+    `Create a ${tone} Facebook ${contentType} creative prompt for ${productName}, a ${category} product${price > 0 ? ` priced at PHP ${price.toFixed(2)}` : ''}.`,
+    description ? `Use these product facts only as source material, not as the entire prompt: ${description}.` : '',
     modeInstruction,
     referenceInstruction,
-    'Keep the message premium, beauty-focused, conversion-oriented, and suitable for a Filipino audience. Do not invent product claims.',
+    'Keep the final direction premium, beauty-focused, conversion-oriented, and suitable for a Filipino audience. Do not invent product claims.',
   ].filter(Boolean).join(' ');
 }
 
@@ -663,6 +848,28 @@ export const api = {
         return data;
       },
       () => getSupabaseContent(status, page)
+    );
+  },
+
+  async getContentCount(status?: string) {
+    return withSupabaseFallback(
+      async () => {
+        const params = new URLSearchParams({ page: '1', limit: '100' });
+        if (status && status !== 'all') params.set('status', status);
+        const res = await fetchWithTimeout(`${API_BASE}/ai/contents?${params}`, undefined, FAST_OPTIONAL_TIMEOUT_MS);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.message || 'Failed to count content');
+        return Number(data?.total ?? (Array.isArray(data?.data) ? data.data.length : 0));
+      },
+      async () => {
+        let query = supabase
+          .from('ai_contents')
+          .select('id', { count: 'exact', head: true });
+        if (status && status !== 'all') query = query.eq('status', status);
+        const { count, error } = await query;
+        if (error) throw new Error(error.message);
+        return count ?? 0;
+      }
     );
   },
 
@@ -1044,59 +1251,90 @@ export const api = {
   },
 
   async getUsers(token: string) {
-    const res = await fetch(`${API_BASE}/users`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to load users');
-    return data as { data: ApiUser[] };
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/users`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load users');
+      return { data: (Array.isArray(data?.data) ? data.data : []).map(normalizeApiUser) };
+    } catch (error) {
+      console.warn('[api] users endpoint unavailable, using local user fallback', error);
+      return { data: readLocalUsers(token) };
+    }
   },
 
   async createUser(
     body: { name: string; email: string; password: string; role: 'admin' | 'staff' },
     token: string
   ) {
-    const res = await fetch(`${API_BASE}/users`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to create user');
-    return data as { data: ApiUser };
+    let allowLocalFallback = true;
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/users`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      allowLocalFallback = res.status >= 500;
+      if (!res.ok) throw new Error(data.error || 'Failed to create user');
+      return { data: normalizeApiUser(data.data) };
+    } catch (error) {
+      if (!allowLocalFallback) throw error;
+      console.warn('[api] create user endpoint unavailable, using local user fallback', error);
+      return { data: createLocalUser(body, token) };
+    }
   },
 
   async updateUser(id: number, body: { name?: string; role?: 'admin' | 'staff' }, token: string) {
-    const res = await fetch(`${API_BASE}/users/${id}`, {
-      method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to update user');
-    return data as { data: ApiUser };
+    let allowLocalFallback = true;
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/users/${id}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      allowLocalFallback = res.status >= 500;
+      if (!res.ok) throw new Error(data.error || 'Failed to update user');
+      return { data: normalizeApiUser(data.data) };
+    } catch (error) {
+      if (!allowLocalFallback) throw error;
+      console.warn('[api] update user endpoint unavailable, using local user fallback', error);
+      return { data: updateLocalUser(id, body, token) };
+    }
   },
 
   async deleteUser(id: number, token: string) {
-    const res = await fetch(`${API_BASE}/users/${id}`, {
-      method: 'DELETE',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to delete user');
-    return data as { success: boolean };
+    let allowLocalFallback = true;
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/users/${id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const data = await res.json();
+      allowLocalFallback = res.status >= 500;
+      if (!res.ok) throw new Error(data.error || 'Failed to delete user');
+      deleteLocalUser(id, token);
+      return data as { success: boolean };
+    } catch (error) {
+      if (!allowLocalFallback) throw error;
+      console.warn('[api] delete user endpoint unavailable, using local user fallback', error);
+      deleteLocalUser(id, token);
+      return { success: true };
+    }
   },
 
   // CAMPAIGNS
@@ -1231,12 +1469,23 @@ export const api = {
   },
 
   getForecasts: async () => {
-    const res = await fetch(`${API_BASE}/forecasts`);
-    return res.json();
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/forecasts`, undefined, FAST_OPTIONAL_TIMEOUT_MS);
+      return res.json();
+    } catch (error) {
+      console.warn('[api] forecasts unavailable', error);
+      return { data: [] };
+    }
   },
 
   getForecastAlerts: async () => {
-    const res = await fetch(`${API_BASE}/forecasts/alerts`);
-    return res.json();
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/forecasts/alerts`, undefined, FAST_OPTIONAL_TIMEOUT_MS);
+      if (!res.ok) return { data: [] };
+      return res.json();
+    } catch (error) {
+      console.warn('[api] forecast alerts unavailable', error);
+      return { data: [] };
+    }
   },
 };

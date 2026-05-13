@@ -8,7 +8,7 @@ import {
 import { useAuth } from './AuthContext';
 import { BrandLogo } from './BrandLogo';
 import { toast } from 'sonner';
-import { supabase } from '../lib/supabase';
+import { api } from '../lib/api';
 
 // ─── Logo ─────────────────────────────────────────────────────────────────────
 
@@ -119,15 +119,10 @@ export function Sidebar() {
 
       try {
         // Lightweight count-only query — no joins, no full rows, just a HEAD count
-        const { count, error } = await supabase
-          .from('ai_contents')
-          .select('id', { count: 'exact', head: true })
-          .eq('status', 'pending');
+        const n = await api.getContentCount('pending');
 
         if (cancelled) return;
-        if (error) throw error;
 
-        const n = count ?? 0;
         draftCountCache.current = { count: n, ts: Date.now() };
         setApprovalDraftCount(n);
       } catch {

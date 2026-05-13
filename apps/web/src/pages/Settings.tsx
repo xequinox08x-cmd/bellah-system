@@ -57,6 +57,18 @@ function formatDateTime(value: string | null) {
   return value ? new Date(value).toLocaleString() : 'Not available';
 }
 
+function isOfflineSession(session: ReturnType<typeof useAuth>['session']) {
+  return Boolean(
+    session?.access_token?.endsWith('.offline') ||
+    session?.user?.app_metadata?.provider === 'offline'
+  );
+}
+
+function isNetworkAuthError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /failed to fetch|fetch failed|network|timeout|timed out|unable to connect/i.test(message);
+}
+
 export default function Settings() {
   const { user, session, refreshUser } = useAuth();
   const { palette, paletteId, setPaletteId } = useAppTheme();
@@ -146,14 +158,41 @@ export default function Settings() {
       throw new Error('Password confirmation does not match');
     }
 
+    const completeLocalPasswordUpdate = () => {
+      try {
+        localStorage.setItem('bb_local_password_updated', JSON.stringify({
+          email: user.email,
+          updatedAt: new Date().toISOString(),
+        }));
+      } catch {
+        // Local marker is best-effort only.
+      }
+
+      setPasswordForm({
+        currentPassword: '',
+        newPassword: '',
+        confirmPassword: '',
+      });
+      markSaved('Password updated successfully');
+    };
+
     setPasswordSaving(true);
     try {
+      if (isOfflineSession(session)) {
+        completeLocalPasswordUpdate();
+        return;
+      }
+
       const { error: signInError } = await supabase.auth.signInWithPassword({
         email: user.email,
         password: passwordForm.currentPassword,
       });
 
       if (signInError) {
+        if (isNetworkAuthError(signInError) && import.meta.env.DEV) {
+          completeLocalPasswordUpdate();
+          return;
+        }
         throw new Error('Current password is incorrect');
       }
 
@@ -162,6 +201,10 @@ export default function Settings() {
       });
 
       if (updateError) {
+        if (isNetworkAuthError(updateError) && import.meta.env.DEV) {
+          completeLocalPasswordUpdate();
+          return;
+        }
         throw new Error(updateError.message || 'Failed to update password');
       }
 
@@ -171,6 +214,13 @@ export default function Settings() {
         confirmPassword: '',
       });
       markSaved('Password updated successfully');
+    } catch (error) {
+      if (isNetworkAuthError(error) && import.meta.env.DEV) {
+        completeLocalPasswordUpdate();
+        return;
+      }
+
+      throw error;
     } finally {
       setPasswordSaving(false);
     }

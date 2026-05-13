@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Bell,
@@ -13,6 +13,7 @@ import { useNavigate, useLocation } from 'react-router';
 import { useAuth } from './AuthContext';
 import { useStore } from '../data/store';
 import { toast } from 'sonner';
+import { api } from '../lib/api';
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
   '/dashboard': { title: 'Dashboard', sub: 'Overview of your store performance' },
@@ -147,10 +148,15 @@ export function TopNav() {
   const [showNotifs, setShowNotifs] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearchResults, setShowSearchResults] = useState(false);
+  const [notificationCounts, setNotificationCounts] = useState({ pending: 0, lowStock: 0 });
   const searchRef = useRef<HTMLFormElement | null>(null);
 
-  const pendingCount = contentItems.filter((item) => item.status === 'pending').length;
-  const lowStockCount = products.filter((product) => product.stock <= product.lowStockThreshold).length;
+  const storePendingCount = user?.role === 'admin'
+    ? contentItems.filter((item) => item.status === 'pending').length
+    : 0;
+  const storeLowStockCount = products.filter((product) => product.stock <= product.lowStockThreshold).length;
+  const pendingCount = user?.role === 'admin' ? notificationCounts.pending : 0;
+  const lowStockCount = notificationCounts.lowStock;
   const totalNotifs = pendingCount + (lowStockCount > 0 ? 1 : 0);
   const meta = PAGE_META[location.pathname] ?? { title: 'Dashboard', sub: '' };
 
@@ -202,6 +208,48 @@ export function TopNav() {
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
+
+  const refreshNotificationCounts = useCallback(async () => {
+    const fallback = {
+      pending: storePendingCount,
+      lowStock: storeLowStockCount,
+    };
+
+    try {
+      const [pendingResult, productsResult] = await Promise.allSettled([
+        user?.role === 'admin' ? api.getContentCount('pending') : Promise.resolve(0),
+        api.getProducts(),
+      ]);
+
+      const nextPending = pendingResult.status === 'fulfilled'
+        ? Number(pendingResult.value || 0)
+        : fallback.pending;
+      const nextLowStock = productsResult.status === 'fulfilled' && Array.isArray(productsResult.value)
+        ? productsResult.value.filter((product: any) => Number(product.stock ?? 0) <= Number(product.lowStockThreshold ?? product.low_stock_threshold ?? 0)).length
+        : fallback.lowStock;
+
+      setNotificationCounts({
+        pending: nextPending,
+        lowStock: nextLowStock,
+      });
+    } catch {
+      setNotificationCounts(fallback);
+    }
+  }, [storeLowStockCount, storePendingCount, user?.role]);
+
+  useEffect(() => {
+    void refreshNotificationCounts();
+
+    const handleContentUpdated = () => { void refreshNotificationCounts(); };
+    const handleProductsUpdated = () => { void refreshNotificationCounts(); };
+
+    window.addEventListener('ai-content-updated', handleContentUpdated);
+    window.addEventListener('products-updated', handleProductsUpdated);
+    return () => {
+      window.removeEventListener('ai-content-updated', handleContentUpdated);
+      window.removeEventListener('products-updated', handleProductsUpdated);
+    };
+  }, [refreshNotificationCounts]);
 
   const handleLogout = async () => {
     await logout();
