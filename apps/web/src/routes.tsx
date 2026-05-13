@@ -1,7 +1,27 @@
 import { lazy, Suspense } from 'react';
-import { createBrowserRouter, Navigate } from 'react-router-dom';
+import { createBrowserRouter, Navigate, useLocation } from 'react-router-dom';
 import { Layout } from './components/Layout';
+import { useAuth } from './components/AuthContext';
 import Login from './pages/Login';
+
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="w-6 h-6 border-2 border-[#EC4899] border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+
+  return <>{children}</>;
+}
 
 // Pages are lazy-loaded so each route is only downloaded when first visited
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -37,7 +57,11 @@ export const router = createBrowserRouter([
   },
   {
     path: '/',
-    Component: Layout,
+    element: (
+      <RequireAuth>
+        <Layout />
+      </RequireAuth>
+    ),
     children: [
       { index: true, element: <Navigate to="/dashboard" replace /> },
       { path: 'admin', element: <Suspense fallback={<PageFallback />}><Dashboard /></Suspense> },

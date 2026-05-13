@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express';
-import { supabaseAuthAdmin, supabaseRest } from '../services/supabaseAdmin';
+import { supabaseAuthAdmin } from '../services/supabaseAdmin';
+import { pool } from '../db/pool';
 
 const router = Router();
 
@@ -74,61 +75,69 @@ async function getSupabaseUserMetadata(authId: string) {
   }
 }
 
-function usersPath(params: Record<string, string | number>) {
-  const search = new URLSearchParams();
-  Object.entries(params).forEach(([key, value]) => search.set(key, String(value)));
-  return `/users?${search.toString()}`;
-}
-
 async function listDbUsers() {
-  return supabaseRest<DbUserRow[]>(
-    usersPath({ select: USER_COLUMNS, order: 'created_at.asc' })
+  const result = await pool.query<DbUserRow>(
+    `SELECT ${USER_COLUMNS} FROM users ORDER BY created_at ASC`
   );
+  return result.rows;
 }
 
 async function getDbUserByAuthId(authId: string) {
-  const rows = await supabaseRest<DbUserRow[]>(
-    usersPath({ select: USER_COLUMNS, auth_id: `eq.${authId}`, limit: 1 })
+  const result = await pool.query<DbUserRow>(
+    `SELECT ${USER_COLUMNS} FROM users WHERE auth_id = $1 LIMIT 1`,
+    [authId]
   );
-  return rows[0] ?? null;
+  return result.rows[0] ?? null;
 }
 
 async function getDbUserById(id: number) {
-  const rows = await supabaseRest<DbUserRow[]>(
-    usersPath({ select: USER_COLUMNS, id: `eq.${id}`, limit: 1 })
+  const result = await pool.query<DbUserRow>(
+    `SELECT ${USER_COLUMNS} FROM users WHERE id = $1 LIMIT 1`,
+    [id]
   );
-  return rows[0] ?? null;
+  return result.rows[0] ?? null;
 }
 
 async function upsertDbUser(input: Pick<DbUserRow, 'auth_id' | 'name' | 'email' | 'role'>) {
-  const rows = await supabaseRest<DbUserRow[]>(
-    usersPath({ on_conflict: 'auth_id', select: USER_COLUMNS }),
-    {
-      method: 'POST',
-      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
-      body: JSON.stringify(input),
-    }
+  const result = await pool.query<DbUserRow>(
+    `INSERT INTO users (auth_id, name, email, role)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (auth_id)
+     DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, role = EXCLUDED.role
+     RETURNING ${USER_COLUMNS}`,
+    [input.auth_id, input.name, input.email, input.role]
   );
-  return rows[0] ?? null;
+  return result.rows[0] ?? null;
 }
 
 async function updateDbUser(id: number, input: Partial<Pick<DbUserRow, 'name' | 'email' | 'role'>>) {
-  const rows = await supabaseRest<DbUserRow[]>(
-    usersPath({ select: USER_COLUMNS, id: `eq.${id}` }),
-    {
-      method: 'PATCH',
-      headers: { Prefer: 'return=representation' },
-      body: JSON.stringify(input),
-    }
+  const updates: string[] = [];
+  const values: unknown[] = [id];
+
+  if (typeof input.name === 'string') {
+    values.push(input.name);
+    updates.push(`name = $${values.length}`);
+  }
+  if (typeof input.email === 'string') {
+    values.push(input.email);
+    updates.push(`email = $${values.length}`);
+  }
+  if (typeof input.role === 'string') {
+    values.push(input.role);
+    updates.push(`role = $${values.length}`);
+  }
+
+  if (updates.length === 0) return null;
+
+  const result = await pool.query<DbUserRow>(
+    `UPDATE users SET ${updates.join(', ')} WHERE id = $1 RETURNING ${USER_COLUMNS}`,
+    values
   );
-  return rows[0] ?? null;
+  return result.rows[0] ?? null;
 }
 
 async function deleteDbUser(id: number) {
-  await supabaseRest<null>(
-    usersPath({ id: `eq.${id}` }),
-    { method: 'DELETE' }
-  );
+  await pool.query('DELETE FROM users WHERE id = $1', [id]);
 }
 
 function serializeUser(row: DbUserRow, metadata: Record<string, unknown> = {}) {

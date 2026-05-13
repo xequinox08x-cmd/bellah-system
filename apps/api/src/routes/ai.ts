@@ -336,8 +336,18 @@ async function supabaseRest<T>(path: string, options: RequestInit = {}): Promise
   });
 
   const responseText = await response.text();
+
   if (!response.ok) {
-    throw new Error(responseText || response.statusText);
+    // Try to parse Supabase error JSON for a cleaner message
+    let parsed: { message?: string; code?: string } | null = null;
+    try { parsed = JSON.parse(responseText); } catch { /* ignore */ }
+
+    if (response.status === 503 || parsed?.code === "PGRST002") {
+      throw new Error("Database schema cache is reloading. Please retry in a moment.");
+    }
+
+    const msg = parsed?.message || responseText || response.statusText;
+    throw new Error(JSON.stringify(parsed ?? msg));
   }
 
   return (responseText ? JSON.parse(responseText) : null) as T;

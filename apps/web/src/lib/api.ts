@@ -35,13 +35,12 @@ function normalizeProduct(row: any) {
 async function getSupabaseProducts() {
   const { data, error } = await supabase
     .from('products')
-    .select('*')
+    .select('id, sku, name, category, price, cost, stock, low_stock_threshold, description, image_url, is_active, created_at, updated_at')
+    .eq('is_active', true)
     .order('id', { ascending: false });
 
   if (error) throw new Error(error.message);
-  return (data || [])
-    .filter((row: any) => row.is_active !== false)
-    .map(normalizeProduct);
+  return (data || []).map(normalizeProduct);
 }
 
 async function getSupabaseSales() {
@@ -299,7 +298,7 @@ async function getSupabaseAnalytics(trendDays = 7) {
 async function getSupabaseAiContentFeed() {
   const { data, error } = await supabase
     .from('ai_contents')
-    .select('id, title, content, platform, status, created_at, approved_at, scheduled_at, published_at, products(name), users(name)')
+    .select('id, title, content, platform, status, created_at, approved_at, scheduled_at, published_at, products(name)')
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -315,7 +314,6 @@ async function getSupabaseAiContentFeed() {
     ok: true,
     data: (data || []).map((item: any) => {
       const product = Array.isArray(item.products) ? item.products[0] : item.products;
-      const creator = Array.isArray(item.users) ? item.users[0] : item.users;
 
       return {
         id: Number(item.id),
@@ -328,7 +326,7 @@ async function getSupabaseAiContentFeed() {
         approved_at: item.approved_at ?? null,
         scheduled_at: item.scheduled_at ?? null,
         published_at: item.published_at ?? null,
-        created_by_name: creator?.name ? String(creator.name) : 'Staff',
+        created_by_name: 'Staff',
       };
     }),
     message: null,

@@ -91,7 +91,9 @@ export default function Products() {
     }
   };
 
-  useEffect(() => { load(); }, [token]);
+  // Only fetch once on mount — Supabase anon key is sufficient for products.
+  // Avoid re-fetching every time the token string reference changes.
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── KPIs ──────────────────────────────────────────────────────────────────
   const kpis = useMemo(() => {
@@ -228,7 +230,37 @@ export default function Products() {
       {/* Table */}
       <div className="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden">
         {loading ? (
-          <div className="py-16 text-center text-sm text-[#9CA3AF]">Loading inventory…</div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-[#E5E7EB] bg-[#F9FAFB]">
+                  {['Product', 'SKU', 'Category', 'Price', 'Cost', 'Stock', 'Status', 'Actions'].map(h => (
+                    <th key={h} className="text-left px-5 py-3 text-xs text-[#6B7280] uppercase tracking-wider" style={{ fontWeight: 600 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#F3F4F6]">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <tr key={i} className="animate-pulse">
+                    <td className="px-5 py-3.5">
+                      <div className="h-3.5 bg-[#F3F4F6] rounded w-32 mb-1.5" />
+                      <div className="h-2.5 bg-[#F3F4F6] rounded w-48" />
+                    </td>
+                    <td className="px-5 py-3.5"><div className="h-3 bg-[#F3F4F6] rounded w-20" /></td>
+                    <td className="px-5 py-3.5"><div className="h-5 bg-[#F3F4F6] rounded-full w-16" /></td>
+                    <td className="px-5 py-3.5"><div className="h-3 bg-[#F3F4F6] rounded w-14" /></td>
+                    <td className="px-5 py-3.5"><div className="h-3 bg-[#F3F4F6] rounded w-14" /></td>
+                    <td className="px-5 py-3.5">
+                      <div className="h-3 bg-[#F3F4F6] rounded w-8 mb-1.5" />
+                      <div className="h-1 bg-[#F3F4F6] rounded-full w-16" />
+                    </td>
+                    <td className="px-5 py-3.5"><div className="h-5 bg-[#F3F4F6] rounded-full w-16" /></td>
+                    <td className="px-5 py-3.5"><div className="h-6 bg-[#F3F4F6] rounded w-16" /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">

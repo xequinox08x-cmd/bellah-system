@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../components/AuthContext';
 import type { ContentItem } from '../data/store';
-import { getDashboardSummary, type DashboardSummary, type LowStockProduct } from '../api/dashboard';
+import { type DashboardSummary, type LowStockProduct } from '../api/dashboard';
 import { getSales, type SalesRecordDTO } from '../api/sales';
 import { getProducts, type ProductDTO } from '../api/products';
 import { api } from '../lib/api';
@@ -66,13 +66,25 @@ function formatDashboardDateLabel(value: string) {
 
 // ─── KPI Card ─────────────────────────────────────────────────────────────────
 function KPICard({
-  label, value, sub, icon: Icon, iconBg, iconColor, trend, trendUp,
+  label, value, sub, icon: Icon, iconBg, iconColor, trend, trendUp, onClick,
 }: {
   label: string; value: string; sub: string; icon: React.ElementType;
   iconBg: string; iconColor: string; trend?: string; trendUp?: boolean;
+  onClick?: () => void;
 }) {
+  const isClickable = Boolean(onClick);
   return (
-    <div className="bg-white rounded-xl border border-[#E5E7EB] p-4 flex flex-col gap-3">
+    <div
+      onClick={onClick}
+      role={isClickable ? 'button' : undefined}
+      tabIndex={isClickable ? 0 : undefined}
+      onKeyDown={isClickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') onClick?.(); } : undefined}
+      className={`bg-white rounded-xl border border-[#E5E7EB] p-4 flex flex-col gap-3 transition-all ${
+        isClickable
+          ? 'cursor-pointer hover:border-[#EC4899]/40 hover:shadow-md hover:-translate-y-0.5 active:translate-y-0 select-none'
+          : ''
+      }`}
+    >
       <div className="flex items-center justify-between">
         <div className={`w-8 h-8 rounded-lg ${iconBg} flex items-center justify-center`}>
           <Icon className={`w-4 h-4 ${iconColor}`} />
@@ -89,6 +101,9 @@ function KPICard({
         <p className="text-[10px] text-[#6B7280] mt-0.5">{label}</p>
         <p className="text-[10px] text-[#9CA3AF]">{sub}</p>
       </div>
+      {isClickable && (
+        <p className="text-[9px] text-[#EC4899] opacity-60 -mt-1">View details →</p>
+      )}
     </div>
   );
 }
@@ -209,120 +224,112 @@ export default function AdminDashboard() {
     []
   );
 
+  // ── Single parallel fetch for all dashboard data ─────────────────────
   useEffect(() => {
     let cancelled = false;
 
-    async function loadDashboardSummary() {
-      try {
-        setDashboardLoading(true);
-        setDashboardError(null);
-        const response = await getDashboardSummary(todayIso, todayIso);
-        if (!cancelled) {
-          setDashboardSummary(response.summary);
-          setDashboardLowStock(response.lowStockProducts);
-        }
-      } catch (e: any) {
-        if (!cancelled) {
-          setDashboardError(e?.message || 'Failed to load dashboard summary');
-          setDashboardSummary(EMPTY_SUMMARY);
-          setDashboardLowStock(null);
-        }
-      } finally {
-        if (!cancelled) {
-          setDashboardLoading(false);
-        }
-      }
-    }
+    async function loadAll() {
+      setDashboardLoading(true);
+      setDashboardError(null);
 
-    loadDashboardSummary();
-    return () => {
-      cancelled = true;
-    };
-  }, [todayIso]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadDashboardDataSources() {
-      try {
-        const [salesResponse, productsResponse, contentFeedResponse, analyticsSummaryResponse] = await Promise.all([
-          getSales(),
-          getProducts(),
+      // Run all heavy queries in parallel — no sequential waterfalls
+      const [salesRes, productsRes, contentFeedRes, analyticsRes, forecastRes] =
+        await Promise.allSettled([
+          getSales(),          // sale_items join (single query)
+          getProducts(),       // products (single query)
           api.getAiContentFeed(),
-          api.getAnalyticsSummary().catch(() => ({
-            ok: false,
-            data: {
-              likes: 0,
-              comments: 0,
-              shares: 0,
-              reach: 0,
-              engagementRate: 0,
-              postCount: 0,
-              lastSyncedAt: null,
-            },
-            message: null,
-          })),
+          api.getAnalyticsSummary().catch(() => ({ ok: false, data: { engagementRate: 0 }, message: null })),
+          api.getForecastAlerts().catch(() => ({ data: [] })),
         ]);
 
-        if (!cancelled) {
-          setSales(salesResponse);
-          setProducts(productsResponse);
-          setContentItems(
-            Array.isArray(contentFeedResponse.data)
-              ? contentFeedResponse.data.map((item) => ({
-                  id: String(item.id),
-                  title: item.title,
-                  caption: item.content,
-                  hashtags: '',
-                  platform: item.platform as ContentItem['platform'],
-                  status: item.status as ContentItem['status'],
-                  createdBy: item.created_by_name,
-                  createdByRole: 'admin',
-                  createdAt: item.created_at,
-                  scheduledAt: item.scheduled_at ?? undefined,
-                  publishedAt: item.published_at ?? undefined,
-                  approvedBy: undefined,
-                  productName: item.product_name ?? undefined,
-                }))
-              : []
-          );
-          setAnalyticsEngagementRate(Number(analyticsSummaryResponse.data?.engagementRate ?? 0));
-        }
-      } catch (e: any) {
-        if (!cancelled) {
-          setDashboardError(prev => prev || e?.message || 'Failed to load dashboard data');
-        }
+      if (cancelled) return;
+
+      let loadedSales: typeof sales = [];
+      let loadedProducts: typeof products = [];
+
+      // Sales
+      if (salesRes.status === 'fulfilled') {
+        loadedSales = salesRes.value;
+        setSales(loadedSales);
       }
+
+      // Products
+      if (productsRes.status === 'fulfilled') {
+        loadedProducts = productsRes.value;
+        setProducts(loadedProducts);
+      }
+
+      // Derive dashboard summary locally — no extra round-trip
+      const today = new Date().toISOString().slice(0, 10);
+      const startDate = todayIso;
+      const endDate = todayIso;
+      const rangeSales = loadedSales.filter(s => s.date >= startDate && s.date <= endDate);
+      const lowStock = loadedProducts
+        .filter(p => (p as any).lowStockThreshold > 0 && (p as any).stock <= (p as any).lowStockThreshold)
+        .map(p => ({
+          id: (p as any).id,
+          name: (p as any).name,
+          sku: (p as any).sku ?? null,
+          category: (p as any).category ?? null,
+          stock: (p as any).stock,
+          lowStockThreshold: (p as any).lowStockThreshold,
+          status: ((p as any).stock <= (p as any).lowStockThreshold * 0.6 ? 'critical' : 'low') as 'critical' | 'low',
+          ratio: (p as any).lowStockThreshold > 0 ? (p as any).stock / (p as any).lowStockThreshold : 0,
+        }));
+
+      setDashboardSummary({
+        totalSales: rangeSales.length,
+        revenueToday: rangeSales.reduce((sum, s) => sum + Number(s.total ?? 0), 0),
+        lowStockItems: lowStock.length,
+        scheduledPosts: 0,
+        engagementRate: 0,
+      });
+      setDashboardLowStock(lowStock);
+
+      // AI Content Feed
+      if (contentFeedRes.status === 'fulfilled') {
+        setContentItems(
+          Array.isArray(contentFeedRes.value.data)
+            ? contentFeedRes.value.data.map((item) => ({
+                id: String(item.id),
+                title: item.title,
+                caption: item.content,
+                hashtags: '',
+                platform: item.platform as ContentItem['platform'],
+                status: item.status as ContentItem['status'],
+                createdBy: item.created_by_name,
+                createdByRole: 'admin',
+                createdAt: item.created_at,
+                scheduledAt: item.scheduled_at ?? undefined,
+                publishedAt: item.published_at ?? undefined,
+                approvedBy: undefined,
+                productName: item.product_name ?? undefined,
+              }))
+            : []
+        );
+      }
+
+      // Analytics
+      if (analyticsRes.status === 'fulfilled') {
+        setAnalyticsEngagementRate(Number(analyticsRes.value.data?.engagementRate ?? 0));
+      }
+
+      // Forecast alerts
+      if (forecastRes.status === 'fulfilled') {
+        const alerts = Array.isArray(forecastRes.value?.data) ? forecastRes.value.data as ForecastAlert[] : [];
+        setForecastAlerts(alerts);
+      }
+
+      if (salesRes.status === 'rejected') {
+        setDashboardError(salesRes.reason?.message || 'Failed to load sales data');
+      }
+
+      setDashboardLoading(false);
     }
 
-    loadDashboardDataSources();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadForecastAlerts() {
-      try {
-        const response = await api.getForecastAlerts();
-        if (!cancelled) {
-          const alerts = Array.isArray(response?.data) ? response.data as ForecastAlert[] : [];
-          setForecastAlerts(alerts);
-        }
-      } catch {
-        if (!cancelled) {
-          setForecastAlerts([]);
-        }
-      }
-    }
-
-    loadForecastAlerts();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    loadAll();
+    return () => { cancelled = true; };
+  }, [todayIso]);
 
   async function handleGenerateForecasts() {
     try {
@@ -573,6 +580,7 @@ export default function AdminDashboard() {
           icon={ShoppingCart}
           iconBg="bg-[#FCE7F3]"
           iconColor="text-[#EC4899]"
+          onClick={() => navigate('/sales')}
         />
         <KPICard
           label="Revenue"
@@ -583,6 +591,7 @@ export default function AdminDashboard() {
           iconColor="text-[#D97706]"
           trend={`₱${selectedProfit.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
           trendUp={selectedProfit >= 0}
+          onClick={() => navigate('/sales')}
         />
         <KPICard
           label="Low Stock Items"
@@ -591,6 +600,7 @@ export default function AdminDashboard() {
           icon={AlertTriangle}
           iconBg="bg-red-50"
           iconColor="text-red-500"
+          onClick={() => navigate('/products')}
         />
         <KPICard
           label="Scheduled Posts"
@@ -599,6 +609,7 @@ export default function AdminDashboard() {
           icon={Calendar}
           iconBg="bg-blue-50"
           iconColor="text-blue-600"
+          onClick={() => navigate('/scheduling')}
         />
         <KPICard
           label="Engagement Rate"
@@ -609,6 +620,7 @@ export default function AdminDashboard() {
           iconColor="text-emerald-600"
           trend="+2.3%"
           trendUp
+          onClick={() => navigate('/analytics')}
         />
       </div>
 
@@ -688,7 +700,7 @@ export default function AdminDashboard() {
             <table className="w-full">
               <thead>
                 <tr className="bg-[#F9FAFB]">
-                  {['#', 'Product', 'Category', 'Units', 'Revenue', 'Profit'].map(h => (
+                  {['#', 'Product', 'Category', 'Units', 'Revenue'].map(h => (
                     <th
                       key={h}
                       className={`px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider ${h === '#' || h === 'Category' ? 'text-left' : 'text-right'
@@ -702,7 +714,7 @@ export default function AdminDashboard() {
               <tbody>
                 {topProducts.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-10 text-center text-xs text-[#9CA3AF]">
+                    <td colSpan={5} className="px-4 py-10 text-center text-xs text-[#9CA3AF]">
                       {isDateMode ? 'No sales data for selected date' : 'No sales data available'}
                     </td>
                   </tr>
@@ -730,9 +742,6 @@ export default function AdminDashboard() {
                     <td className="px-4 py-3 text-xs text-right text-[#374151]">{p.units}</td>
                     <td className="px-4 py-3 text-xs text-right text-[#111827]" style={{ fontWeight: 600 }}>
                       ₱{p.revenue.toFixed(2)}
-                    </td>
-                    <td className="px-4 py-3 text-xs text-right text-emerald-600" style={{ fontWeight: 500 }}>
-                      ₱{p.profit.toFixed(2)}
                     </td>
                   </tr>
                 ))}

@@ -46,6 +46,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   };
 
+  const getFallbackAuthUser = (supabaseUser: User): AuthUser => {
+    const metadata = supabaseUser.user_metadata as Record<string, unknown> | undefined;
+    const role = metadata?.role === 'admin' ? 'admin' : 'staff';
+    const name = typeof metadata?.full_name === 'string'
+      ? metadata.full_name
+      : supabaseUser.email?.split('@')[0] || 'User';
+
+    return {
+      id: supabaseUser.id,
+      email: supabaseUser.email || '',
+      name,
+      role,
+    };
+  };
+
   const loadUser = async (supabaseUser: User | null, sess: Session | null) => {
     if (!supabaseUser || !sess) {
       setUser(null);
@@ -54,20 +69,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    const fallbackUser = getFallbackAuthUser(supabaseUser);
+    setUser(fallbackUser);
+    setSession(sess);
+
     try {
       const profile = await fetchUserProfile(sess);
       setUser(profile);
-      setSession(sess);
     } catch (err) {
       console.error('Error loading user profile:', err);
-      // Fallback if API is down
-      setUser({
-        id: supabaseUser.id,
-        email: supabaseUser.email || '',
-        name: supabaseUser.email?.split('@')[0] || 'User',
-        role: 'staff'
-      });
-      setSession(sess);
     } finally {
       setLoading(false);
     }
@@ -88,13 +98,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signIn = async (email: string, password: string): Promise<AuthUser> => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
-    if (!data.session) throw new Error('No session created');
+    if (!data || !data.session || !data.user) {
+      throw new Error(
+        'Supabase sign in returned invalid response: ' + JSON.stringify(data ?? {})
+      );
+    }
 
-    // Fetch profile immediately after login to get the role
-    const profile = await fetchUserProfile(data.session);
-    setUser(profile);
+    const fallbackUser = getFallbackAuthUser(data.user);
+    setUser(fallbackUser);
     setSession(data.session);
-    return profile;
+
+    fetchUserProfile(data.session)
+      .then((profile) => setUser(profile))
+      .catch((err) => {
+        console.error('Error loading user profile after sign in:', err);
+      });
+
+    return fallbackUser;
   };
 
   const signOut = async () => {

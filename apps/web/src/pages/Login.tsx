@@ -1,13 +1,19 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../components/AuthContext';
 import { Eye, EyeOff, Loader2, AlertCircle, Moon, Sun } from 'lucide-react';
 
 export default function Login() {
   const navigate = useNavigate();
-  const { signIn } = useAuth();
+  const { signIn, user, loading } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+
+  useEffect(() => {
+    if (!loading && user) {
+      navigate(user.role === 'admin' ? '/admin' : '/staff');
+    }
+  }, [loading, user, navigate]);
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -23,10 +29,11 @@ export default function Login() {
     setError(null);
     setIsLoading(true);
     try {
-      const profile = await signIn(email.trim(), password);
-      navigate(profile.role === 'admin' ? '/admin' : '/staff');
+      await signIn(email.trim(), password);
+      navigate('/dashboard');
     } catch (err: any) {
-      setError(err.message || 'Login failed. Please try again.');
+      const message = err?.message || (typeof err === 'object' ? JSON.stringify(err) : null);
+      setError(message || 'Login failed. Please try again.');
     } finally {
       setIsLoading(false);
     }
