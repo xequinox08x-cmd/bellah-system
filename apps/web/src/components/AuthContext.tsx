@@ -31,63 +31,81 @@ function isUserRole(role: unknown): role is UserRole {
 }
 
 async function fetchUserProfile(sess: Session): Promise<AuthUser> {
-  const { data: authData, error: authError } = await supabase.auth.getUser();
-  if (authError) throw new Error(authError.message);
+  const currentUser = sess.user;
+  if (!currentUser) throw new Error('No authenticated user in session');
 
-  const currentUser = authData.user;
-  if (!currentUser || currentUser.id !== sess.user.id) {
-    throw new Error('Unable to verify authenticated user');
-  }
-
-  const fallbackEmail = currentUser.email || sess.user.email || '';
+  const fallbackEmail = currentUser.email || '';
   const fallbackUsername = fallbackEmail.split('@')[0] || 'user';
 
-  try {
-    const response = await fetch(`${API_BASE}/users/me`, {
-      headers: {
-        Authorization: `Bearer ${sess.access_token}`,
-        'Content-Type': 'application/json',
-      },
-    });
-    const payload = await response.json();
-
-    if (response.ok && payload?.data && isUserRole(payload.data.role)) {
+  // ── Tier 1: Express API (authoritative, has full profile) ─────────────
+  const apiPromise = fetch(`${API_BASE}/users/me`, {
+    headers: {
+      Authorization: `Bearer ${sess.access_token}`,
+      'Content-Type': 'application/json',
+    },
+    signal: AbortSignal.timeout(8000), // 8s — accounts for tsx watch cold-start
+  }).then(async (res) => {
+    const payload = await res.json();
+    if (res.ok && payload?.data && isUserRole(payload.data.role)) {
       return {
         id: currentUser.id,
         email: payload.data.email || fallbackEmail,
         name: payload.data.name || fallbackUsername,
-        role: payload.data.role,
+        role: payload.data.role as UserRole,
         username: payload.data.username || fallbackUsername,
         bio: payload.data.bio || '',
-      };
+      } as AuthUser;
     }
-  } catch (error) {
-    console.warn('Backend profile lookup failed, falling back to Supabase table lookup:', error);
-  }
+    throw new Error('API profile invalid');
+  });
 
-  const { data, error } = await supabase
+  // ── Tier 2: Supabase users table (direct DB, bypasses API) ────────────
+  const supabasePromise = supabase
     .from('users')
     .select('name, email, role')
     .eq('auth_id', currentUser.id)
-    .single();
+    .maybeSingle()   // returns null instead of 406/400 when no row found
+    .then(({ data, error }) => {
+      if (error) throw new Error(error.message);
+      if (!data || !isUserRole(data.role)) throw new Error('No profile row');
+      return {
+        id: currentUser.id,
+        email: (data as any).email || fallbackEmail,
+        name: (data as any).name || fallbackUsername,
+        role: data.role as UserRole,
+        username: fallbackUsername,
+        bio: '',
+      } as AuthUser;
+    });
 
-  if (error) {
-    throw new Error(error.message);
+  // Race tiers 1 & 2 — fastest success wins
+  try {
+    return await Promise.any([apiPromise, supabasePromise]);
+  } catch {
+    // ── Tier 3: JWT metadata (zero DB queries — always available) ────────
+    // Supabase embeds app_metadata & user_metadata directly in the JWT.
+    // Admin can set role via: supabase.auth.admin.updateUserById(id, { app_metadata: { role: 'admin' } })
+    const jwtRole =
+      currentUser.app_metadata?.role ||
+      currentUser.user_metadata?.role;
+
+    if (isUserRole(jwtRole)) {
+      return {
+        id: currentUser.id,
+        email: fallbackEmail,
+        name: currentUser.user_metadata?.full_name || currentUser.user_metadata?.name || fallbackUsername,
+        role: jwtRole as UserRole,
+        username: fallbackUsername,
+        bio: '',
+      };
+    }
+
+    throw new Error(
+      'Could not load your profile. Check your internet connection and try again.'
+    );
   }
-
-  if (!data || !isUserRole(data.role)) {
-    throw new Error('User role not found');
-  }
-
-  return {
-    id: currentUser.id,
-    email: data.email || fallbackEmail,
-    name: data.name || fallbackUsername,
-    role: data.role,
-    username: fallbackUsername,
-    bio: '',
-  };
 }
+
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -102,13 +120,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    // Preserve existing user during re-fires to prevent flicker
+    setUser(prev => (prev?.id === supabaseUser.id ? prev : prev));
+
     try {
       const profile = await fetchUserProfile(sess);
+      // Cache profile so 503s don't log the user out on next load
+      try { sessionStorage.setItem('bb_user', JSON.stringify(profile)); } catch {}
       setUser(profile);
       setSession(sess);
     } catch (error) {
       console.error('Error loading user profile:', error);
-      setUser(null);
+      // Try restoring from cache before giving up
+      try {
+        const cached = sessionStorage.getItem('bb_user');
+        if (cached) {
+          const cachedProfile = JSON.parse(cached) as AuthUser;
+          if (cachedProfile.id === supabaseUser.id) {
+            console.info('[auth] restored profile from session cache');
+            setUser(cachedProfile);
+            setSession(sess);
+            setLoading(false);
+            return;
+          }
+        }
+      } catch {}
+      // No valid cache — preserve existing user rather than clearing
+      setUser(prev => prev?.id === supabaseUser.id ? prev : null);
       setSession(sess);
     } finally {
       setLoading(false);
@@ -137,6 +175,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (error) throw new Error(error.message);
     if (!data.session) throw new Error('No session created');
 
+    // fetchUserProfile is also called by onAuthStateChange, but we need the
+    // profile returned here so the Login page can navigate immediately.
+    // Use the session we already have — no extra round-trip needed.
     const profile = await fetchUserProfile(data.session);
     setUser(profile);
     setSession(data.session);
@@ -144,6 +185,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
+    try { sessionStorage.removeItem('bb_user'); } catch {}
     await supabase.auth.signOut();
     setUser(null);
     setSession(null);

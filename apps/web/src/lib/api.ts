@@ -95,7 +95,8 @@ async function getSupabaseDashboardSalesRecords() {
   const { data, error } = await supabase
     .from('sale_items')
     .select('id, sale_id, product_id, qty, unit_price, sales(id, created_at, customer_name), products(id, name, category, cost)')
-    .order('id', { ascending: false });
+    .order('id', { ascending: false })
+    .limit(200);
 
   if (error) throw new Error(error.message);
 
@@ -483,18 +484,85 @@ function buildLocalAutoMarketingPrompt(body: {
 }
 
 export const api = {
-  // PRODUCTS
+  // PRODUCTS — go through Express API (pooled PG), Supabase as fallback
   async getProducts(token?: string) {
-    return getSupabaseProducts();
+    return withSupabaseFallback(
+      async () => {
+        const res = await fetch(`${API_BASE}/products`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const rows = await res.json();
+        return (Array.isArray(rows) ? rows : []).map(normalizeProduct);
+      },
+      () => getSupabaseProducts()
+    );
   },
 
-  // SALES
-  async getSales() {
-    return getSupabaseSales();
+  async createProduct(data: Record<string, unknown>, token?: string) {
+    const res = await fetch(`${API_BASE}/products`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(data),
+    });
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || payload.message || 'Failed to create product');
+    return normalizeProduct(payload);
   },
 
-  async getSaleById(id: number) {
-    return getSupabaseSaleById(id);
+  async updateProduct(id: number, data: Record<string, unknown>, token?: string) {
+    const res = await fetch(`${API_BASE}/products/${id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(data),
+    });
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || payload.message || 'Failed to update product');
+    return normalizeProduct(payload);
+  },
+
+  async deleteProduct(id: number, token?: string) {
+    const res = await fetch(`${API_BASE}/products/${id}`, {
+      method: 'DELETE',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || payload.message || 'Failed to delete product');
+    return payload;
+  },
+
+  // SALES — go through Express API (pooled PG), Supabase as fallback
+  async getSales(token?: string) {
+    return withSupabaseFallback(
+      async () => {
+        const res = await fetch(`${API_BASE}/sales`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const payload = await res.json();
+        return Array.isArray(payload) ? payload : (payload?.data ?? []);
+      },
+      () => getSupabaseSales()
+    );
+  },
+
+  async getSaleById(id: number, token?: string) {
+    return withSupabaseFallback(
+      async () => {
+        const res = await fetch(`${API_BASE}/sales/${id}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      },
+      () => getSupabaseSaleById(id)
+    );
   },
 
   async createSale(data: {
@@ -766,7 +834,20 @@ export const api = {
       }>;
       message: string | null;
     }> {
-    return getSupabaseAiContentFeed();
+    return withSupabaseFallback(
+      async () => {
+        const res = await fetch(`${API_BASE}/ai/contents?page=1&limit=50`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || 'Failed to fetch content feed');
+        // Express returns { data: [], total, page } — wrap to match expected shape
+        return {
+          ok: true,
+          data: Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []),
+          message: null,
+        };
+      },
+      () => getSupabaseAiContentFeed()
+    );
   },
 
   async scheduleContent(id: number, scheduledAt: string) {

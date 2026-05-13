@@ -260,7 +260,6 @@ export default function AdminDashboard() {
       }
 
       // Derive dashboard summary locally — no extra round-trip
-      const today = new Date().toISOString().slice(0, 10);
       const startDate = todayIso;
       const endDate = todayIso;
       const rangeSales = loadedSales.filter(s => s.date >= startDate && s.date <= endDate);

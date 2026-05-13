@@ -121,7 +121,7 @@ router.post("/", async (req, res) => {
 router.get("/", async (_req, res) => {
   try {
     const result = await pool.query(
-      "SELECT id, total, created_at FROM sales ORDER BY created_at DESC"
+      "SELECT id, total, customer_name, created_at FROM sales ORDER BY created_at DESC"
     );
     return res.json(result.rows);
   } catch {
@@ -154,7 +154,7 @@ router.get("/:id", async (req, res) => {
           si.product_id,
           si.qty,
           si.unit_price,
-          p.name,
+          p.name AS product_name,
           p.sku
        FROM sale_items si
        JOIN products p ON si.product_id = p.id

@@ -8,7 +8,7 @@ import {
 import { useAuth } from './AuthContext';
 import { BrandLogo } from './BrandLogo';
 import { toast } from 'sonner';
-import { api } from '../lib/api';
+import { supabase } from '../lib/supabase';
 
 // ─── Logo ─────────────────────────────────────────────────────────────────────
 
@@ -83,7 +83,9 @@ export function Sidebar() {
 
   // Module-level cache so navigating between pages doesn't re-fetch
   const draftCountCache = useRef<{ count: number; ts: number } | null>(null);
-  const DRAFT_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+  const draftCountFailedAt = useRef<number>(0);
+  const DRAFT_CACHE_TTL = 5 * 60 * 1000;   // 5 minutes
+  const DRAFT_FAIL_BACKOFF = 2 * 60 * 1000; // 2 minutes backoff on error
 
   useEffect(() => {
     localStorage.setItem('bb_sidebar_collapsed', String(collapsed));
@@ -102,35 +104,48 @@ export function Sidebar() {
         return;
       }
 
-      // Use cache if fresh and not forced
+      // Use cache if fresh
       const cache = draftCountCache.current;
       if (!force && cache && Date.now() - cache.ts < DRAFT_CACHE_TTL) {
         setApprovalDraftCount(cache.count);
         return;
       }
 
+      // Backoff after recent failure — don't hammer Supabase on timeout
+      if (!force && Date.now() - draftCountFailedAt.current < DRAFT_FAIL_BACKOFF) {
+        setApprovalDraftCount(draftCountCache.current?.count ?? 0);
+        return;
+      }
+
       try {
-        const res = await api.getContent();
+        // Lightweight count-only query — no joins, no full rows, just a HEAD count
+        const { count, error } = await supabase
+          .from('ai_contents')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'pending');
+
         if (cancelled) return;
-        const items = Array.isArray(res?.data) ? res.data : [];
-        const count = items.filter((item: { status?: string }) => item.status === 'draft').length;
-        draftCountCache.current = { count, ts: Date.now() };
-        setApprovalDraftCount(count);
+        if (error) throw error;
+
+        const n = count ?? 0;
+        draftCountCache.current = { count: n, ts: Date.now() };
+        setApprovalDraftCount(n);
       } catch {
+        draftCountFailedAt.current = Date.now(); // start backoff
         if (!cancelled) setApprovalDraftCount(draftCountCache.current?.count ?? 0);
       }
     };
 
     loadApprovalCount();
 
-    // Only re-fetch when content actually changes, not on every navigation
     const handleContentUpdated = () => { loadApprovalCount(true); };
     window.addEventListener('ai-content-updated', handleContentUpdated);
     return () => {
       cancelled = true;
       window.removeEventListener('ai-content-updated', handleContentUpdated);
     };
-  }, [user?.role]); // ← removed location.pathname to stop per-navigation fetches
+  }, [user?.role]);
+
 
   const isAdmin = user?.role === 'admin';
   const draftCount = approvalDraftCount;

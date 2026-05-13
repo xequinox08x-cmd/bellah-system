@@ -22,7 +22,9 @@ export function createApp() {
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS', 'PUT'],
     allowedHeaders: ['Content-Type', 'Authorization', 'apikey', 'x-client-info', 'x-user-role'],
   }));
-  app.use(express.json({ limit: "10mb" }));
+  app.use(express.json({ limit: '25mb' }));
+  app.use(express.urlencoded({ limit: '25mb', extended: true }));
+
 
   app.use(healthRouter);
   // `productsRouter` already declares `/api/products` paths internally.
