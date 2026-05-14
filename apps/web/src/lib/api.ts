@@ -688,27 +688,55 @@ function buildLocalAutoMarketingPrompt(body: {
   referenceImageUrl?: string;
 }) {
   const product = body.product;
-  const productName = product?.name?.trim() || 'the selected product';
-  const category = product?.category?.trim() || 'beauty';
+  const productName = product?.name?.trim() || 'beauty product';
+  const category = (product?.category?.trim() || 'beauty').toLowerCase();
   const price = Number(product?.price ?? 0);
   const description = product?.description?.trim();
-  const contentType = formatAutoPromptLabel(body.contentType);
   const tone = body.tone || 'fun';
   const hasReferenceImage = Boolean(body.referenceImageUrl);
-  const modeInstruction = body.outputMode === 'text'
-    ? 'Write this as a usable caption brief: lead with one specific hook, frame the key benefit without exaggerating claims, and end with a direct shop-now CTA.'
-    : 'Write this as a usable poster-generation brief: specify the product hero placement, background, lighting, supporting props, minimal text treatment, and premium Facebook 4:5 composition.';
-  const referenceInstruction = hasReferenceImage
-    ? 'Use the uploaded/reference image as the visual source of truth: preserve the actual product identity, packaging shape, label placement, and dominant product colors.'
-    : 'No reference image is provided, so base the creative direction only on the product name, category, price, and description.';
 
-  return [
-    `Create a ${tone} Facebook ${contentType} creative prompt for ${productName}, a ${category} product${price > 0 ? ` priced at PHP ${price.toFixed(2)}` : ''}.`,
-    description ? `Use these product facts only as source material, not as the entire prompt: ${description}.` : '',
-    modeInstruction,
-    referenceInstruction,
-    'Keep the final direction premium, beauty-focused, conversion-oriented, and suitable for a Filipino audience. Do not invent product claims.',
-  ].filter(Boolean).join(' ');
+  // Tone → style map
+  const styleMap: Record<string, string> = {
+    fun:          'vibrant, playful, bright pastel tones, youthful energy',
+    professional: 'clean minimalist, luxury branding, muted neutrals, editorial',
+    romantic:     'soft bokeh, warm rose-gold hues, intimate lifestyle feel',
+    urgent:       'bold contrast, high-impact typography overlay, punchy red accent',
+  };
+  const styleDesc = styleMap[tone] ?? styleMap.fun;
+
+  // Category → background/setting
+  const bgMap: Record<string, string> = {
+    skincare:  'marble surface, soft white petals scattered around',
+    makeup:    'rose-gold vanity table, blush powder puffs as props',
+    haircare:  'dark glossy surface, golden silk fabric draped behind',
+    perfume:   'crystal glass table, shallow depth-of-field luxury setting',
+    beauty:    'frosted white surface, fresh flowers as accents',
+  };
+  const bg = Object.keys(bgMap).find((k) => category.includes(k))
+    ? bgMap[Object.keys(bgMap).find((k) => category.includes(k))!]
+    : 'clean white studio backdrop, soft diffused light';
+
+  // Build structured prompt
+  const parts = [
+    // Subject
+    `Professional product photography of ${productName}${description ? ` (${description.slice(0, 80)})` : ''}.`,
+    // Placement
+    hasReferenceImage
+      ? `Product is centered in foreground, use the reference image to match exact packaging, label colors, and product shape.`
+      : `Product is centered in foreground, ${bg}.`,
+    // Style & lighting
+    `Style: ${styleDesc}. Cinematic studio lighting with soft specular highlights on the product surface. Shallow depth of field.`,
+    // Composition
+    `Composition: 4:5 vertical Facebook ad format. Product occupies lower two-thirds. Clean negative space in upper third for brand name text overlay.`,
+    // Mood
+    `Mood: premium ${category} brand advertisement. Aspirational, high-conversion. No people, no hands.`,
+    // Price tag (optional)
+    price > 0 ? `Price point: PHP ${price.toFixed(2)} — position as an accessible luxury.` : '',
+    // Technical specs
+    `Photorealistic render, 4K quality, commercial product ad.`,
+  ];
+
+  return parts.filter(Boolean).join(' ');
 }
 
 export const api = {

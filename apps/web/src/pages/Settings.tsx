@@ -71,7 +71,7 @@ function isNetworkAuthError(error: unknown) {
 
 export default function Settings() {
   const { user, session, refreshUser } = useAuth();
-  const { palette, paletteId, setPaletteId } = useAppTheme();
+  const { palette, paletteId, previewPaletteId, setPreviewPaletteId, commitPalette } = useAppTheme();
   const [activeSection, setActiveSection] = useState<Section>('profile');
   const [saved, setSaved] = useState(false);
   const [facebookStatus, setFacebookStatus] = useState<FacebookStatus | null>(null);
@@ -95,6 +95,13 @@ export default function Settings() {
   });
 
 
+
+  // Reset preview to committed palette whenever the user enters the appearance section.
+  useEffect(() => {
+    if (activeSection === 'appearance') {
+      setPreviewPaletteId(paletteId);
+    }
+  }, [activeSection, paletteId, setPreviewPaletteId]);
 
   const markSaved = (message: string) => {
     setSaved(true);
@@ -235,6 +242,12 @@ export default function Settings() {
 
       if (activeSection === 'security') {
         await handlePasswordUpdate();
+        return;
+      }
+
+      if (activeSection === 'appearance') {
+        commitPalette(previewPaletteId);
+        markSaved('Appearance saved successfully');
         return;
       }
 
@@ -550,11 +563,16 @@ export default function Settings() {
                       key={theme.name}
                       title={theme.name}
                       type="button"
-                      onClick={() => setPaletteId(theme.id)}
-                      className={`w-8 h-8 rounded-full border-2 transition-all ${paletteId === theme.id ? 'border-[#111827] scale-110' : 'border-transparent hover:border-[#D1D5DB]'}`}
+                      onClick={() => setPreviewPaletteId(theme.id)}
+                      className={`w-8 h-8 rounded-full border-2 transition-all ${previewPaletteId === theme.id ? 'border-[#111827] scale-110' : 'border-transparent hover:border-[#D1D5DB]'}`}
                       style={{ backgroundColor: theme.color }}
                     />
                   ))}
+                  {previewPaletteId !== paletteId && (
+                    <p className="mt-2 text-[11px] text-amber-600">
+                      Preview selected — click <strong>Save Changes</strong> to apply.
+                    </p>
+                  )}
                 </div>
               </div>
               <div>

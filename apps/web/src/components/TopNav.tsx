@@ -150,15 +150,19 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearchResults, setShowSearchResults] = useState(false);
   const [notificationCounts, setNotificationCounts] = useState({ pending: 0, lowStock: 0 });
+  const [imageNotifs, setImageNotifs] = useState<{ id: string; title: string }[]>([]);
   const searchRef = useRef<HTMLFormElement | null>(null);
 
   const storePendingCount = user?.role === 'admin'
     ? contentItems.filter((item) => item.status === 'pending').length
     : 0;
-  const storeLowStockCount = products.filter((product) => product.stock <= product.lowStockThreshold).length;
+  // Only count products that have a threshold set (>0) AND are at/below it.
+  const storeLowStockCount = products.filter(
+    (p) => Number(p.lowStockThreshold ?? 0) > 0 && Number(p.stock ?? 0) <= Number(p.lowStockThreshold ?? 0)
+  ).length;
   const pendingCount = user?.role === 'admin' ? notificationCounts.pending : 0;
   const lowStockCount = notificationCounts.lowStock;
-  const totalNotifs = pendingCount + (lowStockCount > 0 ? 1 : 0);
+  const totalNotifs = pendingCount + (lowStockCount > 0 ? 1 : 0) + imageNotifs.length;
   const meta = PAGE_META[location.pathname] ?? { title: 'Dashboard', sub: '' };
 
   const searchEntries = useMemo(() => {
@@ -226,7 +230,10 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
         ? Number(pendingResult.value || 0)
         : fallback.pending;
       const nextLowStock = productsResult.status === 'fulfilled' && Array.isArray(productsResult.value)
-        ? productsResult.value.filter((product: any) => Number(product.stock ?? 0) <= Number(product.lowStockThreshold ?? product.low_stock_threshold ?? 0)).length
+        ? productsResult.value.filter((product: any) => {
+            const threshold = Number(product.lowStockThreshold ?? product.low_stock_threshold ?? 0);
+            return threshold > 0 && Number(product.stock ?? 0) <= threshold;
+          }).length
         : fallback.lowStock;
 
       setNotificationCounts({
@@ -243,12 +250,21 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
 
     const handleContentUpdated = () => { void refreshNotificationCounts(); };
     const handleProductsUpdated = () => { void refreshNotificationCounts(); };
+    const handleImageGenComplete = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { title?: string } | undefined;
+      setImageNotifs((prev) => [
+        { id: Date.now().toString(), title: detail?.title || 'AI Content' },
+        ...prev,
+      ]);
+    };
 
     window.addEventListener('ai-content-updated', handleContentUpdated);
     window.addEventListener('products-updated', handleProductsUpdated);
+    window.addEventListener('image-generation-complete', handleImageGenComplete);
     return () => {
       window.removeEventListener('ai-content-updated', handleContentUpdated);
       window.removeEventListener('products-updated', handleProductsUpdated);
+      window.removeEventListener('image-generation-complete', handleImageGenComplete);
     };
   }, [refreshNotificationCounts]);
 
@@ -370,7 +386,13 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
         <div className="relative">
           <button
             onClick={() => {
-              setShowNotifs(!showNotifs);
+              const opening = !showNotifs;
+              setShowNotifs(opening);
+              if (opening) {
+                // Mark all as read immediately — badge resets to 0.
+                setNotificationCounts({ pending: 0, lowStock: 0 });
+                setImageNotifs([]);
+              }
               setShowProfile(false);
               setShowSearchResults(false);
             }}
@@ -442,11 +464,26 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
                         <p className="text-xs text-[#111827]" style={{ fontWeight: 500 }}>
                           {lowStockCount} product{lowStockCount > 1 ? 's' : ''} low on stock
                         </p>
-                        <p className="text-[10px] text-[#9CA3AF]">Inventory to Check stock levels</p>
+                        <p className="text-[10px] text-[#9CA3AF]">Inventory → Check stock levels</p>
                       </div>
                     </div>
                   </button>
                 )}
+                {imageNotifs.map((notif) => (
+                  <div key={notif.id} className="w-full px-4 py-3 border-b border-[#F9FAFB]">
+                    <div className="flex items-start gap-3">
+                      <div className="w-7 h-7 rounded-full bg-emerald-100 flex items-center justify-center shrink-0 mt-0.5">
+                        <span className="text-emerald-600 text-xs">✓</span>
+                      </div>
+                      <div>
+                        <p className="text-xs text-[#111827]" style={{ fontWeight: 500 }}>
+                          Image generated successfully
+                        </p>
+                        <p className="text-[10px] text-[#9CA3AF] truncate max-w-[180px]">{notif.title}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}

@@ -27,7 +27,8 @@ type AuthAdminUserResponse = {
 };
 
 const USER_COLUMNS = 'id,auth_id,name,email,role,created_at';
-const USER_BACKEND_TIMEOUT_MS = 2_500;
+// Longer than the 5 s supabaseAdmin fetch timeout so we see the real error first.
+const USER_BACKEND_TIMEOUT_MS = 6_000;
 
 function usersPath(params: Record<string, string | number>) {
   const search = new URLSearchParams();
@@ -66,6 +67,20 @@ function decodeAuthId(req: Request) {
 
     const payload = JSON.parse(decodeBase64Url(payloadSegment));
     return typeof payload.sub === 'string' ? payload.sub : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Decode the full JWT payload — used as fallback when DB is unreachable. */
+function decodeJwtPayload(req: Request): Record<string, unknown> | null {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith('Bearer ')) return null;
+  try {
+    const token = authHeader.slice('Bearer '.length);
+    const payloadSegment = token.split('.')[1];
+    if (!payloadSegment) return null;
+    return JSON.parse(decodeBase64Url(payloadSegment));
   } catch {
     return null;
   }
@@ -266,12 +281,45 @@ router.get('/me', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const row = await getDbUserByAuthId(authId);
+    let row: DbUserRow | null = null;
+    try {
+      row = await getDbUserByAuthId(authId);
+    } catch (dbErr) {
+      // DB / Supabase REST unreachable — synthesise from JWT so the app keeps working.
+      console.warn('[users] /me DB lookup failed, falling back to JWT payload:', dbErr);
+      const payload = decodeJwtPayload(req);
+      if (!payload) return res.status(503).json({ error: 'User service temporarily unavailable' });
+
+      const meta = (payload.user_metadata ?? {}) as Record<string, unknown>;
+      const email = String(payload.email ?? meta.email ?? '');
+      const appRole = payload.app_metadata ? (payload.app_metadata as any).role : undefined;
+      const role: UserRole = normalizeRole(meta.role ?? appRole) ?? 'staff';
+      return res.json({
+        data: {
+          id: 0,
+          auth_id: authId,
+          authId,
+          name: String(meta.full_name ?? meta.name ?? email.split('@')[0] ?? 'User'),
+          email,
+          role,
+          username: String(meta.username ?? email.split('@')[0] ?? 'user'),
+          bio: String(meta.bio ?? ''),
+          created_at: new Date().toISOString(),
+        },
+      });
+    }
+
     if (!row) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const metadata = await getSupabaseUserMetadata(authId);
+    let metadata: Record<string, unknown> = {};
+    try {
+      metadata = await getSupabaseUserMetadata(authId);
+    } catch {
+      // Non-critical — metadata is just display info (username, bio).
+    }
+
     res.json({ data: serializeUser(row, metadata) });
   } catch (err) {
     console.error('GET /api/users/me error:', err);

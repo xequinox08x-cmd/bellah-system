@@ -15,6 +15,32 @@ import { getSales, type SalesRecordDTO } from '../api/sales';
 import { getProducts, type ProductDTO } from '../api/products';
 import { api } from '../lib/api';
 
+// ─── Dashboard Cache (stale-while-revalidate) ─────────────────────────────────
+const DASH_CACHE_KEY = 'bb_dashboard_v2';
+const DASH_CACHE_TTL = 90_000; // 90 seconds
+
+type DashboardCache = {
+  ts: number;
+  sales: SalesRecordDTO[];
+  products: ProductDTO[];
+  contentItems: ContentItem[];
+  dashboardLowStock: LowStockProduct[];
+  dashboardSummary: DashboardSummary;
+};
+
+function readDashCache(): DashboardCache | null {
+  try {
+    const raw = sessionStorage.getItem(DASH_CACHE_KEY);
+    if (!raw) return null;
+    const c = JSON.parse(raw) as DashboardCache;
+    return Date.now() - c.ts < DASH_CACHE_TTL ? c : null;
+  } catch { return null; }
+}
+
+function writeDashCache(c: Omit<DashboardCache, 'ts'>) {
+  try { sessionStorage.setItem(DASH_CACHE_KEY, JSON.stringify({ ...c, ts: Date.now() })); } catch { }
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 const STATUS_COLORS: Record<string, string> = {
   pending: 'bg-amber-100 text-amber-700',
@@ -56,6 +82,22 @@ function formatDashboardDateLabel(value: string) {
   });
 }
 
+
+// ─── KPI Card Skeleton ────────────────────────────────────────────────────────
+function KPICardSkeleton() {
+  return (
+    <div className="bg-white rounded-xl border border-[#E5E7EB] p-4 flex flex-col gap-3 animate-pulse">
+      <div className="flex items-center justify-between">
+        <div className="w-8 h-8 rounded-lg bg-[#F3F4F6]" />
+      </div>
+      <div>
+        <div className="h-6 bg-[#F3F4F6] rounded w-16 mb-1.5" />
+        <div className="h-3 bg-[#F3F4F6] rounded w-24 mb-1" />
+        <div className="h-3 bg-[#F3F4F6] rounded w-20" />
+      </div>
+    </div>
+  );
+}
 
 // ─── KPI Card ─────────────────────────────────────────────────────────────────
 function KPICard({
@@ -217,6 +259,7 @@ export default function AdminDashboard() {
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [showLowStockModal, setShowLowStockModal] = useState(false);
+  void setShowLowStockModal; // kept to avoid removing - navigating instead
 
   const today = useMemo(
     () => new Date().toLocaleDateString('en-US', {
@@ -233,7 +276,18 @@ export default function AdminDashboard() {
     let cancelled = false;
 
     async function loadAll() {
-      setDashboardLoading(true);
+      // Stale-while-revalidate: serve cached data instantly, refresh in background.
+      const cached = readDashCache();
+      if (cached) {
+        setSales(cached.sales);
+        setProducts(cached.products);
+        setContentItems(cached.contentItems);
+        setDashboardLowStock(cached.dashboardLowStock);
+        setDashboardSummary(cached.dashboardSummary);
+        setDashboardLoading(false); // show stale data immediately
+      } else {
+        setDashboardLoading(true);
+      }
       setDashboardError(null);
 
       // Run all heavy queries in parallel — no sequential waterfalls
@@ -318,6 +372,41 @@ export default function AdminDashboard() {
       if (analyticsRes.status === 'fulfilled') {
         setAnalyticsEngagementRate(Number(analyticsRes.value.data?.engagementRate ?? 0));
       }
+
+      // Persist fresh data to cache for next visit.
+      const finalContentItems = contentFeedRes.status === 'fulfilled' && Array.isArray(contentFeedRes.value.data)
+        ? contentFeedRes.value.data.map((item: any) => ({
+            id: String(item.id),
+            title: item.title,
+            caption: item.content,
+            hashtags: '',
+            platform: item.platform as ContentItem['platform'],
+            status: item.status as ContentItem['status'],
+            createdBy: item.created_by_name,
+            createdByRole: 'admin' as const,
+            createdAt: item.created_at,
+            scheduledAt: item.scheduled_at ?? undefined,
+            publishedAt: item.published_at ?? undefined,
+            approvedBy: undefined,
+            productName: item.product_name ?? undefined,
+          }))
+        : [];
+
+      const finalSummary = {
+        totalSales: loadedSales.filter(s => s.date >= todayIso && s.date <= todayIso).length,
+        revenueToday: loadedSales.filter(s => s.date >= todayIso && s.date <= todayIso).reduce((sum, s) => sum + Number(s.total ?? 0), 0),
+        lowStockItems: lowStock.length,
+        scheduledPosts: 0,
+        engagementRate: 0,
+      };
+
+      writeDashCache({
+        sales: loadedSales,
+        products: loadedProducts,
+        contentItems: finalContentItems,
+        dashboardLowStock: lowStock,
+        dashboardSummary: finalSummary,
+      });
 
       setDashboardLoading(false);
     }
@@ -468,13 +557,7 @@ export default function AdminDashboard() {
   return (
     <div className="space-y-5 max-w-7xl mx-auto pb-6">
 
-      {/* Low Stock Modal */}
-      {showLowStockModal && (
-        <LowStockModal
-          items={lowStockProducts}
-          onClose={() => setShowLowStockModal(false)}
-        />
-      )}
+      {/* Low Stock Modal - removed; KPI card now navigates to /products */}
 
       {/* ── Header ───────────────────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row sm:items-end gap-3 justify-between">
@@ -526,6 +609,10 @@ export default function AdminDashboard() {
 
       {/* ── KPI Cards ────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        {dashboardLoading && sales.length === 0 ? (
+          // Skeleton — shown only on first load (no cache)
+          Array.from({ length: 5 }).map((_, i) => <KPICardSkeleton key={i} />)
+        ) : (<>
         <KPICard
           label="Total Sales"
           value={String(totalSalesCount)}
@@ -553,7 +640,7 @@ export default function AdminDashboard() {
           icon={AlertTriangle}
           iconBg="bg-red-50"
           iconColor="text-red-500"
-          onClick={() => setShowLowStockModal(true)}
+          onClick={() => navigate('/products', { state: { stockFilter: 'Low' } })}
         />
         <KPICard
           label="Scheduled Posts"
@@ -575,6 +662,8 @@ export default function AdminDashboard() {
           trendUp
           onClick={() => navigate('/analytics')}
         />
+        </>
+        )}
       </div>
 
       {/* ── Sales Trend Chart (7 days) ────────────────────────────────── */}
@@ -596,8 +685,10 @@ export default function AdminDashboard() {
         {dashboardError && (
           <p className="text-xs text-red-500 mb-3">{dashboardError}</p>
         )}
-        {dashboardLoading && !dashboardError && (
-          <p className="text-xs text-[#9CA3AF] mb-3">Loading dashboard data...</p>
+        {dashboardLoading && !dashboardError && sales.length === 0 && (
+          <div className="flex items-center gap-2 text-xs text-[#9CA3AF] mb-3">
+            <RefreshCw className="w-3 h-3 animate-spin" /> Loading chart data...
+          </div>
         )}
         <ResponsiveContainer width="100%" height={220}>
           <LineChart data={chartData} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>

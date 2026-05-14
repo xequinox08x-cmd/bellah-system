@@ -1,3 +1,5 @@
+const SUPABASE_FETCH_TIMEOUT_MS = 5_000; // 5 s — enough for cold starts
+
 function getSupabaseUrl() {
   const value = process.env.SUPABASE_URL?.trim();
   if (!value) throw new Error("SUPABASE_URL is not configured");
@@ -37,9 +39,23 @@ export function getSupabaseErrorMessage(payload: unknown, fallback: string) {
   return typeof message === "string" && message.trim() ? message : fallback;
 }
 
+/** Fetch with an AbortController timeout so network hangs don't block the process. */
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = SUPABASE_FETCH_TIMEOUT_MS) {
+  // If the caller already supplied a signal, honour it without adding our own.
+  if (options.signal) return fetch(url, options);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function supabaseRest<T>(path: string, options: RequestInit = {}) {
   const serviceKey = getSupabaseServiceRoleKey();
-  const response = await fetch(`${getSupabaseUrl()}/rest/v1${path}`, {
+  const response = await fetchWithTimeout(`${getSupabaseUrl()}/rest/v1${path}`, {
     ...options,
     headers: {
       apikey: serviceKey,
@@ -59,7 +75,7 @@ export async function supabaseRest<T>(path: string, options: RequestInit = {}) {
 
 export async function supabaseAuthAdmin<T>(path: string, options: RequestInit = {}) {
   const serviceKey = getSupabaseServiceRoleKey();
-  const response = await fetch(`${getSupabaseUrl()}/auth/v1${path}`, {
+  const response = await fetchWithTimeout(`${getSupabaseUrl()}/auth/v1${path}`, {
     ...options,
     headers: {
       apikey: serviceKey,
