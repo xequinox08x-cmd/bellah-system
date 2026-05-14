@@ -1,18 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Bell,
   ChevronDown,
   FileText,
   LogOut,
+  Menu,
   Plus,
   Search,
+  ShieldCheck,
   User,
 } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router';
 import { useAuth } from './AuthContext';
 import { useStore } from '../data/store';
 import { toast } from 'sonner';
+import { api } from '../lib/api';
+import { useDefenseMode } from '../lib/defenseMode';
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
   '/dashboard': { title: 'Dashboard', sub: 'Overview of your store performance' },
@@ -138,8 +142,9 @@ function scoreSearchEntry(entry: SearchEntry, query: string) {
   return score;
 }
 
-export function TopNav() {
+export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
   const { user, logout } = useAuth();
+  const { defenseMode, setDefenseMode } = useDefenseMode();
   const { contentItems, products } = useStore();
   const navigate = useNavigate();
   const location = useLocation();
@@ -147,11 +152,20 @@ export function TopNav() {
   const [showNotifs, setShowNotifs] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearchResults, setShowSearchResults] = useState(false);
+  const [notificationCounts, setNotificationCounts] = useState({ pending: 0, lowStock: 0 });
+  const [imageNotifs, setImageNotifs] = useState<{ id: string; title: string }[]>([]);
   const searchRef = useRef<HTMLFormElement | null>(null);
 
-  const pendingCount = contentItems.filter((item) => item.status === 'pending').length;
-  const lowStockCount = products.filter((product) => product.stock <= product.lowStockThreshold).length;
-  const totalNotifs = pendingCount + (lowStockCount > 0 ? 1 : 0);
+  const storePendingCount = user?.role === 'admin'
+    ? contentItems.filter((item) => item.status === 'pending').length
+    : 0;
+  // Only count products that have a threshold set (>0) AND are at/below it.
+  const storeLowStockCount = products.filter(
+    (p) => Number(p.lowStockThreshold ?? 0) > 0 && Number(p.stock ?? 0) <= Number(p.lowStockThreshold ?? 0)
+  ).length;
+  const pendingCount = user?.role === 'admin' ? notificationCounts.pending : 0;
+  const lowStockCount = notificationCounts.lowStock;
+  const totalNotifs = pendingCount + (lowStockCount > 0 ? 1 : 0) + imageNotifs.length;
   const meta = PAGE_META[location.pathname] ?? { title: 'Dashboard', sub: '' };
 
   const searchEntries = useMemo(() => {
@@ -203,6 +217,65 @@ export function TopNav() {
     };
   }, []);
 
+  const refreshNotificationCounts = useCallback(async () => {
+    const fallback = {
+      pending: storePendingCount,
+      lowStock: storeLowStockCount,
+    };
+
+    try {
+      if (defenseMode) {
+        setNotificationCounts(fallback);
+        return;
+      }
+
+      const [pendingResult, productsResult] = await Promise.allSettled([
+        user?.role === 'admin' ? api.getContentCount('pending') : Promise.resolve(0),
+        api.getProducts(),
+      ]);
+
+      const nextPending = pendingResult.status === 'fulfilled'
+        ? Number(pendingResult.value || 0)
+        : fallback.pending;
+      const nextLowStock = productsResult.status === 'fulfilled' && Array.isArray(productsResult.value)
+        ? productsResult.value.filter((product: any) => {
+            const threshold = Number(product.lowStockThreshold ?? product.low_stock_threshold ?? 0);
+            return threshold > 0 && Number(product.stock ?? 0) <= threshold;
+          }).length
+        : fallback.lowStock;
+
+      setNotificationCounts({
+        pending: nextPending,
+        lowStock: nextLowStock,
+      });
+    } catch {
+      setNotificationCounts(fallback);
+    }
+  }, [defenseMode, storeLowStockCount, storePendingCount, user?.role]);
+
+  useEffect(() => {
+    void refreshNotificationCounts();
+
+    const handleContentUpdated = () => { void refreshNotificationCounts(); };
+    const handleProductsUpdated = () => { void refreshNotificationCounts(); };
+    const handleImageGenComplete = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { title?: string } | undefined;
+      setImageNotifs((prev) => [
+        { id: Date.now().toString(), title: detail?.title || 'AI Content' },
+        ...prev,
+      ]);
+    };
+
+    window.addEventListener('ai-content-updated', handleContentUpdated);
+    window.addEventListener('products-updated', handleProductsUpdated);
+    window.addEventListener('image-generation-complete', handleImageGenComplete);
+    return () => {
+      window.removeEventListener('ai-content-updated', handleContentUpdated);
+      window.removeEventListener('products-updated', handleProductsUpdated);
+      window.removeEventListener('image-generation-complete', handleImageGenComplete);
+    };
+  }, [refreshNotificationCounts]);
+
   const handleLogout = async () => {
     await logout();
     toast.success('Signed out successfully');
@@ -240,12 +313,22 @@ export function TopNav() {
   };
 
   return (
-    <header className="h-16 bg-white border-b border-[#E5E7EB] flex items-center justify-between px-5 shrink-0 z-20">
-      <div>
-        <h2 className="text-[#111827] text-[15px] leading-tight" style={{ fontWeight: 700 }}>
-          {meta.title}
-        </h2>
-        <p className="text-[#9CA3AF] text-[11px] mt-0.5">{meta.sub}</p>
+    <header className="h-16 bg-white border-b border-[#E5E7EB] flex items-center justify-between px-3 sm:px-5 shrink-0 z-20">
+      <div className="flex items-center gap-3">
+        {/* Hamburger — mobile only */}
+        <button
+          onClick={onMenuClick}
+          className="md:hidden p-2 -ml-1 rounded-lg text-[#6B7280] hover:bg-[#F3F4F6] transition-colors"
+          aria-label="Open menu"
+        >
+          <Menu className="w-5 h-5" />
+        </button>
+        <div>
+          <h2 className="text-[#111827] text-[15px] leading-tight" style={{ fontWeight: 700 }}>
+            {meta.title}
+          </h2>
+          <p className="text-[#9CA3AF] text-[11px] mt-0.5 hidden sm:block">{meta.sub}</p>
+        </div>
       </div>
 
       <div className="flex items-center gap-2">
@@ -308,10 +391,30 @@ export function TopNav() {
           </button>
         )}
 
+        <button
+          type="button"
+          onClick={() => setDefenseMode(!defenseMode)}
+          className={`hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs border transition-colors ${
+            defenseMode
+              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+              : 'bg-white text-[#6B7280] border-[#E5E7EB] hover:bg-[#F9FAFB]'
+          }`}
+          title="Prioritize cached data, preloading, and reduced background calls"
+        >
+          <ShieldCheck className="w-3.5 h-3.5" />
+          Defense
+        </button>
+
         <div className="relative">
           <button
             onClick={() => {
-              setShowNotifs(!showNotifs);
+              const opening = !showNotifs;
+              setShowNotifs(opening);
+              if (opening) {
+                // Mark all as read immediately — badge resets to 0.
+                setNotificationCounts({ pending: 0, lowStock: 0 });
+                setImageNotifs([]);
+              }
               setShowProfile(false);
               setShowSearchResults(false);
             }}
@@ -383,11 +486,26 @@ export function TopNav() {
                         <p className="text-xs text-[#111827]" style={{ fontWeight: 500 }}>
                           {lowStockCount} product{lowStockCount > 1 ? 's' : ''} low on stock
                         </p>
-                        <p className="text-[10px] text-[#9CA3AF]">Inventory to Check stock levels</p>
+                        <p className="text-[10px] text-[#9CA3AF]">Inventory → Check stock levels</p>
                       </div>
                     </div>
                   </button>
                 )}
+                {imageNotifs.map((notif) => (
+                  <div key={notif.id} className="w-full px-4 py-3 border-b border-[#F9FAFB]">
+                    <div className="flex items-start gap-3">
+                      <div className="w-7 h-7 rounded-full bg-emerald-100 flex items-center justify-center shrink-0 mt-0.5">
+                        <span className="text-emerald-600 text-xs">✓</span>
+                      </div>
+                      <div>
+                        <p className="text-xs text-[#111827]" style={{ fontWeight: 500 }}>
+                          Image generated successfully
+                        </p>
+                        <p className="text-[10px] text-[#9CA3AF] truncate max-w-[180px]">{notif.title}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}

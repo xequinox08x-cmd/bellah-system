@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { NavLink, useNavigate, useLocation } from 'react-router';
+import { useState, useEffect, useRef } from 'react';
+import { NavLink, useLocation } from 'react-router';
 import {
   LayoutDashboard, Package, ShoppingCart, Sparkles,
   CheckSquare, Calendar, BarChart2, Settings, LogOut,
@@ -67,22 +67,25 @@ function NavItem({
 }
 
 // ─── Sidebar ───────────────────────────────────────────────────────────────────
-export function Sidebar() {
+export function Sidebar({ mobileOpen, onMobileClose }: { mobileOpen?: boolean; onMobileClose?: () => void }) {
   const { user, logout } = useAuth();
-  const navigate = useNavigate();
   const location = useLocation();
-
-  // Persist collapse state
   const [collapsed, setCollapsed] = useState<boolean>(() =>
     localStorage.getItem('bb_sidebar_collapsed') === 'true'
   );
 
-  // Auto-open marketing submenu when on a marketing page
   const isOnMarketing = ['/marketing', '/approvals', '/scheduling'].some(
     p => location.pathname.startsWith(p)
   );
   const [marketingOpen, setMarketingOpen] = useState(isOnMarketing);
   const [approvalDraftCount, setApprovalDraftCount] = useState(0);
+  const [signingOut, setSigningOut] = useState(false);
+
+  // Module-level cache so navigating between pages doesn't re-fetch
+  const draftCountCache = useRef<{ count: number; ts: number } | null>(null);
+  const draftCountFailedAt = useRef<number>(0);
+  const DRAFT_CACHE_TTL = 5 * 60 * 1000;   // 5 minutes
+  const DRAFT_FAIL_BACKOFF = 2 * 60 * 1000; // 2 minutes backoff on error
 
   useEffect(() => {
     localStorage.setItem('bb_sidebar_collapsed', String(collapsed));
@@ -92,44 +95,74 @@ export function Sidebar() {
     if (isOnMarketing) setMarketingOpen(true);
   }, [location.pathname, isOnMarketing]);
 
+  // Close mobile drawer on navigation
+  useEffect(() => {
+    onMobileClose?.();
+  }, [location.pathname]);
+
   useEffect(() => {
     let cancelled = false;
 
-    const loadApprovalCount = async () => {
+    const loadApprovalCount = async (force = false) => {
       if (user?.role !== 'admin') {
         setApprovalDraftCount(0);
         return;
       }
 
+      // Use cache if fresh
+      const cache = draftCountCache.current;
+      if (!force && cache && Date.now() - cache.ts < DRAFT_CACHE_TTL) {
+        setApprovalDraftCount(cache.count);
+        return;
+      }
+
+      // Backoff after recent failure — don't hammer Supabase on timeout
+      if (!force && Date.now() - draftCountFailedAt.current < DRAFT_FAIL_BACKOFF) {
+        setApprovalDraftCount(draftCountCache.current?.count ?? 0);
+        return;
+      }
+
       try {
-        const res = await api.getContent();
+        // Lightweight count-only query — no joins, no full rows, just a HEAD count
+        const n = await api.getContentCount('pending');
+
         if (cancelled) return;
 
-        const items = Array.isArray(res?.data) ? res.data : [];
-        setApprovalDraftCount(items.filter((item: { status?: string }) => item.status === 'draft').length);
+        draftCountCache.current = { count: n, ts: Date.now() };
+        setApprovalDraftCount(n);
       } catch {
-        if (!cancelled) setApprovalDraftCount(0);
+        draftCountFailedAt.current = Date.now(); // start backoff
+        if (!cancelled) setApprovalDraftCount(draftCountCache.current?.count ?? 0);
       }
     };
 
     loadApprovalCount();
-    const handleContentUpdated = () => {
-      loadApprovalCount();
-    };
+
+    const handleContentUpdated = () => { loadApprovalCount(true); };
     window.addEventListener('ai-content-updated', handleContentUpdated);
     return () => {
       cancelled = true;
       window.removeEventListener('ai-content-updated', handleContentUpdated);
     };
-  }, [user?.role, location.pathname]);
+  }, [user?.role]);
+
 
   const isAdmin = user?.role === 'admin';
   const draftCount = approvalDraftCount;
 
   const handleLogout = async () => {
-    await logout();
-    toast.success('Signed out');
-    navigate('/login');
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      await logout();
+      toast.success('Signed out');
+      // RequireAuth will redirect to /login automatically once user becomes null
+    } catch (err) {
+      console.error('Sign out failed:', err);
+      toast.error('Sign out failed. Please try again.');
+    } finally {
+      setSigningOut(false);
+    }
   };
 
   const toggleCollapse = () => {
@@ -139,10 +172,10 @@ export function Sidebar() {
     });
   };
 
-  return (
+  const sidebarContent = (
     <aside
       className="bg-white border-r border-[#E5E7EB] flex flex-col h-full relative shrink-0 sidebar-transition"
-      style={{ width: collapsed ? 64 : 232 }}
+      style={{ width: collapsed && !mobileOpen ? 64 : 232 }}
     >
       {/* ── Brand Header ──────────────────────────────────────────────── */}
       <div
@@ -305,12 +338,12 @@ export function Sidebar() {
         <div className="relative group/logout">
           <button
             onClick={() => void handleLogout()}
+            disabled={signingOut}
             title={collapsed ? 'Sign Out' : undefined}
-            className={`${NAV_BASE} text-[#9CA3AF] hover:bg-red-50 hover:text-red-500 mt-1 ${collapsed ? 'justify-center' : ''
-              }`}
+            className={`${NAV_BASE} text-[#9CA3AF] hover:bg-red-50 hover:text-red-500 mt-1 ${collapsed ? 'justify-center' : ''} ${signingOut ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
-            <LogOut className="w-4 h-4 shrink-0" />
-            {!collapsed && <span>Sign Out</span>}
+            <LogOut className={`w-4 h-4 shrink-0 ${signingOut ? 'animate-spin' : ''}`} />
+            {!collapsed && <span>{signingOut ? 'Signing out…' : 'Sign Out'}</span>}
           </button>
           {collapsed && (
             <div className="pointer-events-none absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2 py-1 bg-[#111827] text-white text-xs rounded-md opacity-0 group-hover/logout:opacity-100 transition-opacity whitespace-nowrap z-50 shadow-lg">
@@ -320,5 +353,24 @@ export function Sidebar() {
         </div>
       </div>
     </aside>
+  );
+
+  return (
+    <>
+      {/* Desktop sidebar */}
+      <div className="hidden md:block">
+        {sidebarContent}
+      </div>
+
+      {/* Mobile overlay */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-40 md:hidden">
+          <div className="absolute inset-0 bg-black/50" onClick={onMobileClose} />
+          <div className="relative z-50 h-full w-[260px] shadow-2xl animate-slide-in-left">
+            {sidebarContent}
+          </div>
+        </div>
+      )}
+    </>
   );
 }

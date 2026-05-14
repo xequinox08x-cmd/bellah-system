@@ -871,49 +871,47 @@ export default function Sales() {
         <tr className="bg-[#F9FAFB] border-b border-[#F3F4F6]">
           <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-left">ID</th>
           <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-left">Date &amp; Time</th>
-          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-right">Total</th>
-          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-right">Profit</th>
-          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-right">Action</th>
+          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-left">Items</th>
+          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-right">Revenue</th>
         </tr>
       </thead>
 
       <tbody className="divide-y divide-[#F3F4F6]">
         {filteredSales.length === 0 ? (
           <tr>
-            <td colSpan={5} className="py-14 text-center text-xs text-[#9CA3AF]">
+            <td colSpan={4} className="py-14 text-center text-xs text-[#9CA3AF]">
               No sales records match your filters
             </td>
           </tr>
         ) : (
           filteredSales.map((s: any) => {
             const created = s.created_at ? new Date(s.created_at) : null;
+            const itemNames: string[] = Array.isArray(s.items)
+              ? s.items.map((it: any) => it.product_name ?? it.name ?? `#${it.product_id}`)
+              : [];
             return (
-              <tr key={s.id} className="hover:bg-[#FAFAFA] transition-colors">
+              <tr
+                key={s.id}
+                onClick={async () => {
+                  try {
+                    const details = await api.getSaleById(s.id, token);
+                    setModalSale({ ...s, items: details.items ?? [] });
+                  } catch (err: any) {
+                    toast.error(err.message || 'Failed to load sale details');
+                  }
+                }}
+                className="hover:bg-[#FDF2F8] active:bg-[#FCE7F3] transition-colors cursor-pointer"
+              >
                 <td className="px-4 py-3 text-xs text-[#111827] whitespace-nowrap" style={{ fontWeight: 600 }}>#{s.id}</td>
                 <td className="px-4 py-3 text-xs text-[#6B7280] whitespace-nowrap">{created ? created.toLocaleString() : '—'}</td>
-                <td className="px-4 py-3 text-xs text-right text-[#111827] whitespace-nowrap" style={{ fontWeight: 700 }}>₱{Number(s.total ?? 0).toFixed(2)}</td>
-                <td className="px-4 py-3 text-xs text-right whitespace-nowrap">
-                  {s.profit != null ? (
-                    <span className={Number(s.profit) >= 0 ? 'text-emerald-600' : 'text-red-500'} style={{ fontWeight: 600 }}>
-                      {Number(s.profit) >= 0 ? '+' : ''}₱{Number(s.profit).toFixed(2)}
-                    </span>
-                  ) : <span className="text-[#9CA3AF]">—</span>}
+                <td className="px-4 py-3 text-xs text-[#6B7280] max-w-[220px]">
+                  {itemNames.length > 0
+                    ? <span className="truncate block">{itemNames.join(', ')}</span>
+                    : <span className="text-[#C5C5C5] italic">Tap to view items</span>
+                  }
                 </td>
-                <td className="px-4 py-3 text-xs text-right whitespace-nowrap">
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        const details = await api.getSaleById(s.id, token);
-                        setModalSale({ ...s, items: details.items ?? [] });
-                      } catch (err: any) {
-                        toast.error(err.message || 'Failed to load sale details');
-                      }
-                    }}
-                    className="px-3 py-1.5 rounded-lg border border-[#EC4899]/30 text-[#EC4899] hover:bg-[#FDF2F8] text-xs transition-colors"
-                  >
-                    View
-                  </button>
+                <td className="px-4 py-3 text-xs text-right text-[#111827] whitespace-nowrap" style={{ fontWeight: 700 }}>
+                  ₱{Number(s.total ?? 0).toFixed(2)}
                 </td>
               </tr>
             );

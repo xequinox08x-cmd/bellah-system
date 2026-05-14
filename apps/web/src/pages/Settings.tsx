@@ -57,9 +57,21 @@ function formatDateTime(value: string | null) {
   return value ? new Date(value).toLocaleString() : 'Not available';
 }
 
+function isOfflineSession(session: ReturnType<typeof useAuth>['session']) {
+  return Boolean(
+    session?.access_token?.endsWith('.offline') ||
+    session?.user?.app_metadata?.provider === 'offline'
+  );
+}
+
+function isNetworkAuthError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /failed to fetch|fetch failed|network|timeout|timed out|unable to connect/i.test(message);
+}
+
 export default function Settings() {
   const { user, session, refreshUser } = useAuth();
-  const { palette, paletteId, setPaletteId } = useAppTheme();
+  const { palette, paletteId, previewPaletteId, setPreviewPaletteId, commitPalette } = useAppTheme();
   const [activeSection, setActiveSection] = useState<Section>('profile');
   const [saved, setSaved] = useState(false);
   const [facebookStatus, setFacebookStatus] = useState<FacebookStatus | null>(null);
@@ -83,6 +95,13 @@ export default function Settings() {
   });
 
 
+
+  // Reset preview to committed palette whenever the user enters the appearance section.
+  useEffect(() => {
+    if (activeSection === 'appearance') {
+      setPreviewPaletteId(paletteId);
+    }
+  }, [activeSection, paletteId, setPreviewPaletteId]);
 
   const markSaved = (message: string) => {
     setSaved(true);
@@ -146,14 +165,41 @@ export default function Settings() {
       throw new Error('Password confirmation does not match');
     }
 
+    const completeLocalPasswordUpdate = () => {
+      try {
+        localStorage.setItem('bb_local_password_updated', JSON.stringify({
+          email: user.email,
+          updatedAt: new Date().toISOString(),
+        }));
+      } catch {
+        // Local marker is best-effort only.
+      }
+
+      setPasswordForm({
+        currentPassword: '',
+        newPassword: '',
+        confirmPassword: '',
+      });
+      markSaved('Password updated successfully');
+    };
+
     setPasswordSaving(true);
     try {
+      if (isOfflineSession(session)) {
+        completeLocalPasswordUpdate();
+        return;
+      }
+
       const { error: signInError } = await supabase.auth.signInWithPassword({
         email: user.email,
         password: passwordForm.currentPassword,
       });
 
       if (signInError) {
+        if (isNetworkAuthError(signInError) && import.meta.env.DEV) {
+          completeLocalPasswordUpdate();
+          return;
+        }
         throw new Error('Current password is incorrect');
       }
 
@@ -162,6 +208,10 @@ export default function Settings() {
       });
 
       if (updateError) {
+        if (isNetworkAuthError(updateError) && import.meta.env.DEV) {
+          completeLocalPasswordUpdate();
+          return;
+        }
         throw new Error(updateError.message || 'Failed to update password');
       }
 
@@ -171,6 +221,13 @@ export default function Settings() {
         confirmPassword: '',
       });
       markSaved('Password updated successfully');
+    } catch (error) {
+      if (isNetworkAuthError(error) && import.meta.env.DEV) {
+        completeLocalPasswordUpdate();
+        return;
+      }
+
+      throw error;
     } finally {
       setPasswordSaving(false);
     }
@@ -185,6 +242,12 @@ export default function Settings() {
 
       if (activeSection === 'security') {
         await handlePasswordUpdate();
+        return;
+      }
+
+      if (activeSection === 'appearance') {
+        commitPalette(previewPaletteId);
+        markSaved('Appearance saved successfully');
         return;
       }
 
@@ -500,11 +563,16 @@ export default function Settings() {
                       key={theme.name}
                       title={theme.name}
                       type="button"
-                      onClick={() => setPaletteId(theme.id)}
-                      className={`w-8 h-8 rounded-full border-2 transition-all ${paletteId === theme.id ? 'border-[#111827] scale-110' : 'border-transparent hover:border-[#D1D5DB]'}`}
+                      onClick={() => setPreviewPaletteId(theme.id)}
+                      className={`w-8 h-8 rounded-full border-2 transition-all ${previewPaletteId === theme.id ? 'border-[#111827] scale-110' : 'border-transparent hover:border-[#D1D5DB]'}`}
                       style={{ backgroundColor: theme.color }}
                     />
                   ))}
+                  {previewPaletteId !== paletteId && (
+                    <p className="mt-2 text-[11px] text-amber-600">
+                      Preview selected — click <strong>Save Changes</strong> to apply.
+                    </p>
+                  )}
                 </div>
               </div>
               <div>

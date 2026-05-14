@@ -72,6 +72,8 @@ const OUTPUT_MODE_LABEL: Record<OutputMode, string> = {
 };
 
 const FACEBOOK_PLATFORM = 'facebook';
+const MAX_REFERENCE_IMAGE_SIDE = 1280;
+const REFERENCE_IMAGE_QUALITY = 0.82;
 
 function formatOptionLabel(value: string) {
   return value.replace(/_/g, ' ');
@@ -118,6 +120,47 @@ function FacebookIcon({ className = 'w-5 h-5' }: { className?: string }) {
   );
 }
 
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Failed to read image'));
+      }
+    };
+    reader.onerror = () => reject(reader.error || new Error('Failed to read image'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImage(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Failed to load image'));
+    image.src = src;
+  });
+}
+
+async function compressReferenceImage(file: File) {
+  const dataUrl = await readFileAsDataUrl(file);
+  const image = await loadImage(dataUrl);
+  const scale = Math.min(1, MAX_REFERENCE_IMAGE_SIDE / Math.max(image.width, image.height));
+  const width = Math.max(1, Math.round(image.width * scale));
+  const height = Math.max(1, Math.round(image.height * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return dataUrl;
+
+  ctx.drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL('image/jpeg', REFERENCE_IMAGE_QUALITY);
+}
+
 export default function AIMarketing() {
   const { contentItems, addContent } = useStore();
   const { user } = useAuth();
@@ -141,6 +184,8 @@ export default function AIMarketing() {
   const [editHashtags, setEditHashtags] = useState('');
   const [title, setTitle] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationStatus, setGenerationStatus] = useState<'idle' | 'generating' | 'done' | 'error'>('idle');
+  const isGeneratingRef = useRef(false); // prevents effect-based state wipes during generation
   const [isGeneratingAutoPrompt, setIsGeneratingAutoPrompt] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [generatedContentId, setGeneratedContentId] = useState<number | null>(null);
@@ -166,7 +211,7 @@ export default function AIMarketing() {
             category: String(item.category ?? ''),
             price: Number(item.price ?? 0),
             description: item.description ? String(item.description) : '',
-            imageUrl: item.image_url ? String(item.image_url) : undefined,
+            imageUrl: item.imageUrl || item.image_url ? String(item.imageUrl ?? item.image_url) : undefined,
           }))
         );
       } catch (err) {
@@ -186,8 +231,13 @@ export default function AIMarketing() {
   }, []);
 
   useEffect(() => {
+    // Do NOT reset the auto-prompt while generation is in progress —
+    // this prevents a state-wipe race condition that would clear the prompt
+    // that was just returned by the API and cause the result to disappear.
+    if (isGeneratingRef.current) return;
     setAutoPromptText('');
     setAutoPromptProvider(null);
+    setGenerationStatus('idle');
   }, [productId, type, tone, outputMode, manualImagePreview]);
 
   useEffect(() => {
@@ -242,17 +292,22 @@ export default function AIMarketing() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleManualImageChange = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleManualImageChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setManualImagePreview(reader.result);
-        setManualImageFile(file);
-      }
-    };
-    reader.readAsDataURL(file);
+    if (!file.type.startsWith('image/')) {
+      toast.error('Please upload an image file');
+      return;
+    }
+
+    try {
+      const compressed = await compressReferenceImage(file);
+      setManualImagePreview(compressed);
+      setManualImageFile(file);
+    } catch (error) {
+      console.error(error);
+      toast.error('Failed to prepare image');
+    }
   };
 
   const handleGenerateAutoPrompt = async () => {
@@ -304,11 +359,31 @@ export default function AIMarketing() {
       return;
     }
 
+    // Guard against re-triggering while already generating.
+    if (isGeneratingRef.current) return;
+
+    const activePrompt = useCustomPrompt ? promptText.trim() : autoPromptText.trim();
+    if (!activePrompt) {
+      toast.error(
+        useCustomPrompt
+          ? 'Please write a custom prompt first'
+          : 'Click \u201cAuto\u201d (double-click) to generate a prompt first, or switch to Custom mode',
+        { duration: 5000 }
+      );
+      return;
+    }
+
+    // Use a unique toast ID per run so Sonner does not silently skip updates.
+    const toastId = `ai-gen-${Date.now()}`;
+    isGeneratingRef.current = true;
     setIsGenerating(true);
+    setGenerationStatus('generating');
+    toast.loading('Generating content… you can navigate away and come back.', { id: toastId, duration: Infinity });
+
     try {
       const response = await api.generateMarketingContent({
         productId: Number(productId),
-        promptText: useCustomPrompt ? promptText.trim() : autoPromptText.trim(),
+        promptText: activePrompt,
         contentType: type,
         tone,
         platform,
@@ -316,19 +391,34 @@ export default function AIMarketing() {
         referenceImageUrl: manualImagePreview || selectedProduct?.imageUrl || undefined,
       });
 
-      setGeneratedContentId(response.data.id);
-      setGenerated(response.data as GeneratedContent);
-      setEditCaption(response.data.caption);
-      setEditHashtags(response.data.hashtags);
-      setTitle(response.data.title);
+      const data = response.data as GeneratedContent;
+      setGeneratedContentId(data.id);
+      setGenerated(data);
+      setEditCaption(data.caption ?? '');
+      setEditHashtags(data.hashtags ?? '');
+      setTitle(data.title ?? '');
       if (!useCustomPrompt) {
-        setAutoPromptText(response.data.promptText);
-        setAutoPromptProvider(response.data.promptProvider ?? null);
+        setAutoPromptText(data.promptText ?? '');
+        setAutoPromptProvider(data.promptProvider ?? null);
       }
+
+      setGenerationStatus('done');
+      toast.success(
+        data.generatedImageUrl
+          ? 'Image generated successfully!'
+          : 'Content generated successfully!',
+        { id: toastId }
+      );
+      // Notify TopNav bell badge.
+      window.dispatchEvent(new CustomEvent('image-generation-complete', {
+        detail: { title: data.title || 'AI Content' },
+      }));
     } catch (err) {
-      console.error(err);
-      toast.error(err instanceof Error ? err.message : 'Failed to generate content');
+      console.error('[AIMarketing] generate error', err);
+      setGenerationStatus('error');
+      toast.error(err instanceof Error ? err.message : 'Failed to generate content', { id: toastId });
     } finally {
+      isGeneratingRef.current = false;
       setIsGenerating(false);
     }
   };
@@ -352,7 +442,7 @@ export default function AIMarketing() {
       const res = await api.createContent({
         id: generatedContentId,
         title,
-        prompt: promptText.trim(),
+        prompt: useCustomPrompt ? promptText.trim() : (autoPromptText.trim() || generated.promptText),
         output: editCaption,
         platform,
         hashtags: editHashtags,
@@ -640,6 +730,26 @@ export default function AIMarketing() {
                   <><Sparkles className="w-4 h-4" /> Generate Facebook Content</>
                 )}
               </button>
+
+              {/* In-page generation status indicator */}
+              {generationStatus === 'generating' && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-700">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
+                  <span>AI is generating your content — you may navigate away and return.</span>
+                </div>
+              )}
+              {generationStatus === 'done' && !isGenerating && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-700">
+                  <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>Generation complete! Review the result on the right.</span>
+                </div>
+              )}
+              {generationStatus === 'error' && !isGenerating && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-xs text-red-600">
+                  <XCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>Generation failed. Check your prompt or try again.</span>
+                </div>
+              )}
             </div>
           </div>
         </div>

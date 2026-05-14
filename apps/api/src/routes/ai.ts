@@ -1,10 +1,14 @@
 import { Router, type Request, type Response } from "express";
+import { createHash } from "crypto";
+import { getCachedData, setCachedData } from "../lib/cache";
 
 export const aiRouter = Router();
 
 const FACEBOOK_PLATFORM = "facebook";
 const GENERATED_CONTENT_STATUS = "draft";
 const PENDING_APPROVAL_STATUS = "pending";
+const MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024;
+const REFERENCE_IMAGE_FETCH_TIMEOUT_MS = 8_000;
 
 type GenerateRequestBody = {
   productId?: number | string;
@@ -102,7 +106,7 @@ export function buildPrompt(
     `Tone: ${tone || "fun"}`,
     `Content type: ${contentType || "caption"}`,
     `Output mode: ${outputMode}`,
-    `Reference image provided: ${parseDataUrl(referenceImageUrl)?.mimeType ? "yes" : "no"}`,
+    `Reference image provided: ${isReferenceImageProvided(referenceImageUrl) ? "yes" : "no"}`,
     "Rules:",
     "- Keep it short at 1 to 3 sentences, natural for Facebook.",
     "- Make it engaging and conversion-focused.",
@@ -183,7 +187,7 @@ function buildImagePrompt(
 ) {
   if (outputMode === "text") return null;
 
-  const hasReferenceImage = Boolean(parseDataUrl(referenceImageUrl));
+  const hasReferenceImage = isReferenceImageProvided(referenceImageUrl);
 
   return [
     `Create a polished Facebook product poster for ${product.name}.`,
@@ -290,6 +294,56 @@ function parseDataUrl(value?: string | null): DataUrlPayload | null {
   };
 }
 
+function isReferenceImageProvided(value?: string | null) {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return Boolean(trimmed && (parseDataUrl(trimmed) || /^https?:\/\//i.test(trimmed)));
+}
+
+async function resolveReferenceImagePayload(value?: string | null): Promise<DataUrlPayload | null> {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) return null;
+
+  const parsedDataUrl = parseDataUrl(trimmed);
+  if (parsedDataUrl) return parsedDataUrl;
+  if (!/^https?:\/\//i.test(trimmed)) return null;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REFERENCE_IMAGE_FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(trimmed, {
+      signal: controller.signal,
+      headers: { Accept: "image/*" },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Reference image request failed with status ${response.status}`);
+    }
+
+    const contentType = (response.headers.get("content-type") || "image/png").split(";")[0].trim();
+    if (!contentType.startsWith("image/")) {
+      throw new Error(`Reference URL did not return an image (${contentType || "unknown type"})`);
+    }
+
+    const contentLength = Number(response.headers.get("content-length") || 0);
+    if (contentLength > MAX_REFERENCE_IMAGE_BYTES) {
+      throw new Error("Reference image is too large");
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    if (arrayBuffer.byteLength > MAX_REFERENCE_IMAGE_BYTES) {
+      throw new Error("Reference image is too large");
+    }
+
+    return {
+      mimeType: contentType,
+      data: Buffer.from(arrayBuffer).toString("base64"),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function getOpenAiApiKey() {
   return process.env.OPENAI_API_KEY?.trim() || process.env.AI_API_KEY?.trim() || "";
 }
@@ -336,8 +390,18 @@ async function supabaseRest<T>(path: string, options: RequestInit = {}): Promise
   });
 
   const responseText = await response.text();
+
   if (!response.ok) {
-    throw new Error(responseText || response.statusText);
+    // Try to parse Supabase error JSON for a cleaner message
+    let parsed: { message?: string; code?: string } | null = null;
+    try { parsed = JSON.parse(responseText); } catch { /* ignore */ }
+
+    if (response.status === 503 || parsed?.code === "PGRST002") {
+      throw new Error("Database schema cache is reloading. Please retry in a moment.");
+    }
+
+    const msg = parsed?.message || responseText || response.statusText;
+    throw new Error(JSON.stringify(parsed ?? msg));
   }
 
   return (responseText ? JSON.parse(responseText) : null) as T;
@@ -502,7 +566,7 @@ async function generateAutoPromptWithOpenAi(options: {
   }
 
   const { product, contentType, tone, platform, outputMode, referenceImageUrl } = options;
-  const hasReferenceImage = Boolean(referenceImageUrl);
+  const hasReferenceImage = isReferenceImageProvided(referenceImageUrl);
   const contentLabel = formatLabel(contentType || "caption");
   const modeLabel =
     outputMode === "image"
@@ -572,7 +636,7 @@ async function generateImageWithGemini(prompt: string, referenceImageUrl?: strin
     throw new Error("GEMINI_API_KEY is not configured");
   }
 
-  const parsedReferenceImage = parseDataUrl(referenceImageUrl);
+  const parsedReferenceImage = await resolveReferenceImagePayload(referenceImageUrl);
   if (parsedReferenceImage) {
     const parts: Array<Record<string, unknown>> = [{
       inlineData: {
@@ -675,7 +739,7 @@ async function generateMarketingAssets(options: {
   const providers: GenerationProviderInfo = {
     text: useOpenAiCaption ? "fallback" : "none",
     image: useGeminiImage ? "fallback" : "none",
-    usedReferenceImage: Boolean(parseDataUrl(referenceImageUrl)),
+    usedReferenceImage: useGeminiImage && isReferenceImageProvided(referenceImageUrl),
   };
 
   let content = useOpenAiCaption
@@ -684,28 +748,48 @@ async function generateMarketingAssets(options: {
   let generatedImageUrl: string | null =
     useGeminiImage ? buildFallbackImageDataUrl(product, promptText, tone, outputMode) : null;
 
-  try {
-    if (useOpenAiCaption && getOpenAiApiKey()) {
-      content = await generateCaptionWithOpenAi(prompt);
-      providers.text = "openai";
-    }
-  } catch (err) {
-    console.error("[POST /api/ai/generate] OpenAI caption fallback", err);
-  }
-
-  if (useGeminiImage && imagePrompt) {
+  const captionPromise = (async () => {
     try {
-      if (getGeminiApiKey()) {
+      if (useOpenAiCaption && getOpenAiApiKey()) {
+        return {
+          content: await generateCaptionWithOpenAi(prompt),
+          provider: "openai" as GenerationProvider,
+        };
+      }
+    } catch (err) {
+      console.error("[POST /api/ai/generate] OpenAI caption fallback", err);
+    }
+    return null;
+  })();
+
+  const imagePromise = (async () => {
+    try {
+      if (useGeminiImage && imagePrompt && getGeminiApiKey()) {
         const geminiResult = await generateImageWithGemini(imagePrompt, referenceImageUrl);
-        generatedImageUrl = geminiResult.generatedImageUrl;
-        providers.image = "gemini";
-        if (!useOpenAiCaption && geminiResult.captionText) {
-          content = geminiResult.captionText;
-          providers.text = "gemini";
-        }
+        return {
+          ...geminiResult,
+          provider: "gemini" as GenerationProvider,
+        };
       }
     } catch (err) {
       console.error("[POST /api/ai/generate] Gemini image fallback", err);
+    }
+    return null;
+  })();
+
+  const [captionResult, imageResult] = await Promise.all([captionPromise, imagePromise]);
+
+  if (captionResult) {
+    content = captionResult.content;
+    providers.text = captionResult.provider;
+  }
+
+  if (imageResult) {
+    generatedImageUrl = imageResult.generatedImageUrl;
+    providers.image = imageResult.provider;
+    if (!useOpenAiCaption && imageResult.captionText) {
+      content = imageResult.captionText;
+      providers.text = "gemini";
     }
   }
 
@@ -724,21 +808,21 @@ function buildAutoPrompt(
   const description = product.description?.trim();
   const price = Number(product.price ?? 0).toFixed(2);
   const contentLabel = formatLabel(contentType || "caption");
-  const hasReferenceImage = Boolean(referenceImageUrl);
+  const hasReferenceImage = isReferenceImageProvided(referenceImageUrl);
   const modeInstruction =
     outputMode === "text"
-      ? "Focus on a strong caption angle, emotional hook, and a clear CTA."
-      : "Include visual direction for a clean Facebook beauty poster with premium styling, soft lighting, and the product as the hero.";
+      ? "Write a caption brief with a specific hook, benefit angle, emotional trigger, and clear shop-now CTA."
+      : "Write a poster-generation brief with product hero placement, composition, background, lighting, props, minimal readable text, and premium Facebook 4:5 styling.";
   const referenceInstruction = hasReferenceImage
     ? "Use the provided reference image as the visual source of truth: preserve the product identity, packaging, label placement, and dominant colors while improving the campaign styling around it."
     : "No reference image is provided, so base the concept only on the product name, category, price, and description.";
 
   const parts: string[] = [
-    `Create a ${tone || "fun"} Facebook ${contentLabel} for ${product.name}, a ${category} product priced at PHP ${price}.`,
+    `Create a ${tone || "fun"} Facebook ${contentLabel} creative prompt for ${product.name}, a ${category} product priced at PHP ${price}.`,
   ];
 
   if (description) {
-    parts.push(`Product details: ${description}.`);
+    parts.push(`Use these product facts only as source material, not as the full prompt: ${description}.`);
   }
 
   parts.push(
@@ -814,6 +898,10 @@ function validateGenerateBody(body: GenerateRequestBody) {
   };
 }
 
+function stableHash(value: unknown) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
 aiRouter.post("/auto-prompt", async (req: Request, res: Response) => {
   try {
     const parsed = validateGenerateBody(req.body ?? {});
@@ -830,6 +918,19 @@ aiRouter.post("/auto-prompt", async (req: Request, res: Response) => {
       return res.status(404).json({ ok: false, data: null, message: "Product not found" });
     }
 
+    const cacheKey = `ai:auto-prompt:${stableHash({
+      productId: parsed.productId,
+      contentType: parsed.contentType,
+      tone: parsed.tone,
+      platform: parsed.platform,
+      outputMode: parsed.outputMode,
+      referenceImageUrl: parsed.referenceImageUrl,
+    })}`;
+    const cached = getCachedData(cacheKey);
+    if (cached) {
+      return res.json({ ok: true, data: cached, message: null, cached: true });
+    }
+
     const autoPrompt = await resolveAutoPrompt({
       product,
       contentType: parsed.contentType,
@@ -839,12 +940,15 @@ aiRouter.post("/auto-prompt", async (req: Request, res: Response) => {
       referenceImageUrl: parsed.referenceImageUrl,
     });
 
+    const data = {
+      promptText: autoPrompt.promptText,
+      provider: autoPrompt.provider,
+    };
+    setCachedData(cacheKey, data, 60 * 60 * 24);
+
     return res.json({
       ok: true,
-      data: {
-        promptText: autoPrompt.promptText,
-        provider: autoPrompt.provider,
-      },
+      data,
       message: null,
     });
   } catch (e: any) {
@@ -870,6 +974,20 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
     const product = await getProductForGeneration(parsed.productId);
     if (!product) {
       return res.status(404).json({ ok: false, data: null, message: "Product not found" });
+    }
+
+    const cacheKey = `ai:generate:${stableHash({
+      productId: parsed.productId,
+      promptText: parsed.promptText,
+      contentType: parsed.contentType,
+      tone: parsed.tone,
+      platform: parsed.platform,
+      outputMode: parsed.outputMode,
+      referenceImageUrl: parsed.referenceImageUrl,
+    })}`;
+    const cached = getCachedData(cacheKey);
+    if (cached) {
+      return res.json({ ok: true, data: cached, message: null, cached: true });
     }
 
     let effectivePromptText = parsed.promptText;
@@ -937,21 +1055,24 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
       throw new Error("Generated content was not saved");
     }
 
+    const data = {
+      id: Number(savedContent?.id),
+      title,
+      caption: content,
+      hashtags,
+      generatedImageUrl,
+      referenceImageUrl: parsed.referenceImageUrl,
+      promptText: effectivePromptText,
+      promptProvider,
+      outputMode: parsed.outputMode,
+      providers,
+      status: String(savedContent?.status ?? GENERATED_CONTENT_STATUS),
+    };
+    setCachedData(cacheKey, data, 60 * 60 * 24);
+
     return res.json({
       ok: true,
-      data: {
-        id: Number(savedContent?.id),
-        title,
-        caption: content,
-        hashtags,
-        generatedImageUrl,
-        referenceImageUrl: parsed.referenceImageUrl,
-        promptText: effectivePromptText,
-        promptProvider,
-        outputMode: parsed.outputMode,
-        providers,
-        status: String(savedContent?.status ?? GENERATED_CONTENT_STATUS),
-      },
+      data,
       message: null,
     });
   } catch (e: any) {

@@ -73,6 +73,7 @@ function ScheduleModal({
       });
       if (res.error) throw new Error(res.error);
       toast.success('Post scheduled!');
+      window.dispatchEvent(new Event('ai-content-updated'));
       onScheduled();
       onClose();
     } catch (err: unknown) {
@@ -169,7 +170,8 @@ export default function Scheduling() {
       const res = await api.deleteScheduledPost(id);
       if (res.error) throw new Error(res.error);
       toast.success('Post cancelled');
-      loadData();
+      window.dispatchEvent(new Event('ai-content-updated'));
+      void loadData();
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to cancel post');
     }
@@ -180,7 +182,9 @@ export default function Scheduling() {
       const res = await api.updatePostStatus(id, 'published');
       if (res.error) throw new Error(res.error);
       toast.success('Marked as published');
-      loadData();
+      window.dispatchEvent(new Event('ai-content-updated'));
+      window.dispatchEvent(new Event('facebook-analytics-updated'));
+      void loadData();
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to update status');
     }

@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { supabaseAuthAdmin, supabaseRest } from '../services/supabaseAdmin';
+import { pool } from '../db/pool';
 
 const router = Router();
 
@@ -26,6 +27,28 @@ type AuthAdminUserResponse = {
 };
 
 const USER_COLUMNS = 'id,auth_id,name,email,role,created_at';
+// Longer than the 5 s supabaseAdmin fetch timeout so we see the real error first.
+const USER_BACKEND_TIMEOUT_MS = 6_000;
+
+function usersPath(params: Record<string, string | number>) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => search.set(key, String(value)));
+  return `/users?${search.toString()}`;
+}
+
+function shouldFallbackToSupabaseRest(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /password authentication failed|connect|connection|timeout|timed out|database|ECONN|ENOTFOUND|ETIMEDOUT/i.test(message);
+}
+
+function withUserBackendTimeout<T>(operation: Promise<T>, label = 'User backend request timed out') {
+  return Promise.race([
+    operation,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(label)), USER_BACKEND_TIMEOUT_MS);
+    }),
+  ]);
+}
 
 function decodeBase64Url(value: string) {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
@@ -44,6 +67,20 @@ function decodeAuthId(req: Request) {
 
     const payload = JSON.parse(decodeBase64Url(payloadSegment));
     return typeof payload.sub === 'string' ? payload.sub : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Decode the full JWT payload — used as fallback when DB is unreachable. */
+function decodeJwtPayload(req: Request): Record<string, unknown> | null {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith('Bearer ')) return null;
+  try {
+    const token = authHeader.slice('Bearer '.length);
+    const payloadSegment = token.split('.')[1];
+    if (!payloadSegment) return null;
+    return JSON.parse(decodeBase64Url(payloadSegment));
   } catch {
     return null;
   }
@@ -74,61 +111,139 @@ async function getSupabaseUserMetadata(authId: string) {
   }
 }
 
-function usersPath(params: Record<string, string | number>) {
-  const search = new URLSearchParams();
-  Object.entries(params).forEach(([key, value]) => search.set(key, String(value)));
-  return `/users?${search.toString()}`;
-}
-
 async function listDbUsers() {
-  return supabaseRest<DbUserRow[]>(
-    usersPath({ select: USER_COLUMNS, order: 'created_at.asc' })
-  );
+  try {
+    return await withUserBackendTimeout(
+      supabaseRest<DbUserRow[]>(usersPath({ select: USER_COLUMNS, order: 'created_at.asc' }))
+    );
+  } catch (error) {
+    if (shouldFallbackToSupabaseRest(error)) throw error;
+    console.warn('[users] Supabase REST unavailable, listing users via pool fallback', error);
+    const result = await withUserBackendTimeout(pool.query<DbUserRow>(
+      `SELECT ${USER_COLUMNS} FROM users ORDER BY created_at ASC`
+    ));
+    return result.rows;
+  }
 }
 
 async function getDbUserByAuthId(authId: string) {
-  const rows = await supabaseRest<DbUserRow[]>(
-    usersPath({ select: USER_COLUMNS, auth_id: `eq.${authId}`, limit: 1 })
-  );
-  return rows[0] ?? null;
+  try {
+    const rows = await withUserBackendTimeout(
+      supabaseRest<DbUserRow[]>(
+        usersPath({ select: USER_COLUMNS, auth_id: `eq.${authId}`, limit: 1 })
+      )
+    );
+    return rows[0] ?? null;
+  } catch (error) {
+    if (shouldFallbackToSupabaseRest(error)) throw error;
+    console.warn('[users] Supabase REST unavailable, loading user by auth_id via pool fallback', error);
+    const result = await withUserBackendTimeout(pool.query<DbUserRow>(
+      `SELECT ${USER_COLUMNS} FROM users WHERE auth_id = $1 LIMIT 1`,
+      [authId]
+    ));
+    return result.rows[0] ?? null;
+  }
 }
 
 async function getDbUserById(id: number) {
-  const rows = await supabaseRest<DbUserRow[]>(
-    usersPath({ select: USER_COLUMNS, id: `eq.${id}`, limit: 1 })
-  );
-  return rows[0] ?? null;
+  try {
+    const rows = await withUserBackendTimeout(
+      supabaseRest<DbUserRow[]>(
+        usersPath({ select: USER_COLUMNS, id: `eq.${id}`, limit: 1 })
+      )
+    );
+    return rows[0] ?? null;
+  } catch (error) {
+    if (shouldFallbackToSupabaseRest(error)) throw error;
+    console.warn('[users] Supabase REST unavailable, loading user by id via pool fallback', error);
+    const result = await withUserBackendTimeout(pool.query<DbUserRow>(
+      `SELECT ${USER_COLUMNS} FROM users WHERE id = $1 LIMIT 1`,
+      [id]
+    ));
+    return result.rows[0] ?? null;
+  }
 }
 
 async function upsertDbUser(input: Pick<DbUserRow, 'auth_id' | 'name' | 'email' | 'role'>) {
-  const rows = await supabaseRest<DbUserRow[]>(
-    usersPath({ on_conflict: 'auth_id', select: USER_COLUMNS }),
-    {
-      method: 'POST',
-      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
-      body: JSON.stringify(input),
-    }
-  );
-  return rows[0] ?? null;
+  try {
+    const rows = await withUserBackendTimeout(supabaseRest<DbUserRow[]>(
+      usersPath({ select: USER_COLUMNS, on_conflict: 'auth_id' }),
+      {
+        method: 'POST',
+        headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+        body: JSON.stringify(input),
+      }
+    ));
+    return rows[0] ?? null;
+  } catch (error) {
+    if (shouldFallbackToSupabaseRest(error)) throw error;
+    console.warn('[users] Supabase REST unavailable, upserting user via pool fallback', error);
+    const result = await withUserBackendTimeout(pool.query<DbUserRow>(
+      `INSERT INTO users (auth_id, name, email, role)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (auth_id)
+       DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, role = EXCLUDED.role
+       RETURNING ${USER_COLUMNS}`,
+      [input.auth_id, input.name, input.email, input.role]
+    ));
+    return result.rows[0] ?? null;
+  }
 }
 
 async function updateDbUser(id: number, input: Partial<Pick<DbUserRow, 'name' | 'email' | 'role'>>) {
-  const rows = await supabaseRest<DbUserRow[]>(
-    usersPath({ select: USER_COLUMNS, id: `eq.${id}` }),
-    {
-      method: 'PATCH',
-      headers: { Prefer: 'return=representation' },
-      body: JSON.stringify(input),
-    }
+  const updates: string[] = [];
+  const values: unknown[] = [id];
+
+  if (typeof input.name === 'string') {
+    values.push(input.name);
+    updates.push(`name = $${values.length}`);
+  }
+  if (typeof input.email === 'string') {
+    values.push(input.email);
+    updates.push(`email = $${values.length}`);
+  }
+  if (typeof input.role === 'string') {
+    values.push(input.role);
+    updates.push(`role = $${values.length}`);
+  }
+
+  if (updates.length === 0) return null;
+
+  const body = Object.fromEntries(
+    Object.entries(input).filter(([, value]) => typeof value === 'string')
   );
-  return rows[0] ?? null;
+
+  try {
+    const rows = await withUserBackendTimeout(supabaseRest<DbUserRow[]>(
+      usersPath({ select: USER_COLUMNS, id: `eq.${id}` }),
+      {
+        method: 'PATCH',
+        headers: { Prefer: 'return=representation' },
+        body: JSON.stringify(body),
+      }
+    ));
+    return rows[0] ?? null;
+  } catch (error) {
+    if (shouldFallbackToSupabaseRest(error)) throw error;
+    console.warn('[users] Supabase REST unavailable, updating user via pool fallback', error);
+    const result = await withUserBackendTimeout(pool.query<DbUserRow>(
+      `UPDATE users SET ${updates.join(', ')} WHERE id = $1 RETURNING ${USER_COLUMNS}`,
+      values
+    ));
+    return result.rows[0] ?? null;
+  }
 }
 
 async function deleteDbUser(id: number) {
-  await supabaseRest<null>(
-    usersPath({ id: `eq.${id}` }),
-    { method: 'DELETE' }
-  );
+  try {
+    await withUserBackendTimeout(
+      supabaseRest<null>(usersPath({ id: `eq.${id}` }), { method: 'DELETE' })
+    );
+  } catch (error) {
+    if (shouldFallbackToSupabaseRest(error)) throw error;
+    console.warn('[users] Supabase REST unavailable, deleting user via pool fallback', error);
+    await withUserBackendTimeout(pool.query('DELETE FROM users WHERE id = $1', [id]));
+  }
 }
 
 function serializeUser(row: DbUserRow, metadata: Record<string, unknown> = {}) {
@@ -166,12 +281,45 @@ router.get('/me', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const row = await getDbUserByAuthId(authId);
+    let row: DbUserRow | null = null;
+    try {
+      row = await getDbUserByAuthId(authId);
+    } catch (dbErr) {
+      // DB / Supabase REST unreachable — synthesise from JWT so the app keeps working.
+      console.warn('[users] /me DB lookup failed, falling back to JWT payload:', dbErr);
+      const payload = decodeJwtPayload(req);
+      if (!payload) return res.status(503).json({ error: 'User service temporarily unavailable' });
+
+      const meta = (payload.user_metadata ?? {}) as Record<string, unknown>;
+      const email = String(payload.email ?? meta.email ?? '');
+      const appRole = payload.app_metadata ? (payload.app_metadata as any).role : undefined;
+      const role: UserRole = normalizeRole(meta.role ?? appRole) ?? 'staff';
+      return res.json({
+        data: {
+          id: 0,
+          auth_id: authId,
+          authId,
+          name: String(meta.full_name ?? meta.name ?? email.split('@')[0] ?? 'User'),
+          email,
+          role,
+          username: String(meta.username ?? email.split('@')[0] ?? 'user'),
+          bio: String(meta.bio ?? ''),
+          created_at: new Date().toISOString(),
+        },
+      });
+    }
+
     if (!row) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const metadata = await getSupabaseUserMetadata(authId);
+    let metadata: Record<string, unknown> = {};
+    try {
+      metadata = await getSupabaseUserMetadata(authId);
+    } catch {
+      // Non-critical — metadata is just display info (username, bio).
+    }
+
     res.json({ data: serializeUser(row, metadata) });
   } catch (err) {
     console.error('GET /api/users/me error:', err);

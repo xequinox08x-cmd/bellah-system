@@ -282,7 +282,8 @@ export default function ContentApproval() {
       const res = await api.updateContentStatus(id, 'approved');
       if (res.error) throw new Error(res.error);
       toast.success('Content approved!');
-      loadContent(); // reload list so the status updates immediately
+      void loadContent(); // reload list so the status updates immediately
+      window.dispatchEvent(new Event('ai-content-updated'));
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to approve content');
     }
@@ -299,7 +300,8 @@ export default function ContentApproval() {
       if (res.error) throw new Error(res.error);
       toast.success('Content rejected.');
       setRejectItem(null);
-      loadContent(); // reload list so the status updates immediately
+      void loadContent(); // reload list so the status updates immediately
+      window.dispatchEvent(new Event('ai-content-updated'));
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to reject content');
     }
