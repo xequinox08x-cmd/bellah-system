@@ -1,4 +1,4 @@
-const SUPABASE_FETCH_TIMEOUT_MS = 5_000; // 5 s — enough for cold starts
+const SUPABASE_FETCH_TIMEOUT_MS = 15_000; // 15 s — increased for better reliability
 
 function getSupabaseUrl() {
   const value = process.env.SUPABASE_URL?.trim();

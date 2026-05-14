@@ -2,11 +2,12 @@ import { ensureAiAnalyticsSchema } from "../db/aiAnalyticsSchema";
 import { pool } from "../db/pool";
 import { publishSystemContent } from "./facebook";
 import { supabaseRest } from "./supabaseAdmin";
+import { jobQueue, JOB_TYPES } from "../lib/jobQueue";
 
 const FACEBOOK_PLATFORM = "facebook";
-const DEFAULT_PUBLISH_INTERVAL_MS = 5_000;
-const STARTUP_DELAY_MS = 1_000;
-const DEFAULT_BATCH_SIZE = 10;
+const DEFAULT_PUBLISH_INTERVAL_MS = 30_000; // Increased from 5s to 30s - reduce load
+const STARTUP_DELAY_MS = 2_000;
+const DEFAULT_BATCH_SIZE = 5; // Reduced from 10 - process fewer at once
 
 function contentPath(params: Record<string, string | number>) {
     const search = new URLSearchParams();
@@ -145,33 +146,14 @@ export async function processDueScheduledContent() {
             ids: dueIds,
         });
 
-        for (const id of dueIds) {
-            try {
-                const result = await publishSystemContent(id);
-                console.info("[scheduler.publish] content published", {
-                    contentId: result.contentId,
-                    facebookPostId: result.facebookPostId,
-                    publishedAt: result.publishedAt,
-                });
-            } catch (error) {
-                const errorMessage =
-                    error instanceof Error ? error.message : "Failed to publish scheduled content";
+        // Queue jobs instead of processing synchronously
+        const jobPromises = dueIds.map(id =>
+            jobQueue.add(JOB_TYPES.PUBLISH_CONTENT, { contentId: id }, 1)
+        );
 
-                try {
-                    await markScheduledContentFailed(id, errorMessage);
-                } catch (updateError) {
-                    console.error("[scheduler.publish] failed to persist publish error", {
-                        contentId: id,
-                        message: updateError instanceof Error ? updateError.message : "Failed to persist publish error",
-                    });
-                }
+        await Promise.all(jobPromises);
 
-                console.error("[scheduler.publish] failed to publish scheduled content", {
-                    contentId: id,
-                    message: errorMessage,
-                });
-            }
-        }
+        console.info(`[scheduler.publish] queued ${dueIds.length} publishing jobs`);
     })().finally(() => {
         schedulerRun = null;
     });

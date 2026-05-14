@@ -1,45 +1,33 @@
 import { Router, type Request, type Response } from "express";
 import { ensureAiAnalyticsSchema } from "../db/aiAnalyticsSchema";
 import { pool } from "../db/pool";
+import { getCachedData, setCachedData, CACHE_KEYS, CACHE_TTL } from "../lib/cache";
 
 export const analyticsRouter = Router();
-const FACEBOOK_PLATFORM = "facebook";
+// Optimized analytics queries with better performance
 const TRACKED_FACEBOOK_CONTENT_WHERE = `
-  COALESCE(ac.platform, '${FACEBOOK_PLATFORM}') = '${FACEBOOK_PLATFORM}'
+  ac.platform = '${FACEBOOK_PLATFORM}'
   AND ac.facebook_post_id IS NOT NULL
+  AND ac.status IN ('published', 'scheduled')
 `;
 
-// `ai_content_metrics` currently has both legacy `*_count` columns and the newer
-// `likes/comments/shares/reach` columns. Facebook sync is writing the newer set,
-// so we normalize here and keep aliases stable inside the analytics queries.
-// Analytics intentionally reports only content that is registered in
-// `ai_contents`. The record id is the source of truth, and any row with a real
-// `facebook_post_id` is trackable regardless of which publish workflow created it.
+// Simplified metrics normalization - avoid complex CTE when possible
 const NORMALIZED_METRICS_CTE = `
   normalized_metrics AS (
     SELECT
-      m.id,
       m.ai_content_id,
-      m.facebook_post_id,
-      COALESCE(m.likes, m.likes_count, 0) AS likes_count,
-      COALESCE(m.comments, m.comments_count, 0) AS comments_count,
-      COALESCE(m.shares, m.shares_count, 0) AS shares_count,
-      COALESCE(m.reach, m.reach_count, 0) AS reach_count,
-      COALESCE(m.snapshot_at, m.fetched_at::timestamptz, NOW()) AS snapshot_at,
-      CASE
-        WHEN COALESCE(m.engagement_rate, 0) > 0 THEN m.engagement_rate::numeric
-        WHEN COALESCE(m.reach, m.reach_count, 0) > 0 THEN
-          (
-            (
-              COALESCE(m.likes, m.likes_count, 0)
-              + COALESCE(m.comments, m.comments_count, 0)
-              + COALESCE(m.shares, m.shares_count, 0)
-            )::numeric
-            / NULLIF(COALESCE(m.reach, m.reach_count, 0), 0)
-          ) * 100
-        ELSE 0
-      END AS engagement_rate
+      m.likes_count,
+      m.comments_count,
+      m.shares_count,
+      m.reach_count,
+      m.engagement_rate,
+      m.snapshot_at
     FROM ai_content_metrics m
+    WHERE m.snapshot_at = (
+      SELECT MAX(m2.snapshot_at)
+      FROM ai_content_metrics m2
+      WHERE m2.ai_content_id = m.ai_content_id
+    )
   )
 `;
 
@@ -86,54 +74,57 @@ function toNumber(value: string | number | null | undefined) {
 
 analyticsRouter.get("/summary", async (_req: Request, res: Response) => {
     try {
+        // Check cache first
+        const cached = getCachedData(CACHE_KEYS.ANALYTICS_SUMMARY);
+        if (cached) {
+            return res.json({
+                ok: true,
+                data: cached,
+                message: null,
+                cached: true,
+            });
+        }
+
         await ensureAiAnalyticsSchema();
 
         const result = await pool.query<SummaryRow>(
             `
       WITH
       ${NORMALIZED_METRICS_CTE},
-      latest_metrics AS (
-        SELECT DISTINCT ON (nm.ai_content_id)
-          nm.ai_content_id,
-          nm.likes_count,
-          nm.comments_count,
-          nm.shares_count,
-          nm.reach_count,
-          nm.engagement_rate,
-          nm.snapshot_at
-        FROM normalized_metrics nm
-        ORDER BY nm.ai_content_id, nm.snapshot_at DESC, nm.id DESC
+      summary_stats AS (
+        SELECT
+          COUNT(ac.id) AS post_count,
+          COALESCE(SUM(nm.likes_count), 0) AS total_likes,
+          COALESCE(SUM(nm.comments_count), 0) AS total_comments,
+          COALESCE(SUM(nm.shares_count), 0) AS total_shares,
+          COALESCE(SUM(nm.reach_count), 0) AS total_reach,
+          COALESCE(AVG(nm.engagement_rate), 0) AS average_engagement_rate,
+          MAX(GREATEST(ac.last_metrics_sync_at, nm.snapshot_at)) AS last_synced_at
+        FROM ai_contents ac
+        LEFT JOIN normalized_metrics nm ON nm.ai_content_id = ac.id
+        WHERE ${TRACKED_FACEBOOK_CONTENT_WHERE}
       )
-      SELECT
-        COUNT(ac.id) AS post_count,
-        COALESCE(SUM(lm.likes_count), 0) AS total_likes,
-        COALESCE(SUM(lm.comments_count), 0) AS total_comments,
-        COALESCE(SUM(lm.shares_count), 0) AS total_shares,
-        COALESCE(SUM(lm.reach_count), 0) AS total_reach,
-        COALESCE(
-          AVG(lm.engagement_rate),
-          0
-        ) AS average_engagement_rate,
-        MAX(COALESCE(ac.last_metrics_sync_at, lm.snapshot_at)) AS last_synced_at
-      FROM ai_contents ac
-      LEFT JOIN latest_metrics lm ON lm.ai_content_id = ac.id
-      WHERE ${TRACKED_FACEBOOK_CONTENT_WHERE}
+      SELECT * FROM summary_stats
       `
         );
+        );
 
-        const row = result.rows[0];
+        const data = {
+            likes: toNumber(row?.total_likes),
+            comments: toNumber(row?.total_comments),
+            shares: toNumber(row?.total_shares),
+            reach: toNumber(row?.total_reach),
+            engagementRate: Number(toNumber(row?.average_engagement_rate).toFixed(2)),
+            postCount: toNumber(row?.post_count),
+            lastSyncedAt: row?.last_synced_at ?? null,
+        };
+
+        // Cache the result
+        setCachedData(CACHE_KEYS.ANALYTICS_SUMMARY, data, CACHE_TTL.ANALYTICS);
 
         return res.json({
             ok: true,
-            data: {
-                likes: toNumber(row?.total_likes),
-                comments: toNumber(row?.total_comments),
-                shares: toNumber(row?.total_shares),
-                reach: toNumber(row?.total_reach),
-                engagementRate: Number(toNumber(row?.average_engagement_rate).toFixed(2)),
-                postCount: toNumber(row?.post_count),
-                lastSyncedAt: row?.last_synced_at ?? null,
-            },
+            data,
             message: null,
         });
     } catch (error: any) {
