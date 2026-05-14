@@ -1,21 +1,14 @@
 import { useEffect, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, useIsRestoring } from '@tanstack/react-query';
 import { preloadAllData, warmBackendCache } from '@/services/dataPreloader';
 import { axiosInstance } from '@/lib/api';
 import { useAuth } from '@/components/AuthContext';
 import { useDefenseMode } from '@/lib/defenseMode';
 
-/**
- * DEFENSE MODE: Data Preload Hook
- * 
- * Manages data preloading on app startup
- * Shows loading progress to user
- */
-
 interface UseDataPreloadOptions {
   enabled?: boolean;
   onComplete?: () => void;
-  onError?: (error: any) => void;
+  onError?: (error: unknown) => void;
 }
 
 export interface PreloadState {
@@ -23,7 +16,7 @@ export interface PreloadState {
   progress: number;
   totalItems: number;
   currentItem: string;
-  error: any;
+  error: unknown;
   isComplete: boolean;
 }
 
@@ -39,29 +32,27 @@ const initialState: PreloadState = {
 export function useDataPreload(options: UseDataPreloadOptions = {}) {
   const { enabled = true, onComplete, onError } = options;
   const queryClient = useQueryClient();
+  const isRestoring = useIsRestoring();
   const [state, setState] = useState<PreloadState>(initialState);
 
   useEffect(() => {
-    if (!enabled || state.isComplete) return;
+    if (!enabled || isRestoring || state.isComplete) return;
 
     let cancelled = false;
 
     async function runPreload() {
-      setState(prev => ({ ...prev, isLoading: true, progress: 0 }));
+      setState((prev) => ({ ...prev, isLoading: true, progress: 0, error: null }));
 
       try {
-        // Warm backend cache first
         await warmBackendCache(axiosInstance);
 
-        // Preload all data
         const result = await preloadAllData({
           queryClient,
-          api: axiosInstance,
           onProgress: (loaded, total) => {
             if (!cancelled) {
-              setState(prev => ({
+              setState((prev) => ({
                 ...prev,
-                progress: (loaded / total) * 100,
+                progress: total > 0 ? (loaded / total) * 100 : 0,
                 totalItems: total,
                 currentItem: `Loaded ${loaded}/${total}`,
               }));
@@ -70,7 +61,7 @@ export function useDataPreload(options: UseDataPreloadOptions = {}) {
         });
 
         if (!cancelled) {
-          setState(prev => ({
+          setState((prev) => ({
             ...prev,
             isLoading: false,
             progress: 100,
@@ -78,37 +69,40 @@ export function useDataPreload(options: UseDataPreloadOptions = {}) {
             error: result.failed.length > 0 ? result.errors : null,
           }));
 
-          console.info('[Preload] ✅ Data preload complete:', result);
+          console.info('[Preload] Data preload complete:', result);
           onComplete?.();
         }
       } catch (error) {
         if (!cancelled) {
-          setState(prev => ({
+          setState((prev) => ({
             ...prev,
             isLoading: false,
-            error,
             isComplete: true,
+            error,
           }));
 
-          console.error('[Preload] ❌ Preload error:', error);
+          console.error('[Preload] Preload error:', error);
           onError?.(error);
         }
       }
     }
 
-    runPreload();
+    void runPreload();
 
     return () => {
       cancelled = true;
     };
-  }, [enabled, queryClient, onComplete, onError, state.isComplete]);
+  }, [enabled, isRestoring, queryClient, onComplete, onError, state.isComplete]);
+
+  useEffect(() => {
+    if (!enabled) {
+      setState(initialState);
+    }
+  }, [enabled]);
 
   return state;
 }
 
-/**
- * Component that shows preload progress
- */
 export function PreloadProgressOverlay() {
   const { user } = useAuth();
   const { defenseMode } = useDefenseMode();
@@ -117,36 +111,28 @@ export function PreloadProgressOverlay() {
   if (!preloadState.isLoading) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-8 max-w-md w-full">
-        <h2 className="text-xl font-semibold mb-4">Loading Application Data...</h2>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div className="w-full max-w-md rounded-lg bg-white p-8">
+        <h2 className="mb-4 text-xl font-semibold">Loading application data…</h2>
 
         <div className="space-y-4">
-          {/* Progress bar */}
-          <div className="w-full bg-gray-200 rounded-full h-2.5">
+          <div className="h-2.5 w-full rounded-full bg-gray-200">
             <div
-              className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+              className="h-2.5 rounded-full bg-blue-600 transition-all duration-300"
               style={{ width: `${preloadState.progress}%` }}
             />
           </div>
 
-          {/* Progress text */}
-          <p className="text-sm text-gray-600 text-center">
-            {preloadState.currentItem}
-          </p>
+          <p className="text-center text-sm text-gray-600">{preloadState.currentItem}</p>
 
-          {/* Percentage */}
-          <p className="text-center text-lg font-semibold">
-            {Math.round(preloadState.progress)}%
-          </p>
+          <p className="text-center text-lg font-semibold">{Math.round(preloadState.progress)}%</p>
         </div>
 
-        {/* Error state */}
-        {preloadState.error && (
-          <div className="mt-4 p-3 bg-red-50 text-red-800 rounded text-sm">
-            Some data failed to load, but the app will use cached data.
+        {preloadState.error ? (
+          <div className="mt-4 rounded bg-red-50 p-3 text-sm text-red-800">
+            Some data failed to load; the app will use cached data where available.
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );
