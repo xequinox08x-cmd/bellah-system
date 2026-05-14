@@ -178,10 +178,10 @@ productsRouter.delete('/api/products/:id', async (req, res) => {
     // Product is referenced by sale_items — cannot hard-delete
     if (err.code === '23503') {
       return res.status(409).json({
-        error: 'Cannot delete this product because it has existing sales records. Archive it instead.',
+        error: 'Cannot delete this product because it has existing sales records.',
       });
     }
     console.error('[DELETE /api/products/:id]', err);
     res.status(500).json({ error: 'Server error' });
   }
-});
+});

@@ -234,13 +234,13 @@ function getStoredOfflineSession() {
 function storeOfflineSession(session: Session) {
   try {
     sessionStorage.setItem(OFFLINE_SESSION_KEY, JSON.stringify(session));
-  } catch {}
+  } catch { }
 }
 
 function clearOfflineSession() {
   try {
     sessionStorage.removeItem(OFFLINE_SESSION_KEY);
-  } catch {}
+  } catch { }
 }
 
 function hasOfflineSession() {
@@ -349,7 +349,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const profile = await fetchUserProfile(sess);
       // Cache profile so 503s don't log the user out on next load
-      try { sessionStorage.setItem('bb_user', JSON.stringify(profile)); } catch {}
+      try { sessionStorage.setItem('bb_user', JSON.stringify(profile)); } catch { }
       setUser(profile);
       setSession(sess);
     } catch (error) {
@@ -367,7 +367,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             return;
           }
         }
-      } catch {}
+      } catch { }
       // No valid cache: keep the authenticated session with metadata fallback.
       setUser(prev => prev?.id === supabaseUser.id ? prev : fallbackUser);
       setSession(sess);
@@ -420,7 +420,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const offlineSession = createOfflineSession(email);
       const offlineUser = getFallbackAuthUser(offlineSession.user);
       storeOfflineSession(offlineSession);
-      try { sessionStorage.setItem('bb_user', JSON.stringify(offlineUser)); } catch {}
+      try { sessionStorage.setItem('bb_user', JSON.stringify(offlineUser)); } catch { }
       setUser(offlineUser);
       setSession(offlineSession);
       console.warn('[auth] using local offline login because Supabase auth is unreachable');
@@ -458,7 +458,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = async () => {
     clearOfflineSession();
-    try { sessionStorage.removeItem('bb_user'); } catch {}
+    try { sessionStorage.removeItem('bb_user'); } catch { }
     try {
       await supabase.auth.signOut();
     } catch (error) {

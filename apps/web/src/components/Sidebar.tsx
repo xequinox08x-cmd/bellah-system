@@ -67,7 +67,7 @@ function NavItem({
 }
 
 // ─── Sidebar ───────────────────────────────────────────────────────────────────
-export function Sidebar() {
+export function Sidebar({ mobileOpen, onMobileClose }: { mobileOpen?: boolean; onMobileClose?: () => void }) {
   const { user, logout } = useAuth();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState<boolean>(() =>
@@ -94,6 +94,11 @@ export function Sidebar() {
   useEffect(() => {
     if (isOnMarketing) setMarketingOpen(true);
   }, [location.pathname, isOnMarketing]);
+
+  // Close mobile drawer on navigation
+  useEffect(() => {
+    onMobileClose?.();
+  }, [location.pathname]);
 
   useEffect(() => {
     let cancelled = false;
@@ -167,10 +172,10 @@ export function Sidebar() {
     });
   };
 
-  return (
+  const sidebarContent = (
     <aside
       className="bg-white border-r border-[#E5E7EB] flex flex-col h-full relative shrink-0 sidebar-transition"
-      style={{ width: collapsed ? 64 : 232 }}
+      style={{ width: collapsed && !mobileOpen ? 64 : 232 }}
     >
       {/* ── Brand Header ──────────────────────────────────────────────── */}
       <div
@@ -348,5 +353,24 @@ export function Sidebar() {
         </div>
       </div>
     </aside>
+  );
+
+  return (
+    <>
+      {/* Desktop sidebar */}
+      <div className="hidden md:block">
+        {sidebarContent}
+      </div>
+
+      {/* Mobile overlay */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-40 md:hidden">
+          <div className="absolute inset-0 bg-black/50" onClick={onMobileClose} />
+          <div className="relative z-50 h-full w-[260px] shadow-2xl animate-slide-in-left">
+            {sidebarContent}
+          </div>
+        </div>
+      )}
+    </>
   );
 }

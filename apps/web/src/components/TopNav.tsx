@@ -5,6 +5,7 @@ import {
   ChevronDown,
   FileText,
   LogOut,
+  Menu,
   Plus,
   Search,
   User,
@@ -139,7 +140,7 @@ function scoreSearchEntry(entry: SearchEntry, query: string) {
   return score;
 }
 
-export function TopNav() {
+export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
   const { user, logout } = useAuth();
   const { contentItems, products } = useStore();
   const navigate = useNavigate();
@@ -288,12 +289,22 @@ export function TopNav() {
   };
 
   return (
-    <header className="h-16 bg-white border-b border-[#E5E7EB] flex items-center justify-between px-5 shrink-0 z-20">
-      <div>
-        <h2 className="text-[#111827] text-[15px] leading-tight" style={{ fontWeight: 700 }}>
-          {meta.title}
-        </h2>
-        <p className="text-[#9CA3AF] text-[11px] mt-0.5">{meta.sub}</p>
+    <header className="h-16 bg-white border-b border-[#E5E7EB] flex items-center justify-between px-3 sm:px-5 shrink-0 z-20">
+      <div className="flex items-center gap-3">
+        {/* Hamburger — mobile only */}
+        <button
+          onClick={onMenuClick}
+          className="md:hidden p-2 -ml-1 rounded-lg text-[#6B7280] hover:bg-[#F3F4F6] transition-colors"
+          aria-label="Open menu"
+        >
+          <Menu className="w-5 h-5" />
+        </button>
+        <div>
+          <h2 className="text-[#111827] text-[15px] leading-tight" style={{ fontWeight: 700 }}>
+            {meta.title}
+          </h2>
+          <p className="text-[#9CA3AF] text-[11px] mt-0.5 hidden sm:block">{meta.sub}</p>
+        </div>
       </div>
 
       <div className="flex items-center gap-2">

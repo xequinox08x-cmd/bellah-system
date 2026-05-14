@@ -6,8 +6,7 @@ import {
 } from 'recharts';
 import {
   ShoppingCart, DollarSign, AlertTriangle, Calendar, TrendingUp,
-  ArrowUpRight, ArrowDownRight, RefreshCw, Activity,
-  AlertCircle, Sparkles, X,
+  ArrowUpRight, ArrowDownRight, Activity, X, RefreshCw,
 } from 'lucide-react';
 import { useAuth } from '../components/AuthContext';
 import type { ContentItem } from '../data/store';
@@ -36,13 +35,7 @@ const CHART_TOOLTIP_STYLE = {
   backgroundColor: 'var(--card)',
 };
 
-type ForecastAlert = {
-  product_id: number | string;
-  product_name: string;
-  actual_today: number | string;
-  forecast_value: number | string;
-  pct_of_forecast: number | string;
-};
+
 
 const EMPTY_SUMMARY: DashboardSummary = {
   totalSales: 0,
@@ -119,30 +112,28 @@ function SectionHeader({ title, sub }: { title: string; sub?: string }) {
   );
 }
 
-// ── Critical Alert Modal ──────────────────────────────────────────────────────
+// ── Low Stock Modal ───────────────────────────────────────────────────────────
 
-function CriticalAlertModal({
-  alerts,
+function LowStockModal({
+  items,
   onClose,
-  onGenerateContent,
 }: {
-  alerts: ForecastAlert[];
+  items: LowStockProduct[];
   onClose: () => void;
-  onGenerateContent: () => void;
 }) {
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl" onClick={e => e.stopPropagation()}>
         {/* Header */}
-        <div className="bg-red-500 rounded-t-2xl px-6 py-5 flex items-start justify-between">
+        <div className="bg-gradient-to-r from-[#EC4899] to-[#DB2777] rounded-t-2xl px-6 py-5 flex items-start justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
-              <AlertCircle className="w-5 h-5 text-white" />
+              <AlertTriangle className="w-5 h-5 text-white" />
             </div>
             <div>
-              <p className="text-white text-sm" style={{ fontWeight: 700 }}>Critical Sales Alert</p>
-              <p className="text-red-100 text-xs mt-0.5">
-                {alerts.length} product{alerts.length > 1 ? 's' : ''} below 50% of forecast
+              <p className="text-white text-sm" style={{ fontWeight: 700 }}>Low Stock Items</p>
+              <p className="text-white/70 text-xs mt-0.5">
+                {items.length} item{items.length !== 1 ? 's' : ''} need restocking
               </p>
             </div>
           </div>
@@ -151,40 +142,55 @@ function CriticalAlertModal({
           </button>
         </div>
 
-        {/* Alert list */}
-        <div className="px-6 py-4 space-y-3 max-h-[300px] overflow-y-auto">
-          {alerts.map(alert => (
-            <div key={alert.product_id} className="flex items-center justify-between p-3 bg-red-50 rounded-xl border border-red-100">
-              <div>
-                <p className="text-sm text-[#111827]" style={{ fontWeight: 600 }}>{alert.product_name}</p>
-                <p className="text-xs text-[#6B7280] mt-0.5">
-                  Actual: ₱{Number(alert.actual_today).toFixed(2)} · Forecast: ₱{Number(alert.forecast_value).toFixed(2)}
-                </p>
-              </div>
-              <div className="text-right">
-                <p className="text-lg text-red-500" style={{ fontWeight: 700 }}>
-                  {Number(alert.pct_of_forecast).toFixed(0)}%
-                </p>
-                <p className="text-[10px] text-red-400">of forecast</p>
-              </div>
+        {/* Item list */}
+        <div className="px-6 py-4 space-y-3 max-h-[400px] overflow-y-auto">
+          {items.length === 0 ? (
+            <div className="py-10 text-center">
+              <p className="text-sm text-[#6B7280]">✓ No low stock items found</p>
+              <p className="text-xs text-[#9CA3AF] mt-1">All stock levels are healthy</p>
             </div>
-          ))}
+          ) : items.map(p => {
+            const pct = Math.round((p.stock / p.lowStockThreshold) * 100);
+            const isCritical = p.stock <= Math.floor(p.lowStockThreshold * 0.6);
+            return (
+              <div key={p.id} className="flex items-center justify-between p-3 rounded-xl border border-[#E5E7EB] hover:bg-[#F9FAFB] transition-colors">
+                <div className="min-w-0">
+                  <p className="text-sm text-[#111827]" style={{ fontWeight: 600 }}>{p.name}</p>
+                  <p className="text-[10px] text-[#9CA3AF] mt-0.5">{p.sku} · {p.category}</p>
+                  <div className="flex items-center gap-2 mt-2">
+                    <div className="flex-1 h-1.5 bg-[#F3F4F6] rounded-full overflow-hidden w-28">
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{
+                          width: `${Math.min(pct, 100)}%`,
+                          backgroundColor: isCritical ? '#EF4444' : '#F59E0B',
+                        }}
+                      />
+                    </div>
+                    <span className="text-[10px] text-[#6B7280] tabular-nums">
+                      {p.stock} / {p.lowStockThreshold}
+                    </span>
+                  </div>
+                </div>
+                <span className={`text-[10px] px-2 py-1 rounded-full shrink-0 ml-3 ${isCritical
+                    ? 'bg-red-50 text-red-600 border border-red-100'
+                    : 'bg-amber-50 text-amber-600 border border-amber-100'
+                  }`}
+                >
+                  {isCritical ? 'Critical' : 'Low'}
+                </span>
+              </div>
+            );
+          })}
         </div>
 
-        {/* Actions */}
-        <div className="px-6 py-4 border-t border-[#F3F4F6] space-y-2">
-          <p className="text-xs text-[#6B7280] mb-3">Recommended actions to boost sales:</p>
-          <button
-            onClick={onGenerateContent}
-            className="w-full py-2.5 bg-[#EC4899] text-white rounded-xl text-sm flex items-center justify-center gap-2 hover:bg-[#DB2777] transition-all"
-          >
-            <Sparkles className="w-4 h-4" /> Generate AI Marketing Content
-          </button>
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-[#F3F4F6]">
           <button
             onClick={onClose}
             className="w-full py-2.5 border border-[#E5E7EB] text-[#374151] rounded-xl text-sm hover:bg-[#F9FAFB] transition-all"
           >
-            Dismiss
+            Close
           </button>
         </div>
       </div>
@@ -210,9 +216,7 @@ export default function AdminDashboard() {
   const [analyticsEngagementRate, setAnalyticsEngagementRate] = useState(0);
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
-  const [forecastAlerts, setForecastAlerts] = useState<ForecastAlert[]>([]);
-  const [showAlert, setShowAlert] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [showLowStockModal, setShowLowStockModal] = useState(false);
 
   const today = useMemo(
     () => new Date().toLocaleDateString('en-US', {
@@ -233,11 +237,12 @@ export default function AdminDashboard() {
       setDashboardError(null);
 
       // Run all heavy queries in parallel — no sequential waterfalls
-      const [salesRes, productsRes, contentFeedRes] =
+      const [salesRes, productsRes, contentFeedRes, analyticsRes] =
         await Promise.allSettled([
           getSales(),          // sale_items join (single query)
           getProducts(),       // products (single query)
           api.getAiContentFeed(),
+          api.getAnalyticsSummary(),
         ]);
 
       if (cancelled) return;
@@ -310,48 +315,18 @@ export default function AdminDashboard() {
         setDashboardError(salesRes.reason?.message || 'Failed to load sales data');
       }
 
-      setDashboardLoading(false);
-
-      const [analyticsRes, forecastRes] = await Promise.allSettled([
-        api.getAnalyticsSummary(),
-        api.getForecastAlerts(),
-      ]);
-
-      if (cancelled) return;
-
       if (analyticsRes.status === 'fulfilled') {
         setAnalyticsEngagementRate(Number(analyticsRes.value.data?.engagementRate ?? 0));
       }
 
-      if (forecastRes.status === 'fulfilled') {
-        const alerts = Array.isArray(forecastRes.value?.data) ? forecastRes.value.data as ForecastAlert[] : [];
-        setForecastAlerts(alerts);
-      }
+      setDashboardLoading(false);
     }
 
     loadAll();
     return () => { cancelled = true; };
   }, [todayIso]);
 
-  async function handleGenerateForecasts() {
-    try {
-      setIsGenerating(true);
-      await api.generateForecasts();
-      const response = await api.getForecastAlerts();
-      const alerts = Array.isArray(response?.data) ? response.data as ForecastAlert[] : [];
-      setForecastAlerts(alerts);
-      setShowAlert(alerts.length > 0);
-    } catch (e: any) {
-      setDashboardError(e?.error || e?.message || 'Failed to generate forecasts');
-    } finally {
-      setIsGenerating(false);
-    }
-  }
 
-  function handleGenerateContent() {
-    setShowAlert(false);
-    navigate('/marketing');
-  }
 
   // ── Filtered sales by date range ──────────────────────────────────────
   const isDateMode = salesViewMode === 'date';
@@ -493,12 +468,11 @@ export default function AdminDashboard() {
   return (
     <div className="space-y-5 max-w-7xl mx-auto pb-6">
 
-      {/* Critical Alert Modal */}
-      {showAlert && forecastAlerts.length > 0 && (
-        <CriticalAlertModal
-          alerts={forecastAlerts}
-          onClose={() => setShowAlert(false)}
-          onGenerateContent={handleGenerateContent}
+      {/* Low Stock Modal */}
+      {showLowStockModal && (
+        <LowStockModal
+          items={lowStockProducts}
+          onClose={() => setShowLowStockModal(false)}
         />
       )}
 
@@ -547,29 +521,6 @@ export default function AdminDashboard() {
               />
             </label>
           )}
-
-          {/* Forecast alert badge */}
-          {forecastAlerts.length > 0 && (
-            <button
-              onClick={() => setShowAlert(true)}
-              className="flex items-center gap-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600 hover:bg-red-100 transition-all"
-            >
-              <AlertCircle className="w-3.5 h-3.5" />
-              {forecastAlerts.length} Sales Alert{forecastAlerts.length > 1 ? 's' : ''}
-            </button>
-          )}
-
-          {/* Generate forecast button */}
-          <button
-            onClick={handleGenerateForecasts}
-            disabled={isGenerating}
-            className="flex items-center gap-2 px-3 py-2 bg-white border border-[#E5E7EB] rounded-lg text-xs text-[#374151] hover:bg-[#F9FAFB] transition-all disabled:opacity-50"
-          >
-            {isGenerating
-              ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Generating...</>
-              : <><TrendingUp className="w-3.5 h-3.5" /> Run Forecast</>
-            }
-          </button>
         </div>
       </div>
 
@@ -602,7 +553,7 @@ export default function AdminDashboard() {
           icon={AlertTriangle}
           iconBg="bg-red-50"
           iconColor="text-red-500"
-          onClick={() => navigate('/products')}
+          onClick={() => setShowLowStockModal(true)}
         />
         <KPICard
           label="Scheduled Posts"

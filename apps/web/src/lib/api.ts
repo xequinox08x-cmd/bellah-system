@@ -15,6 +15,32 @@ const REQUEST_TIMEOUT_MS = 8_000;
 const FAST_OPTIONAL_TIMEOUT_MS = 4_000;
 const LOCAL_USERS_KEY = 'bb_local_users';
 
+// OPTIMIZATION: Simple request cache with TTL to prevent duplicate API calls
+// Cache stays valid for 30 seconds by default, can be overridden per request
+const REQUEST_CACHE = new Map<string, { data: unknown; expires: number }>();
+
+function getCacheKey(url: string, init?: RequestInit): string {
+  // Only cache GET requests
+  if (init?.method && init.method !== 'GET') return '';
+  return url;
+}
+
+function getFromCache(key: string): unknown | null {
+  if (!key) return null;
+  const cached = REQUEST_CACHE.get(key);
+  if (!cached) return null;
+  if (Date.now() > cached.expires) {
+    REQUEST_CACHE.delete(key);
+    return null;
+  }
+  return cached.data;
+}
+
+function setInCache(key: string, data: unknown, ttlMs = 30_000): void {
+  if (!key) return;
+  REQUEST_CACHE.set(key, { data, expires: Date.now() + ttlMs });
+}
+
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   if (init.signal) return fetch(input, init);
 
@@ -27,13 +53,27 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
   }
 }
 
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+async function fetchJson<T>(url: string, init?: RequestInit, cacheTtlMs?: number): Promise<T> {
+  // OPTIMIZATION: Check cache first for GET requests
+  const cacheKey = getCacheKey(url, init);
+  if (cacheKey) {
+    const cached = getFromCache(cacheKey);
+    if (cached !== null) {
+      return cached as T;
+    }
+  }
+
   const res = await fetchWithTimeout(url, init);
   const contentType = res.headers.get('content-type') || '';
   const data = contentType.includes('application/json') ? await res.json() : null;
 
   if (!res.ok) {
     throw new Error(data?.message || data?.error || `Request failed with status ${res.status}`);
+  }
+
+  // OPTIMIZATION: Store successful responses in cache
+  if (cacheKey && res.ok) {
+    setInCache(cacheKey, data, cacheTtlMs);
   }
 
   return data as T;
@@ -68,9 +108,10 @@ async function getSupabaseProducts() {
 }
 
 async function getSupabaseSales() {
+  // OPTIMIZATION: Select only needed columns instead of *
   const { data, error } = await supabase
     .from('sales')
-    .select('*')
+    .select('id, total, customer_name, created_at')
     .order('created_at', { ascending: false });
 
   if (error) throw new Error(error.message);
@@ -78,9 +119,10 @@ async function getSupabaseSales() {
 }
 
 async function getSupabaseSaleById(id: number) {
+  // OPTIMIZATION: Select only needed columns instead of *
   const { data: sale, error: saleError } = await supabase
     .from('sales')
-    .select('*')
+    .select('id, total, created_at')
     .eq('id', id)
     .maybeSingle();
 
@@ -212,9 +254,10 @@ async function getSupabaseDashboardSummary(start?: string, end?: string) {
 }
 
 async function getSupabaseAnalytics(trendDays = 7) {
+  // OPTIMIZATION: Select only needed columns instead of *
   const [{ data: contents, error: contentError }, { data: metrics, error: metricsError }] = await Promise.all([
-    supabase.from('ai_contents').select('*').order('created_at', { ascending: false }),
-    supabase.from('ai_content_metrics').select('*').order('snapshot_at', { ascending: false }),
+    supabase.from('ai_contents').select('id, title, content, platform, facebook_post_id, published_at, last_metrics_sync_at, created_at').order('created_at', { ascending: false }),
+    supabase.from('ai_content_metrics').select('ai_content_id, likes_count, comments_count, shares_count, reach_count, engagement_rate, snapshot_at').order('snapshot_at', { ascending: false }),
   ]);
 
   if (contentError) {
@@ -1459,33 +1502,4 @@ export const api = {
     return payload;
   },
 
-  // FORECASTS
-  generateForecasts: async () => {
-    const res = await fetch(`${API_BASE}/forecasts/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    return res.json();
-  },
-
-  getForecasts: async () => {
-    try {
-      const res = await fetchWithTimeout(`${API_BASE}/forecasts`, undefined, FAST_OPTIONAL_TIMEOUT_MS);
-      return res.json();
-    } catch (error) {
-      console.warn('[api] forecasts unavailable', error);
-      return { data: [] };
-    }
-  },
-
-  getForecastAlerts: async () => {
-    try {
-      const res = await fetchWithTimeout(`${API_BASE}/forecasts/alerts`, undefined, FAST_OPTIONAL_TIMEOUT_MS);
-      if (!res.ok) return { data: [] };
-      return res.json();
-    } catch (error) {
-      console.warn('[api] forecast alerts unavailable', error);
-      return { data: [] };
-    }
-  },
 };
