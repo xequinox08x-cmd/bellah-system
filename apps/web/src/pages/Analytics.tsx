@@ -3,25 +3,21 @@ import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend, PieChart, Pie, Cell,
 } from 'recharts';
-import { Heart, MessageCircle, Share2, Eye, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
+import { Heart, MessageCircle, Share2, Eye, RefreshCw } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
+import { queryKeys } from '../lib/queryClient';
 
-function MetricCard({ label, value, icon: Icon, color, bg, change, up }: {
+function MetricCard({ label, value, icon: Icon, color, bg }: {
   label: string; value: string | number; icon: ElementType;
-  color: string; bg: string; change?: string; up?: boolean;
+  color: string; bg: string;
 }) {
   return (
-    <div className="bg-white rounded-xl border border-[#E5E7EB] p-5">
-      <div className="flex items-start justify-between mb-3">
+    <div className="bg-white rounded-xl border border-[#E5E7EB] p-4 shadow-sm shadow-[#111827]/5">
+      <div className="flex items-start justify-between mb-2.5">
         <div className={`w-9 h-9 rounded-lg ${bg} flex items-center justify-center`}>
           <Icon className={`w-4 h-4 ${color}`} />
         </div>
-        {change && (
-          <span className={`flex items-center gap-0.5 text-xs ${up ? 'text-emerald-600' : 'text-red-500'}`}>
-            {up ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
-            {change}
-          </span>
-        )}
       </div>
       <p className="text-2xl text-[#111827]" style={{ fontWeight: 700 }}>
         {typeof value === 'number' ? value.toLocaleString() : value}
@@ -76,25 +72,126 @@ const EMPTY_SUMMARY: AnalyticsSummary = {
   lastSyncedAt: null,
 };
 
+const ANALYTICS_CACHE_KEY = 'bellah.analytics.latest';
+const FALLBACK_NOTICE = 'Analytics temporarily unavailable. Showing cached insights.';
+
+type AnalyticsCache = {
+  summary: AnalyticsSummary;
+  trend: AnalyticsTrendPoint[];
+  posts: AnalyticsPost[];
+  cachedAt: string;
+};
+
+function safeNumber(value: unknown) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeSummary(value: any): AnalyticsSummary {
+  return {
+    likes: safeNumber(value?.likes ?? value?.reactions),
+    comments: safeNumber(value?.comments),
+    shares: safeNumber(value?.shares),
+    reach: safeNumber(value?.reach),
+    engagementRate: safeNumber(value?.engagementRate),
+    postCount: safeNumber(value?.postCount),
+    lastSyncedAt: typeof value?.lastSyncedAt === 'string' ? value.lastSyncedAt : null,
+  };
+}
+
+function normalizeTrend(value: any): AnalyticsTrendPoint[] {
+  return Array.isArray(value)
+    ? value.map((item) => ({
+      date: String(item?.date || ''),
+      label: String(item?.label || item?.date || ''),
+      likes: safeNumber(item?.likes ?? item?.reactions),
+      comments: safeNumber(item?.comments),
+      shares: safeNumber(item?.shares),
+      reach: safeNumber(item?.reach),
+      engagementRate: safeNumber(item?.engagementRate),
+    })).filter((item) => item.date && item.label)
+    : [];
+}
+
+function normalizePosts(value: any): AnalyticsPost[] {
+  return Array.isArray(value)
+    ? value.map((item, index) => ({
+      id: safeNumber(item?.id) || index + 1,
+      title: String(item?.title || 'Untitled Content'),
+      platform: String(item?.platform || 'facebook'),
+      facebookPostId: typeof item?.facebookPostId === 'string' ? item.facebookPostId : null,
+      publishedAt: typeof item?.publishedAt === 'string' ? item.publishedAt : null,
+      createdAt: String(item?.createdAt || new Date().toISOString()),
+      lastMetricsSyncAt: typeof item?.lastMetricsSyncAt === 'string' ? item.lastMetricsSyncAt : null,
+      likes: safeNumber(item?.likes ?? item?.reactions),
+      comments: safeNumber(item?.comments),
+      shares: safeNumber(item?.shares),
+      reach: safeNumber(item?.reach),
+      engagementRate: safeNumber(item?.engagementRate),
+    }))
+    : [];
+}
+
+function readCachedAnalytics(): AnalyticsCache | null {
+  try {
+    const raw = localStorage.getItem(ANALYTICS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+
+    return {
+      summary: normalizeSummary(parsed?.summary),
+      trend: normalizeTrend(parsed?.trend),
+      posts: normalizePosts(parsed?.posts),
+      cachedAt: String(parsed?.cachedAt || new Date().toISOString()),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedAnalytics(cache: Omit<AnalyticsCache, 'cachedAt'>) {
+  try {
+    localStorage.setItem(ANALYTICS_CACHE_KEY, JSON.stringify({
+      ...cache,
+      cachedAt: new Date().toISOString(),
+    }));
+  } catch {
+    // Storage can be unavailable in private browser modes; analytics still renders in memory.
+  }
+}
+
+function clearCachedAnalytics() {
+  try {
+    localStorage.removeItem(ANALYTICS_CACHE_KEY);
+  } catch {
+    // Storage can be unavailable in private browser modes; analytics still renders in memory.
+  }
+}
+
+function SkeletonBlock({ className = '' }: { className?: string }) {
+  return <div className={`animate-pulse rounded-lg bg-[#F3F4F6] ${className}`} />;
+}
+
 function formatShortTitle(value: string) {
   return value.length > 20 ? `${value.slice(0, 20)}...` : value;
 }
 
-async function fetchAnalyticsData() {
+async function fetchAnalyticsData(force = false) {
   const [summaryResponse, trendResponse, postsResponse] = await Promise.all([
-    api.getAnalyticsSummary(),
-    api.getAnalyticsTrend(90),
-    api.getAnalyticsPosts(),
+    api.getAnalyticsSummary({ force }),
+    api.getAnalyticsTrend(90, { force }),
+    api.getAnalyticsPosts({ force }),
   ]);
 
   return {
-    summary: summaryResponse.data,
-    trend: trendResponse.data,
-    posts: postsResponse.data,
+    summary: normalizeSummary(summaryResponse.data),
+    trend: normalizeTrend(trendResponse.data),
+    posts: normalizePosts(postsResponse.data),
   };
 }
 
 export default function Analytics() {
+  const queryClient = useQueryClient();
   const [summary, setSummary] = useState<AnalyticsSummary>(EMPTY_SUMMARY);
   const [trend, setTrend] = useState<AnalyticsTrendPoint[]>([]);
   const [posts, setPosts] = useState<AnalyticsPost[]>([]);
@@ -104,7 +201,7 @@ export default function Analytics() {
   const [refreshSummary, setRefreshSummary] = useState<string | null>(null);
   const [selectedTrendDate, setSelectedTrendDate] = useState('');
 
-  async function loadAnalytics(showLoading = true) {
+  async function loadAnalytics(showLoading = true, force = false) {
     if (showLoading) {
       setLoading(true);
     }
@@ -112,16 +209,27 @@ export default function Analytics() {
     setError(null);
 
     try {
-      const analyticsData = await fetchAnalyticsData();
+      const analyticsData = await fetchAnalyticsData(force);
 
       setSummary(analyticsData.summary);
       setTrend(analyticsData.trend);
       setPosts(analyticsData.posts);
+      writeCachedAnalytics(analyticsData);
+      if (force) {
+        console.info('[analytics.refresh] frontend state updated', {
+          likes: analyticsData.summary.likes,
+          comments: analyticsData.summary.comments,
+          shares: analyticsData.summary.shares,
+          reach: analyticsData.summary.reach,
+          lastSyncedAt: analyticsData.summary.lastSyncedAt,
+        });
+      }
     } catch (e: any) {
-      setSummary(EMPTY_SUMMARY);
-      setTrend([]);
-      setPosts([]);
-      setError(e?.message || 'Failed to load Facebook analytics');
+      const cached = readCachedAnalytics();
+      setSummary(cached?.summary ?? EMPTY_SUMMARY);
+      setTrend(cached?.trend ?? []);
+      setPosts(cached?.posts ?? []);
+      setError(FALLBACK_NOTICE);
     } finally {
       if (showLoading) {
         setLoading(false);
@@ -130,12 +238,18 @@ export default function Analytics() {
   }
 
   useEffect(() => {
+    const cached = readCachedAnalytics();
+    if (cached) {
+      setSummary(cached.summary);
+      setTrend(cached.trend);
+      setPosts(cached.posts);
+    }
     void loadAnalytics();
   }, []);
 
   useEffect(() => {
     const handleAnalyticsUpdated = () => {
-      void loadAnalytics(false);
+      void loadAnalytics(false, true);
     };
 
     window.addEventListener('facebook-analytics-updated', handleAnalyticsUpdated);
@@ -149,25 +263,45 @@ export default function Analytics() {
     setRefreshing(true);
     setRefreshSummary(null);
     setError(null);
+    clearCachedAnalytics();
+    console.info('[analytics.refresh] manual refresh requested; local analytics cache cleared');
 
     try {
       const refreshResponse = await api.syncAllFacebookMetrics();
-      await loadAnalytics(false);
+      await queryClient.cancelQueries({ queryKey: queryKeys.analytics.all });
+      queryClient.removeQueries({ queryKey: queryKeys.analytics.all });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.analytics.all });
+      await loadAnalytics(false, true);
 
       const syncData = refreshResponse.data;
+      console.info('[analytics.refresh] frontend refresh completion', {
+        fallback: Boolean(refreshResponse.fallback),
+        synced: syncData.totalSynced,
+        failed: syncData.totalFailed,
+        reactions: syncData.reactions ?? null,
+        comments: syncData.comments ?? null,
+        shares: syncData.shares ?? null,
+      });
       setRefreshSummary(
-        syncData.totalFailed > 0
+        refreshResponse.fallback
+          ? FALLBACK_NOTICE
+          : syncData.totalFailed > 0
           ? `Synced ${syncData.totalSynced} of ${syncData.totalTracked} tracked posts. Failed IDs: ${syncData.failedIds.join(', ')}`
           : `Synced ${syncData.totalSynced} of ${syncData.totalTracked} tracked posts.`
       );
     } catch (e: any) {
-      setError(e?.message || 'Failed to refresh Facebook analytics');
+      const cached = readCachedAnalytics();
+      if (cached) {
+        setSummary(cached.summary);
+        setTrend(cached.trend);
+        setPosts(cached.posts);
+      }
+      setError(FALLBACK_NOTICE);
     } finally {
       setRefreshing(false);
     }
   }
 
-  const engagementRate = summary.engagementRate.toFixed(1);
   const PIE_COLORS = ['#EC4899', '#D4A373', '#4A90D9'];
   const trendDates = useMemo(() => trend.map((item) => item.date), [trend]);
   const selectedTrend = useMemo(
@@ -210,18 +344,17 @@ export default function Analytics() {
   );
 
   return (
-    <div className="max-w-7xl mx-auto space-y-5">
+    <div className="max-w-7xl mx-auto space-y-3">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-[#111827] text-xl" style={{ fontWeight: 700 }}>Analytics</h1>
           <p className="text-[#6B7280] text-sm">Track engagement and performance across published Facebook content</p>
-          <p className="text-[#9CA3AF] text-xs mt-1">Includes system records in ai_contents that already have a Facebook post ID.</p>
         </div>
         <button
           type="button"
           onClick={() => void handleRefreshAnalytics()}
           disabled={loading || refreshing}
-          className="inline-flex items-center gap-2 rounded-lg border border-[#E5E7EB] bg-white px-3 py-2 text-sm text-[#374151] transition-all hover:bg-[#F9FAFB] disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex min-w-[154px] items-center justify-center gap-2 rounded-lg border border-[#F9A8D4] bg-white px-3 py-2 text-sm text-[#BE185D] shadow-sm shadow-[#111827]/5 transition-all hover:bg-[#FDF2F8] disabled:cursor-not-allowed disabled:opacity-60"
         >
           <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
           {refreshing ? 'Refreshing...' : 'Refresh Analytics'}
@@ -229,20 +362,26 @@ export default function Analytics() {
       </div>
 
       {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {error}
+        <div className="rounded-xl border border-[#F9A8D4] bg-[#FDF2F8] px-4 py-3 text-sm text-[#9D174D] shadow-sm shadow-[#111827]/5">
+          {FALLBACK_NOTICE}
         </div>
       )}
 
       {!error && refreshSummary && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700 shadow-sm shadow-[#111827]/5">
           {refreshSummary}
         </div>
       )}
 
       {!error && loading && (
-        <div className="rounded-xl border border-[#E5E7EB] bg-white px-4 py-3 text-sm text-[#6B7280]">
-          Loading Facebook analytics...
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          {[0, 1, 2, 3].map((item) => (
+            <div key={item} className="rounded-xl border border-[#E5E7EB] bg-white p-4 shadow-sm shadow-[#111827]/5">
+              <SkeletonBlock className="mb-3 h-9 w-9" />
+              <SkeletonBlock className="mb-2 h-7 w-20" />
+              <SkeletonBlock className="h-3 w-24" />
+            </div>
+          ))}
         </div>
       )}
 
@@ -253,35 +392,8 @@ export default function Analytics() {
         <MetricCard label="Total Reach" value={summary.reach} icon={Eye} color="text-purple-600" bg="bg-purple-50" />
       </div>
 
-      <div className="bg-gradient-to-r from-[#EC4899] to-[#D4A373] rounded-xl p-5 text-white">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <p className="text-white/80 text-sm">Average Engagement Rate</p>
-            <p className="text-4xl mt-1" style={{ fontWeight: 700 }}>{engagementRate}%</p>
-            <p className="text-white/70 text-xs mt-1">{summary.postCount} published Facebook posts</p>
-          </div>
-          <div className="text-right space-y-2">
-            <div>
-              <p className="text-white/70 text-xs">Last Sync</p>
-              <p className="text-white text-sm" style={{ fontWeight: 600 }}>
-                {summary.lastSyncedAt ? new Date(summary.lastSyncedAt).toLocaleString() : 'No sync yet'}
-              </p>
-            </div>
-            <div>
-              <p className="text-white/70 text-xs">Benchmark</p>
-              <p className="text-white text-sm" style={{ fontWeight: 600 }}>2.5%</p>
-            </div>
-            <div className="px-3 py-1 bg-white/20 rounded-lg">
-              <p className="text-white text-xs">
-                {parseFloat(engagementRate) > 2.5 ? 'Above average' : 'Keep growing'}
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 bg-white rounded-xl border border-[#E5E7EB] p-5">
+        <div className="lg:col-span-2 bg-white rounded-xl border border-[#E5E7EB] p-4 shadow-sm shadow-[#111827]/5">
           <div className="mb-4 flex w-full flex-col gap-3 sm:flex-row sm:items-start">
             <div className="min-w-0">
               <h3 className="text-sm text-[#111827]" style={{ fontWeight: 600 }}>Engagement Trend</h3>
@@ -306,22 +418,22 @@ export default function Analytics() {
               No Facebook metrics snapshots yet
             </div>
           ) : (
-            <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={engagementTrend} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#F3F4F6" />
+            <ResponsiveContainer width="100%" height={230}>
+              <LineChart data={engagementTrend} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
                 <XAxis dataKey="day" tick={{ fontSize: 11, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 11, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
                 <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #E5E7EB', fontSize: 12 }} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Line type="monotone" dataKey="Reacts" stroke="#EC4899" strokeWidth={2} dot={Boolean(selectedTrendDate)} />
-                <Line type="monotone" dataKey="Comments" stroke="#4A90D9" strokeWidth={2} dot={Boolean(selectedTrendDate)} />
-                <Line type="monotone" dataKey="Shares" stroke="#D4A373" strokeWidth={2} dot={Boolean(selectedTrendDate)} />
+                <Line type="monotone" dataKey="Reacts" stroke="#EC4899" strokeWidth={3} dot={Boolean(selectedTrendDate)} />
+                <Line type="monotone" dataKey="Comments" stroke="#2563EB" strokeWidth={3} dot={Boolean(selectedTrendDate)} />
+                <Line type="monotone" dataKey="Shares" stroke="#D97706" strokeWidth={3} dot={Boolean(selectedTrendDate)} />
               </LineChart>
             </ResponsiveContainer>
           )}
         </div>
 
-        <div className="bg-white rounded-xl border border-[#E5E7EB] p-5">
+        <div className="bg-white rounded-xl border border-[#E5E7EB] p-4 shadow-sm shadow-[#111827]/5">
           <div className="mb-4">
             <h3 className="text-sm text-[#111827]" style={{ fontWeight: 600 }}>Facebook Engagement Mix</h3>
             <p className="text-xs text-[#9CA3AF]">Reacts, comments, and shares</p>
@@ -331,7 +443,7 @@ export default function Analytics() {
               No engagement data yet
             </div>
           ) : (
-            <ResponsiveContainer width="100%" height={140}>
+            <ResponsiveContainer width="100%" height={160}>
               <PieChart>
                 <Pie data={engagementMix} dataKey="value" cx="50%" cy="50%" innerRadius={35} outerRadius={55} paddingAngle={3}>
                   {engagementMix.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
@@ -358,7 +470,7 @@ export default function Analytics() {
         </div>
       </div>
 
-      <div className="bg-white rounded-xl border border-[#E5E7EB] p-5">
+      <div className="bg-white rounded-xl border border-[#E5E7EB] p-4 shadow-sm shadow-[#111827]/5">
         <div className="mb-4">
           <h3 className="text-sm text-[#111827]" style={{ fontWeight: 600 }}>Top Facebook Posts by Engagement</h3>
           <p className="text-xs text-[#9CA3AF]">Reacts, comments, and shares on published posts</p>
@@ -369,21 +481,21 @@ export default function Analytics() {
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={topPostsData} margin={{ top: 0, right: 10, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#F3F4F6" />
+            <BarChart data={topPostsData} margin={{ top: 4, right: 10, left: -16, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
               <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fontSize: 11, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
               <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #E5E7EB', fontSize: 12 }} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
               <Bar dataKey="Reacts" fill="#EC4899" radius={[3, 3, 0, 0]} />
-              <Bar dataKey="Comments" fill="#4A90D9" radius={[3, 3, 0, 0]} />
-              <Bar dataKey="Shares" fill="#D4A373" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="Comments" fill="#2563EB" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="Shares" fill="#D97706" radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         )}
       </div>
 
-      <div className="bg-white rounded-xl border border-[#E5E7EB]">
+      <div className="bg-white rounded-xl border border-[#E5E7EB] shadow-sm shadow-[#111827]/5">
         <div className="px-5 py-4 border-b border-[#E5E7EB]">
           <h3 className="text-sm text-[#111827]" style={{ fontWeight: 600 }}>Published Content Performance</h3>
         </div>

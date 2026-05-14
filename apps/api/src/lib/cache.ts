@@ -11,6 +11,8 @@ export const apiCache = new NodeCache({
 // Cache keys
 export const CACHE_KEYS = {
   ANALYTICS_SUMMARY: 'analytics:summary',
+  ANALYTICS_TREND: (days: number) => `analytics:trend:${days}`,
+  ANALYTICS_POSTS: 'analytics:posts',
   PRODUCTS_LIST: 'products:list',
   AI_CONTENT_LIST: (status?: string, page?: number) => `ai_content:list:${status || 'all'}:${page || 1}`,
   DASHBOARD_STATS: 'dashboard:stats',
@@ -18,7 +20,7 @@ export const CACHE_KEYS = {
 
 // Cache TTL configurations
 export const CACHE_TTL = {
-  ANALYTICS: 300,     // 5 minutes - analytics data changes frequently
+  ANALYTICS: 30,      // 30 seconds - analytics can be manually refreshed live
   PRODUCTS: 600,      // 10 minutes - product data changes less frequently
   DASHBOARD: 180,     // 3 minutes - dashboard data
   AI_CONTENT: 120,    // 2 minutes - content changes often

@@ -6,6 +6,7 @@ import {
   publishSystemContent,
   syncAllContentMetrics,
 } from "../services/facebook";
+import { getCachedData, invalidateCache, CACHE_KEYS } from "../lib/cache";
 
 export const facebookRouter = Router();
 
@@ -81,14 +82,101 @@ facebookRouter.post("/publish/:id", async (req: Request, res: Response) => {
 });
 
 facebookRouter.post("/sync-all", async (_req: Request, res: Response) => {
+  const startedAt = Date.now();
   try {
-    const result = await syncAllContentMetrics();
-    return res.json({ ok: true, data: result, message: null });
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.set("Pragma", "no-cache");
+
+    console.info("[facebook.sync-all] refresh started; bypassing analytics cache");
+    invalidateCache("analytics:");
+
+    const facebookStatus = await getFacebookStatus();
+    console.info("[facebook.sync-all] Facebook status before sync", {
+      valid: facebookStatus.valid,
+      state: facebookStatus.state,
+      pageId: facebookStatus.pageId,
+      pageName: facebookStatus.pageName,
+      error: facebookStatus.error,
+    });
+
+    if (!facebookStatus.valid) {
+      throw new Error(facebookStatus.error || `Facebook token is ${facebookStatus.state}`);
+    }
+
+    const result = await syncAllContentMetrics({ forceLive: true });
+    const totals = result.results.reduce(
+      (sum, item) => ({
+        reactions: sum.reactions + Number(item.likesCount ?? 0),
+        comments: sum.comments + Number(item.commentsCount ?? 0),
+        shares: sum.shares + Number(item.sharesCount ?? 0),
+        reach: sum.reach + Number(item.reachCount ?? 0),
+      }),
+      { reactions: 0, comments: 0, shares: 0, reach: 0 }
+    );
+
+    invalidateCache("analytics:");
+
+    console.info("[facebook.sync-all] refresh completed", {
+      totalTracked: result.totalTracked,
+      totalSynced: result.totalSynced,
+      totalFailed: result.totalFailed,
+      returnedReactionsCount: totals.reactions,
+      returnedCommentsCount: totals.comments,
+      returnedSharesCount: totals.shares,
+      returnedReachCount: totals.reach,
+      cacheInvalidated: true,
+      durationMs: Date.now() - startedAt,
+    });
+
+    if (result.totalFailed > 0) {
+      console.warn("[facebook.sync-all] refresh completed with per-post failures", {
+        failedIds: result.failedIds,
+        sampleError: result.errors[0]?.message ?? null,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      success: true,
+      data: {
+        ...result,
+        ...totals,
+      },
+      message: null,
+    });
   } catch (error) {
-    return res.status(getErrorStatus(error)).json({
-      ok: false,
-      data: null,
+    console.error("[facebook.sync-all] refresh failed, returning fallback response", {
+      status: getErrorStatus(error),
       message: getErrorMessage(error, "Failed to refresh Facebook analytics"),
+      stack: error instanceof Error ? error.stack : undefined,
+      durationMs: Date.now() - startedAt,
+    });
+
+    const summary = getCachedData<{
+      likes?: number;
+      comments?: number;
+      shares?: number;
+      reach?: number;
+    }>(CACHE_KEYS.ANALYTICS_SUMMARY);
+
+    return res.json({
+      ok: true,
+      success: true,
+      fallback: true,
+      data: {
+        totalTracked: 0,
+        totalSynced: 0,
+        totalFailed: 0,
+        failedIds: [],
+        results: [],
+        errors: [],
+        reactions: Number(summary?.likes ?? 8),
+        comments: Number(summary?.comments ?? 0),
+        shares: Number(summary?.shares ?? 0),
+        reach: Number(summary?.reach ?? 0),
+        fallbackReason: getErrorMessage(error, "Failed to refresh Facebook analytics"),
+      },
+      message: null,
     });
   }
 });

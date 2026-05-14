@@ -13,6 +13,7 @@ export const API_BASE = `${API_ROOT}/api`;
 
 const REQUEST_TIMEOUT_MS = 8_000;
 const FAST_OPTIONAL_TIMEOUT_MS = 4_000;
+const MANUAL_REFRESH_TIMEOUT_MS = 45_000;
 const LOCAL_USERS_KEY = 'bb_local_users';
 
 // OPTIMIZATION: Simple request cache with TTL to prevent duplicate API calls
@@ -41,6 +42,14 @@ function setInCache(key: string, data: unknown, ttlMs = 30_000): void {
   REQUEST_CACHE.set(key, { data, expires: Date.now() + ttlMs });
 }
 
+function invalidateRequestCache(pattern: string): void {
+  for (const key of REQUEST_CACHE.keys()) {
+    if (key.includes(pattern)) {
+      REQUEST_CACHE.delete(key);
+    }
+  }
+}
+
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   if (init.signal) return fetch(input, init);
 
@@ -56,7 +65,8 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
 async function fetchJson<T>(url: string, init?: RequestInit, cacheTtlMs?: number, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   // OPTIMIZATION: Check cache first for GET requests
   const cacheKey = getCacheKey(url, init);
-  if (cacheKey) {
+  const useRequestCache = cacheTtlMs !== 0;
+  if (cacheKey && useRequestCache) {
     const cached = getFromCache(cacheKey);
     if (cached !== null) {
       return cached as T;
@@ -72,7 +82,7 @@ async function fetchJson<T>(url: string, init?: RequestInit, cacheTtlMs?: number
   }
 
   // OPTIMIZATION: Store successful responses in cache
-  if (cacheKey && res.ok) {
+  if (cacheKey && res.ok && useRequestCache) {
     setInCache(cacheKey, data, cacheTtlMs);
   }
 
@@ -99,7 +109,20 @@ export const axiosInstance = {
       if (value !== undefined) url.searchParams.set(key, String(value));
     });
 
-    const data = await fetchJson<T>(url.toString(), undefined, options?.cacheTtlMs, options?.timeout);
+    const data = await fetchJson<T>(
+      url.toString(),
+      options?.cacheTtlMs === 0
+        ? {
+          cache: 'no-store',
+          headers: {
+            'Cache-Control': 'no-cache',
+            Pragma: 'no-cache',
+          },
+        }
+        : undefined,
+      options?.cacheTtlMs,
+      options?.timeout
+    );
     return { data };
   },
   async post<T = any>(endpoint: string, body?: unknown, options?: { timeout?: number }) {
@@ -1019,7 +1042,7 @@ export const api = {
   },
 
   async deleteContent(id: number, role?: string) {
-    const res = await fetch(`${API_BASE}/ai/contents/${id}`, {
+    const res = await fetch(`${API_BASE}/content/${id}`, {
       method: 'DELETE',
       headers: {
         'Content-Type': 'application/json',
@@ -1226,24 +1249,37 @@ export const api = {
   },
 
   async syncAllFacebookMetrics() {
-    const res = await fetch(`${API_BASE}/facebook/sync-all`, {
-      method: 'POST',
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || 'Failed to refresh Facebook analytics');
-    return data as {
+    console.info('[analytics.refresh] refresh started');
+    invalidateRequestCache('/api/analytics');
+    try {
+      const data = await fetchJson(`${API_BASE}/facebook/sync-all`, { method: 'POST' }, undefined, MANUAL_REFRESH_TIMEOUT_MS);
+      invalidateRequestCache('/api/analytics');
+      console.info('[analytics.refresh] live sync request completed', {
+        synced: (data as any)?.data?.totalSynced ?? null,
+        failed: (data as any)?.data?.totalFailed ?? null,
+        reactions: (data as any)?.data?.reactions ?? null,
+        comments: (data as any)?.data?.comments ?? null,
+        shares: (data as any)?.data?.shares ?? null,
+        fallback: Boolean((data as any)?.fallback),
+      });
+      return data as {
       ok: boolean;
       data: {
         totalTracked: number;
         totalSynced: number;
         totalFailed: number;
         failedIds: number[];
+        reactions?: number;
+        comments?: number;
+        shares?: number;
+        reach?: number;
         results: Array<{
           contentId: number;
           facebookPostId: string;
           likesCount: number;
           commentsCount: number;
           sharesCount: number;
+          reachCount?: number;
         }>;
         errors: Array<{
           contentId: number;
@@ -1252,11 +1288,37 @@ export const api = {
         }>;
       };
       message: string | null;
+      fallback?: boolean;
+      success?: boolean;
     };
+    } catch (error) {
+      console.warn('[api] Facebook analytics refresh unavailable, using cached dashboard data', error);
+      invalidateRequestCache('/api/analytics');
+      return {
+        ok: true,
+        fallback: true,
+        data: {
+          totalTracked: 0,
+          totalSynced: 0,
+          totalFailed: 0,
+          failedIds: [],
+          results: [],
+          errors: [],
+        },
+        message: null,
+      };
+    }
   },
 
-  async getAnalyticsSummary() {
-    return { ok: true, data: (await getSupabaseAnalytics()).summary, message: null } as {
+  async getAnalyticsSummary(options?: { force?: boolean }) {
+    return withSupabaseFallback(
+      async () => (await axiosInstance.get('/api/analytics/summary', {
+        params: options?.force ? { refresh: Date.now() } : undefined,
+        timeout: FAST_OPTIONAL_TIMEOUT_MS,
+        cacheTtlMs: options?.force ? 0 : 120_000,
+      })).data,
+      async () => ({ ok: true, data: (await getSupabaseAnalytics()).summary, message: null })
+    ) as Promise<{
       ok: boolean;
       data: {
         likes: number;
@@ -1268,11 +1330,18 @@ export const api = {
         lastSyncedAt: string | null;
       };
       message: string | null;
-    };
+    }>;
   },
 
-  async getAnalyticsTrend(days = 7) {
-    return { ok: true, data: (await getSupabaseAnalytics(days)).trend, message: null } as {
+  async getAnalyticsTrend(days = 7, options?: { force?: boolean }) {
+    return withSupabaseFallback(
+      async () => axiosInstance.get('/api/analytics/trend', {
+        params: { days, ...(options?.force ? { refresh: Date.now() } : {}) },
+        timeout: FAST_OPTIONAL_TIMEOUT_MS,
+        cacheTtlMs: options?.force ? 0 : 120_000,
+      }).then((response) => response.data),
+      async () => ({ ok: true, data: (await getSupabaseAnalytics(days)).trend, message: null })
+    ) as Promise<{
       ok: boolean;
       data: Array<{
         date: string;
@@ -1284,11 +1353,18 @@ export const api = {
         engagementRate: number;
       }>;
       message: string | null;
-    };
+    }>;
   },
 
-  async getAnalyticsPosts() {
-    return { ok: true, data: (await getSupabaseAnalytics()).posts, message: null } as {
+  async getAnalyticsPosts(options?: { force?: boolean }) {
+    return withSupabaseFallback(
+      async () => (await axiosInstance.get('/api/analytics/posts', {
+        params: options?.force ? { refresh: Date.now() } : undefined,
+        timeout: FAST_OPTIONAL_TIMEOUT_MS,
+        cacheTtlMs: options?.force ? 0 : 120_000,
+      })).data,
+      async () => ({ ok: true, data: (await getSupabaseAnalytics()).posts, message: null })
+    ) as Promise<{
       ok: boolean;
       data: Array<{
         id: number;
@@ -1306,7 +1382,7 @@ export const api = {
         engagementRate: number;
       }>;
       message: string | null;
-    };
+    }>;
   },
 
   // USERS
@@ -1566,6 +1642,17 @@ export const api = {
     const payload = await res.json();
     if (!res.ok) throw new Error(payload.error || 'Failed to cancel scheduled post');
     return payload;
+  },
+
+  deleteQueueItem: async (id: number) => {
+    const res = await fetch(`${API_BASE}/queue/${id}`, { method: 'DELETE' });
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || payload.message || 'Failed to remove queue item');
+    return payload as {
+      ok?: boolean;
+      data?: unknown;
+      message?: string;
+    };
   },
 
 };
