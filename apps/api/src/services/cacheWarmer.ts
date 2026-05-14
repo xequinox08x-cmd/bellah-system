@@ -9,8 +9,7 @@ import { pool } from '../db/pool';
 import {
   setCachedWithType,
   CACHE_KEYS,
-  CACHE_DURATIONS,
-} from './defenseCache';
+} from '../lib/defenseCache';
 
 export async function runCacheWarmup() {
   console.info('[CacheWarmer] 🔥 Starting cache warmup on server startup...');
@@ -102,9 +101,9 @@ export async function runCacheWarmup() {
           COUNT(si.id) as item_count
         FROM sales s
         LEFT JOIN sale_items si ON si.sale_id = s.id
+        GROUP BY s.id
         ORDER BY s.created_at DESC
         LIMIT 50
-        GROUP BY s.id
       `);
 
       setCachedWithType(
@@ -128,7 +127,7 @@ export async function runCacheWarmup() {
         SELECT
           id, title, status, platform, hashtags,
           created_at
-        FROM ai_content
+        FROM ai_contents
         ORDER BY created_at DESC
         LIMIT 100
       `);

@@ -1,8 +1,9 @@
 import React from 'react';
 import { QueryClientProvider } from '@tanstack/react-query';
-import { defenseQueryClient } from './lib/queryClient';
-import { setupCachePersistence } from './lib/cachePersistence';
-import { PreloadProgressOverlay } from './hooks/useDataPreload';
+import { defenseQueryClient } from '../lib/queryClient';
+import { setupCachePersistence } from '../lib/cachePersistence';
+import { DefenseModeProvider } from '../lib/defenseMode';
+import { PreloadProgressOverlay } from '../hooks/useDataPreload';
 
 /**
  * DEFENSE MODE: App Initialization
@@ -26,44 +27,10 @@ setupCachePersistence(defenseQueryClient).catch(err => {
 export function DefenseAppProvider({ children }: DefenseAppProviderProps) {
   return (
     <QueryClientProvider client={defenseQueryClient}>
-      {/* Show preload progress */}
-      <PreloadProgressOverlay />
-
-      {/* Main app content */}
-      {children}
-
-      {/* Optional: Add DevTools in development */}
-      {process.env.NODE_ENV === 'development' && <ReactQueryDevtoolsProduction />}
+      <DefenseModeProvider>
+        <PreloadProgressOverlay />
+        {children}
+      </DefenseModeProvider>
     </QueryClientProvider>
-  );
-}
-
-/**
- * React Query Devtools (optional, for debugging cache issues)
- */
-function ReactQueryDevtoolsProduction() {
-  const [showDevtools, setShowDevtools] = React.useState(false);
-
-  React.useEffect(() => {
-    window.addEventListener('keydown', (e) => {
-      if (e.key === 'R' && e.ctrlKey) {
-        setShowDevtools(prev => !prev);
-      }
-    });
-  }, []);
-
-  if (!showDevtools) return null;
-
-  return (
-    <React.Suspense fallback={null}>
-      <React.lazy(() =>
-        import('@tanstack/react-query-devtools/build/modern/production.js').then(
-          d => ({
-            default: d.ReactQueryDevtools,
-          })
-        )
-      }
-      />
-    </React.Suspense>
   );
 }

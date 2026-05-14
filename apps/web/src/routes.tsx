@@ -4,6 +4,14 @@ import { Layout } from './components/Layout';
 import { useAuth } from './components/AuthContext';
 import Login from './pages/Login';
 
+export function preloadCriticalPages() {
+  void import('./pages/Dashboard');
+  void import('./pages/Products');
+  void import('./pages/Sales');
+  void import('./pages/Analytics');
+  void import('./pages/AIMarketing');
+}
+
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   const location = useLocation();

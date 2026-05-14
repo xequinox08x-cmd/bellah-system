@@ -1,4 +1,6 @@
 import { Router, type Request, type Response } from "express";
+import { createHash } from "crypto";
+import { getCachedData, setCachedData } from "../lib/cache";
 
 export const aiRouter = Router();
 
@@ -896,6 +898,10 @@ function validateGenerateBody(body: GenerateRequestBody) {
   };
 }
 
+function stableHash(value: unknown) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
 aiRouter.post("/auto-prompt", async (req: Request, res: Response) => {
   try {
     const parsed = validateGenerateBody(req.body ?? {});
@@ -912,6 +918,19 @@ aiRouter.post("/auto-prompt", async (req: Request, res: Response) => {
       return res.status(404).json({ ok: false, data: null, message: "Product not found" });
     }
 
+    const cacheKey = `ai:auto-prompt:${stableHash({
+      productId: parsed.productId,
+      contentType: parsed.contentType,
+      tone: parsed.tone,
+      platform: parsed.platform,
+      outputMode: parsed.outputMode,
+      referenceImageUrl: parsed.referenceImageUrl,
+    })}`;
+    const cached = getCachedData(cacheKey);
+    if (cached) {
+      return res.json({ ok: true, data: cached, message: null, cached: true });
+    }
+
     const autoPrompt = await resolveAutoPrompt({
       product,
       contentType: parsed.contentType,
@@ -921,12 +940,15 @@ aiRouter.post("/auto-prompt", async (req: Request, res: Response) => {
       referenceImageUrl: parsed.referenceImageUrl,
     });
 
+    const data = {
+      promptText: autoPrompt.promptText,
+      provider: autoPrompt.provider,
+    };
+    setCachedData(cacheKey, data, 60 * 60 * 24);
+
     return res.json({
       ok: true,
-      data: {
-        promptText: autoPrompt.promptText,
-        provider: autoPrompt.provider,
-      },
+      data,
       message: null,
     });
   } catch (e: any) {
@@ -952,6 +974,20 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
     const product = await getProductForGeneration(parsed.productId);
     if (!product) {
       return res.status(404).json({ ok: false, data: null, message: "Product not found" });
+    }
+
+    const cacheKey = `ai:generate:${stableHash({
+      productId: parsed.productId,
+      promptText: parsed.promptText,
+      contentType: parsed.contentType,
+      tone: parsed.tone,
+      platform: parsed.platform,
+      outputMode: parsed.outputMode,
+      referenceImageUrl: parsed.referenceImageUrl,
+    })}`;
+    const cached = getCachedData(cacheKey);
+    if (cached) {
+      return res.json({ ok: true, data: cached, message: null, cached: true });
     }
 
     let effectivePromptText = parsed.promptText;
@@ -1019,21 +1055,24 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
       throw new Error("Generated content was not saved");
     }
 
+    const data = {
+      id: Number(savedContent?.id),
+      title,
+      caption: content,
+      hashtags,
+      generatedImageUrl,
+      referenceImageUrl: parsed.referenceImageUrl,
+      promptText: effectivePromptText,
+      promptProvider,
+      outputMode: parsed.outputMode,
+      providers,
+      status: String(savedContent?.status ?? GENERATED_CONTENT_STATUS),
+    };
+    setCachedData(cacheKey, data, 60 * 60 * 24);
+
     return res.json({
       ok: true,
-      data: {
-        id: Number(savedContent?.id),
-        title,
-        caption: content,
-        hashtags,
-        generatedImageUrl,
-        referenceImageUrl: parsed.referenceImageUrl,
-        promptText: effectivePromptText,
-        promptProvider,
-        outputMode: parsed.outputMode,
-        providers,
-        status: String(savedContent?.status ?? GENERATED_CONTENT_STATUS),
-      },
+      data,
       message: null,
     });
   } catch (e: any) {

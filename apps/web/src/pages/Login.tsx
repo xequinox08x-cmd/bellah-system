@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../components/AuthContext';
 import { Eye, EyeOff, Loader2, AlertCircle } from 'lucide-react';
+import { preloadCriticalPages } from '../routes';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -11,6 +12,7 @@ export default function Login() {
 
   useEffect(() => {
     if (!loading && user) {
+      preloadCriticalPages();
       navigate(user.role === 'admin' ? '/admin' : '/staff');
     }
   }, [loading, user, navigate]);
@@ -27,6 +29,7 @@ export default function Login() {
     setIsLoading(true);
     try {
       await signIn(email.trim(), password);
+      preloadCriticalPages();
       navigate('/dashboard');
     } catch (err: any) {
       const message = err?.message || (typeof err === 'object' ? JSON.stringify(err) : null);

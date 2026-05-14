@@ -15,7 +15,6 @@ export const pool = new Pool({
   min: 1,                    // Keep 1 connection alive
   idleTimeoutMillis: 30_000, // Reduced from 10s - release idle connections faster
   connectionTimeoutMillis: 10_000, // Increased from 5s - allow more time for connections
-  acquireTimeoutMillis: 60_000,   // NEW: 60s timeout for acquiring connections
   allowExitOnIdle: true,     // Allow pool to exit when idle
 
   // Query timeout settings
@@ -35,11 +34,12 @@ pool.on('connect', (client) => {
   client.query('SET maintenance_work_mem = "128MB"'); // Increase maintenance memory
 });
 
-pool.on('error', (err, client) => {
+pool.on('error', (err) => {
+  const pgError = err as Error & { code?: string; severity?: string };
   console.warn('[pool] connection error — connection will be replaced:', {
-    message: err.message,
-    code: err.code,
-    severity: err.severity,
+    message: pgError.message,
+    code: pgError.code,
+    severity: pgError.severity,
   });
 });
 

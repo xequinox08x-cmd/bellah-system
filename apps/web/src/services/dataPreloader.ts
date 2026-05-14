@@ -1,6 +1,10 @@
 import { QueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryClient';
-import type { AxiosInstance } from 'axios';
+
+type ApiClient = {
+  get: (endpoint: string, options?: { timeout?: number; cacheTtlMs?: number }) => Promise<{ data: unknown }>;
+  post: (endpoint: string, body?: unknown, options?: { timeout?: number }) => Promise<{ data: unknown }>;
+};
 
 /**
  * DEFENSE MODE: Data Preloader Service
@@ -11,7 +15,7 @@ import type { AxiosInstance } from 'axios';
 
 interface PreloadConfig {
   queryClient: QueryClient;
-  api: AxiosInstance;
+  api: ApiClient;
   onProgress?: (loaded: number, total: number) => void;
 }
 
@@ -19,8 +23,8 @@ interface PreloadConfig {
 const PRELOAD_QUERIES = [
   {
     name: 'Dashboard Stats',
-    key: queryKeys.dashboard.stats(),
-    endpoint: '/api/dashboard',
+    key: queryKeys.dashboard.summary(),
+    endpoint: '/api/dashboard/summary',
     priority: 1,
   },
   {
@@ -44,7 +48,7 @@ const PRELOAD_QUERIES = [
   {
     name: 'AI Content',
     key: queryKeys.aiContent.list(),
-    endpoint: '/api/ai-content',
+    endpoint: '/api/ai/contents?page=1&limit=20',
     priority: 2,
   },
   {
@@ -112,7 +116,7 @@ export async function preloadAllData(config: PreloadConfig): Promise<PreloadResu
  */
 async function loadQueriesInWave(
   queryClient: QueryClient,
-  api: AxiosInstance,
+  api: ApiClient,
   queries: typeof PRELOAD_QUERIES,
   results: PreloadResult,
   onProgress?: (loaded: number, total: number) => void,
@@ -127,7 +131,7 @@ async function loadQueriesInWave(
 
   const promises = queries.map(async (query) => {
     try {
-      const response = await api.get(query.endpoint);
+      const response = await api.get(query.endpoint, { timeout: 5000, cacheTtlMs: 60_000 });
 
       // Store in query cache
       queryClient.setQueryData(query.key, response.data);
@@ -159,7 +163,7 @@ async function loadQueriesInWave(
  */
 export async function preloadQuery(
   queryClient: QueryClient,
-  api: AxiosInstance,
+  api: ApiClient,
   key: any,
   endpoint: string,
   retries = 2
@@ -185,7 +189,7 @@ export async function preloadQuery(
 /**
  * Warm backend cache
  */
-export async function warmBackendCache(api: AxiosInstance): Promise<void> {
+export async function warmBackendCache(api: ApiClient): Promise<void> {
   try {
     console.info('[Preloader] 🔥 Warming backend cache...');
     await api.post('/api/cache/warm');

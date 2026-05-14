@@ -1,5 +1,4 @@
 import { QueryClient } from '@tanstack/react-query';
-import { createSyncStoragePersister } from '@tanstack/query-sync-storage-persister';
 import { persistQueryClient } from '@tanstack/react-query-persist-client';
 
 /**
@@ -16,25 +15,38 @@ import { persistQueryClient } from '@tanstack/react-query-persist-client';
 const MAX_CACHE_SIZE = 10 * 1024 * 1024;
 
 // Storage key for persistence
-const STORAGE_KEY = 'demo_query_cache';
+const STORAGE_KEY = 'REACT_QUERY_OFFLINE_CACHE';
 const METADATA_KEY = 'demo_cache_metadata';
 
 /**
  * Create a safe storage persister with error handling
  */
 function createSafeStoragePersister() {
-  return createSyncStoragePersister({
-    storage: typeof window !== 'undefined' ? window.localStorage : null as any,
-    serialize: (data) => JSON.stringify(data),
-    deserialize: (data) => {
+  return {
+    persistClient: (client: unknown) => {
       try {
-        return JSON.parse(data);
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(client));
       } catch (error) {
+        console.warn('[Cache] Failed to persist cache:', error);
+      }
+    },
+    restoreClient: () => {
+      try {
+        const data = window.localStorage.getItem(STORAGE_KEY);
+        return data ? JSON.parse(data) : undefined;
+      } catch {
         console.warn('[Cache] Failed to deserialize cache, starting fresh');
         return undefined;
       }
     },
-  });
+    removeClient: () => {
+      try {
+        window.localStorage.removeItem(STORAGE_KEY);
+      } catch {
+        // Best effort.
+      }
+    },
+  };
 }
 
 /**

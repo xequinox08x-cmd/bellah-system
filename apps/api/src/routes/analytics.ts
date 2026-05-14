@@ -4,6 +4,8 @@ import { pool } from "../db/pool";
 import { getCachedData, setCachedData, CACHE_KEYS, CACHE_TTL } from "../lib/cache";
 
 export const analyticsRouter = Router();
+
+const FACEBOOK_PLATFORM = "facebook";
 // Optimized analytics queries with better performance
 const TRACKED_FACEBOOK_CONTENT_WHERE = `
   ac.platform = '${FACEBOOK_PLATFORM}'
@@ -107,7 +109,8 @@ analyticsRouter.get("/summary", async (_req: Request, res: Response) => {
       SELECT * FROM summary_stats
       `
         );
-        );
+
+        const row = result.rows[0];
 
         const data = {
             likes: toNumber(row?.total_likes),
@@ -138,9 +141,15 @@ analyticsRouter.get("/summary", async (_req: Request, res: Response) => {
 
 analyticsRouter.get("/trend", async (req: Request, res: Response) => {
     try {
+        const days = Math.min(90, Math.max(7, Number(req.query.days) || 7));
+        const cacheKey = `analytics:trend:${days}`;
+        const cached = getCachedData(cacheKey);
+        if (cached) {
+            return res.json({ ok: true, data: cached, message: null, cached: true });
+        }
+
         await ensureAiAnalyticsSchema();
 
-        const days = Math.min(90, Math.max(7, Number(req.query.days) || 7));
         const result = await pool.query<TrendRow>(
             `
       WITH
@@ -207,17 +216,20 @@ analyticsRouter.get("/trend", async (req: Request, res: Response) => {
             [days]
         );
 
+        const data = result.rows.map((row) => ({
+            date: row.date,
+            label: row.label,
+            likes: toNumber(row.likes),
+            comments: toNumber(row.comments),
+            shares: toNumber(row.shares),
+            reach: toNumber(row.reach),
+            engagementRate: Number(toNumber(row.engagement_rate).toFixed(2)),
+        }));
+        setCachedData(cacheKey, data, CACHE_TTL.ANALYTICS);
+
         return res.json({
             ok: true,
-            data: result.rows.map((row) => ({
-                date: row.date,
-                label: row.label,
-                likes: toNumber(row.likes),
-                comments: toNumber(row.comments),
-                shares: toNumber(row.shares),
-                reach: toNumber(row.reach),
-                engagementRate: Number(toNumber(row.engagement_rate).toFixed(2)),
-            })),
+            data,
             message: null,
         });
     } catch (error: any) {
@@ -231,6 +243,12 @@ analyticsRouter.get("/trend", async (req: Request, res: Response) => {
 
 analyticsRouter.get("/posts", async (_req: Request, res: Response) => {
     try {
+        const cacheKey = "analytics:posts";
+        const cached = getCachedData(cacheKey);
+        if (cached) {
+            return res.json({ ok: true, data: cached, message: null, cached: true });
+        }
+
         await ensureAiAnalyticsSchema();
 
         const result = await pool.query<PostRow>(
@@ -270,23 +288,26 @@ analyticsRouter.get("/posts", async (_req: Request, res: Response) => {
       `
         );
 
+        const data = result.rows.map((row) => ({
+            id: Number(row.id),
+            title: row.title ?? "Untitled Content",
+            content: row.content ?? "",
+            platform: row.platform ?? "facebook",
+            facebookPostId: row.facebook_post_id,
+            publishedAt: row.published_at,
+            createdAt: row.created_at,
+            lastMetricsSyncAt: row.last_metrics_sync_at,
+            likes: toNumber(row.likes),
+            comments: toNumber(row.comments),
+            shares: toNumber(row.shares),
+            reach: toNumber(row.reach),
+            engagementRate: Number(toNumber(row.engagement_rate).toFixed(2)),
+        }));
+        setCachedData(cacheKey, data, CACHE_TTL.ANALYTICS);
+
         return res.json({
             ok: true,
-            data: result.rows.map((row) => ({
-                id: Number(row.id),
-                title: row.title ?? "Untitled Content",
-                content: row.content ?? "",
-                platform: row.platform ?? "facebook",
-                facebookPostId: row.facebook_post_id,
-                publishedAt: row.published_at,
-                createdAt: row.created_at,
-                lastMetricsSyncAt: row.last_metrics_sync_at,
-                likes: toNumber(row.likes),
-                comments: toNumber(row.comments),
-                shares: toNumber(row.shares),
-                reach: toNumber(row.reach),
-                engagementRate: Number(toNumber(row.engagement_rate).toFixed(2)),
-            })),
+            data,
             message: null,
         });
     } catch (error: any) {

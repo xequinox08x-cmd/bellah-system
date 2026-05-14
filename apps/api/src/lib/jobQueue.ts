@@ -88,10 +88,15 @@ export class JobQueue extends EventEmitter {
 
   private async handleMetricsSync(data: any): Promise<void> {
     // Import here to avoid circular dependencies
-    const { syncFacebookMetrics } = await import('../services/facebook');
+    const { syncAllContentMetrics, syncContentMetrics } = await import('../services/facebook');
 
     console.info(`[job-queue] syncing metrics for ${data.contentIds?.length || 0} posts`);
-    await syncFacebookMetrics(data.contentIds);
+    if (Array.isArray(data.contentIds) && data.contentIds.length > 0) {
+      await Promise.allSettled(data.contentIds.map((contentId: number) => syncContentMetrics(contentId)));
+      return;
+    }
+
+    await syncAllContentMetrics();
   }
 
   private async handleNotification(data: any): Promise<void> {

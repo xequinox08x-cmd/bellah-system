@@ -89,7 +89,7 @@ export function setCached<T>(
   ttl?: number
 ): boolean {
   try {
-    return defenseCache.set(key, value, ttl);
+    return ttl === undefined ? defenseCache.set(key, value) : defenseCache.set(key, value, ttl);
   } catch (error) {
     console.error(`[DefenseCache] Error setting key ${key}:`, error);
     return false;

@@ -8,6 +8,7 @@ import {
   Menu,
   Plus,
   Search,
+  ShieldCheck,
   User,
 } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router';
@@ -15,6 +16,7 @@ import { useAuth } from './AuthContext';
 import { useStore } from '../data/store';
 import { toast } from 'sonner';
 import { api } from '../lib/api';
+import { useDefenseMode } from '../lib/defenseMode';
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
   '/dashboard': { title: 'Dashboard', sub: 'Overview of your store performance' },
@@ -142,6 +144,7 @@ function scoreSearchEntry(entry: SearchEntry, query: string) {
 
 export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
   const { user, logout } = useAuth();
+  const { defenseMode, setDefenseMode } = useDefenseMode();
   const { contentItems, products } = useStore();
   const navigate = useNavigate();
   const location = useLocation();
@@ -221,6 +224,11 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
     };
 
     try {
+      if (defenseMode) {
+        setNotificationCounts(fallback);
+        return;
+      }
+
       const [pendingResult, productsResult] = await Promise.allSettled([
         user?.role === 'admin' ? api.getContentCount('pending') : Promise.resolve(0),
         api.getProducts(),
@@ -243,7 +251,7 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
     } catch {
       setNotificationCounts(fallback);
     }
-  }, [storeLowStockCount, storePendingCount, user?.role]);
+  }, [defenseMode, storeLowStockCount, storePendingCount, user?.role]);
 
   useEffect(() => {
     void refreshNotificationCounts();
@@ -382,6 +390,20 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
             Create Post
           </button>
         )}
+
+        <button
+          type="button"
+          onClick={() => setDefenseMode(!defenseMode)}
+          className={`hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs border transition-colors ${
+            defenseMode
+              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+              : 'bg-white text-[#6B7280] border-[#E5E7EB] hover:bg-[#F9FAFB]'
+          }`}
+          title="Prioritize cached data, preloading, and reduced background calls"
+        >
+          <ShieldCheck className="w-3.5 h-3.5" />
+          Defense
+        </button>
 
         <div className="relative">
           <button

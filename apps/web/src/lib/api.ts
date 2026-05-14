@@ -53,7 +53,7 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
   }
 }
 
-async function fetchJson<T>(url: string, init?: RequestInit, cacheTtlMs?: number): Promise<T> {
+async function fetchJson<T>(url: string, init?: RequestInit, cacheTtlMs?: number, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   // OPTIMIZATION: Check cache first for GET requests
   const cacheKey = getCacheKey(url, init);
   if (cacheKey) {
@@ -63,7 +63,7 @@ async function fetchJson<T>(url: string, init?: RequestInit, cacheTtlMs?: number
     }
   }
 
-  const res = await fetchWithTimeout(url, init);
+  const res = await fetchWithTimeout(url, init, timeoutMs);
   const contentType = res.headers.get('content-type') || '';
   const data = contentType.includes('application/json') ? await res.json() : null;
 
@@ -78,6 +78,44 @@ async function fetchJson<T>(url: string, init?: RequestInit, cacheTtlMs?: number
 
   return data as T;
 }
+
+function resolveApiUrl(endpoint: string) {
+  if (/^https?:\/\//i.test(endpoint)) return endpoint;
+  const normalized = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  return normalized.startsWith('/api/') ? `${API_ROOT}${normalized}` : `${API_BASE}${normalized}`;
+}
+
+export const axiosInstance = {
+  async get<T = any>(
+    endpoint: string,
+    options?: {
+      params?: Record<string, string | number | boolean | undefined>;
+      timeout?: number;
+      cacheTtlMs?: number;
+    }
+  ) {
+    const url = new URL(resolveApiUrl(endpoint));
+    Object.entries(options?.params || {}).forEach(([key, value]) => {
+      if (value !== undefined) url.searchParams.set(key, String(value));
+    });
+
+    const data = await fetchJson<T>(url.toString(), undefined, options?.cacheTtlMs, options?.timeout);
+    return { data };
+  },
+  async post<T = any>(endpoint: string, body?: unknown, options?: { timeout?: number }) {
+    const data = await fetchJson<T>(
+      resolveApiUrl(endpoint),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      },
+      undefined,
+      options?.timeout
+    );
+    return { data };
+  },
+};
 
 function normalizeProduct(row: any) {
   return {

@@ -16,6 +16,7 @@ const queryConfig: DefaultOptions = {
     refetchOnReconnect: false,       // Don't refetch on network reconnection
     refetchInterval: false,          // Never auto-refetch
     refetchIntervalInBackground: false,
+    placeholderData: (previousData) => previousData,
     
     // Error handling with retries
     retry: 2,                        // Retry failed requests twice

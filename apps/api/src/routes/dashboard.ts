@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { pool } from "../db/pool";
+import { CACHE_TTL, getCachedData, setCachedData } from "../lib/cache";
 
 export const dashboardRouter = Router();
 
@@ -96,6 +97,12 @@ function addDays(input: Date, days: number): Date {
 
 dashboardRouter.get("/api/dashboard/sales-records", async (_req, res) => {
   try {
+    const cacheKey = "dashboard:sales-records";
+    const cached = getCachedData(cacheKey);
+    if (cached) {
+      return res.json({ ok: true, data: cached, cached: true });
+    }
+
     const result = await pool.query<SalesRecordRow>(
       `
       SELECT
@@ -116,9 +123,7 @@ dashboardRouter.get("/api/dashboard/sales-records", async (_req, res) => {
       `
     );
 
-    return res.json({
-      ok: true,
-      data: result.rows.map((row) => ({
+    const data = result.rows.map((row) => ({
         id: `${row.sale_id}-${row.product_id}`,
         saleId: Number(row.sale_id),
         productId: Number(row.product_id),
@@ -132,8 +137,10 @@ dashboardRouter.get("/api/dashboard/sales-records", async (_req, res) => {
         createdAt: row.created_at,
         customerName: String(row.customer_name ?? "Walk-in Customer"),
         staffName: "Store Staff",
-      })),
-    });
+      }));
+    setCachedData(cacheKey, data, CACHE_TTL.DASHBOARD);
+
+    return res.json({ ok: true, data });
   } catch (e: any) {
     return res.status(500).json({
       ok: false,
@@ -144,6 +151,12 @@ dashboardRouter.get("/api/dashboard/sales-records", async (_req, res) => {
 
 dashboardRouter.get("/api/staff/dashboard/today-sales", async (_req, res) => {
   try {
+    const cacheKey = "dashboard:today-sales";
+    const cached = getCachedData(cacheKey);
+    if (cached) {
+      return res.json({ ok: true, todaySales: cached, cached: true });
+    }
+
     const result = await pool.query<TodaySalesRow>(
       `
       SELECT
@@ -181,6 +194,7 @@ dashboardRouter.get("/api/staff/dashboard/today-sales", async (_req, res) => {
       profitTotal: items.reduce((sum, item) => sum + item.lineProfit, 0),
       items,
     };
+    setCachedData(cacheKey, summary, 60);
 
     return res.json({
       ok: true,
@@ -218,6 +232,12 @@ dashboardRouter.get("/api/dashboard/summary", async (req, res) => {
         ok: false,
         message: "Invalid date range. start must be less than or equal to end.",
       });
+    }
+
+    const cacheKey = `dashboard:summary:${startDate}:${endDate}`;
+    const cached = getCachedData(cacheKey);
+    if (cached) {
+      return res.json({ ...(cached as object), cached: true });
     }
 
     const [summaryResult, trendResult, lowStockResult] = await Promise.all([
@@ -315,7 +335,7 @@ dashboardRouter.get("/api/dashboard/summary", async (req, res) => {
       profit: Number(row.profit ?? 0),
     }));
 
-    return res.json({
+    const payload = {
       ok: true,
       summary: {
         totalSales: Number(summary?.total_sales ?? 0),
@@ -326,7 +346,10 @@ dashboardRouter.get("/api/dashboard/summary", async (req, res) => {
       },
       lowStockProducts,
       salesTrend,
-    });
+    };
+    setCachedData(cacheKey, payload, CACHE_TTL.DASHBOARD);
+
+    return res.json(payload);
   } catch (e: any) {
     return res.status(500).json({
       ok: false,

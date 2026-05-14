@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { preloadAllData, warmBackendCache } from '@/services/dataPreloader';
 import { axiosInstance } from '@/lib/api';
+import { useAuth } from '@/components/AuthContext';
+import { useDefenseMode } from '@/lib/defenseMode';
 
 /**
  * DEFENSE MODE: Data Preload Hook
@@ -108,7 +110,9 @@ export function useDataPreload(options: UseDataPreloadOptions = {}) {
  * Component that shows preload progress
  */
 export function PreloadProgressOverlay() {
-  const preloadState = useDataPreload();
+  const { user } = useAuth();
+  const { defenseMode } = useDefenseMode();
+  const preloadState = useDataPreload({ enabled: Boolean(user && defenseMode) });
 
   if (!preloadState.isLoading) return null;
 
