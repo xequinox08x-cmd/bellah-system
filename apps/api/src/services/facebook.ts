@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import { ensureAiAnalyticsSchema } from "../db/aiAnalyticsSchema";
 import { pool } from "../db/pool";
+import { invalidateCache } from "../lib/cache";
 import { supabaseRest } from "./supabaseAdmin";
 
 const FACEBOOK_PLATFORM = "facebook";
@@ -36,6 +37,10 @@ const PUBLISHED_SNAPSHOT_COLUMNS = [
     "facebook_page_id",
     "facebook_permalink_url",
 ].join(",");
+
+function invalidateFacebookAnalyticsCache() {
+    invalidateCache("analytics:");
+}
 
 // Analytics scope is intentionally limited to records stored in `ai_contents`.
 // The `ai_contents.id` row is the source of truth for tracking, and any record
@@ -203,6 +208,11 @@ export type SyncAllContentMetricsResult = {
         facebookPostId: string;
         message: string;
     }>;
+};
+
+type DeletePublishedContentResult = {
+    contentId: number;
+    facebookPostId: string | null;
 };
 
 export type FacebookConnectionState = "connected" | "expired" | "invalid" | "missing_config";
@@ -430,6 +440,26 @@ async function graphPostMultipart<T>(path: string, form: FormData) {
     const response = await fetch(url.toString(), {
         method: "POST",
         body: form,
+    });
+
+    return parseGraphResponse<T>(response);
+}
+
+async function graphDelete<T>(path: string, params: Record<string, string | undefined> = {}) {
+    const config = requireFacebookConfig();
+    const normalizedPath = path.replace(/^\/+/, "");
+    const url = new URL(`https://graph.facebook.com/${config.graphApiVersion}/${normalizedPath}`);
+
+    Object.entries(params).forEach(([key, value]) => {
+        if (value) {
+            url.searchParams.set(key, value);
+        }
+    });
+
+    url.searchParams.set("access_token", config.accessToken);
+
+    const response = await fetch(url.toString(), {
+        method: "DELETE",
     });
 
     return parseGraphResponse<T>(response);
@@ -694,6 +724,14 @@ async function getPublishedContentSnapshotRest(aiContentId: number) {
     }
 
     return rows[0];
+}
+
+async function deletePublishedContentRowRest(aiContentId: number) {
+    await supabaseRest<null>(contentPath({ id: `eq.${aiContentId}` }), { method: "DELETE" });
+}
+
+async function deletePublishedContentRowPool(aiContentId: number) {
+    await pool.query(`DELETE FROM ai_contents WHERE id = $1`, [aiContentId]);
 }
 
 async function markContentPublished(
@@ -1269,6 +1307,8 @@ async function publishSystemContentWithPool(aiContentId: number): Promise<Publis
         client.release();
     }
 
+    invalidateFacebookAnalyticsCache();
+
     let initialMetricsSynced = false;
 
     try {
@@ -1330,6 +1370,7 @@ async function syncContentMetricsWithPool(aiContentId: number): Promise<SyncCont
         );
 
         await client.query("COMMIT");
+        invalidateFacebookAnalyticsCache();
 
         return {
             contentId: content.id,
@@ -1367,6 +1408,8 @@ async function syncAllContentMetricsWithPool(): Promise<SyncAllContentMetricsRes
             });
         }
     }
+
+    invalidateFacebookAnalyticsCache();
 
     return {
         totalTracked: trackedRows.length,
@@ -1439,6 +1482,8 @@ async function publishSystemContentWithRest(aiContentId: number): Promise<Publis
         });
     }
 
+    invalidateFacebookAnalyticsCache();
+
     let initialMetricsSynced = false;
 
     try {
@@ -1490,6 +1535,7 @@ async function syncContentMetricsWithRest(aiContentId: number): Promise<SyncCont
             }),
         }
     );
+    invalidateFacebookAnalyticsCache();
 
     return {
         contentId: content.id,
@@ -1520,6 +1566,8 @@ async function syncAllContentMetricsWithRest(): Promise<SyncAllContentMetricsRes
         }
     }
 
+    invalidateFacebookAnalyticsCache();
+
     return {
         totalTracked: trackedRows.length,
         totalSynced: results.length,
@@ -1527,6 +1575,67 @@ async function syncAllContentMetricsWithRest(): Promise<SyncAllContentMetricsRes
         failedIds: errors.map((error) => error.contentId),
         results,
         errors,
+    };
+}
+
+async function deletePublishedContentWithRest(aiContentId: number): Promise<DeletePublishedContentResult> {
+    const row = await getPublishedContentSnapshotRest(aiContentId);
+    const facebookPostId = normalizeOptionalString(row.facebook_post_id);
+
+    if (facebookPostId) {
+        try {
+            await graphDelete<{ success?: boolean }>(facebookPostId);
+        } catch (error) {
+            if (!(error instanceof FacebookServiceError && error.statusCode === 404)) {
+                throw error;
+            }
+        }
+    }
+
+    try {
+        await deletePublishedContentRowRest(aiContentId);
+    } catch (error) {
+        if (shouldFallbackToSupabaseRest(error)) {
+            await deletePublishedContentRowPool(aiContentId);
+        } else {
+            throw error;
+        }
+    }
+
+    invalidateFacebookAnalyticsCache();
+
+    return {
+        contentId: Number(row.id),
+        facebookPostId,
+    };
+}
+
+async function deletePublishedContentWithPool(aiContentId: number): Promise<DeletePublishedContentResult> {
+    if (!Number.isInteger(aiContentId) || aiContentId <= 0) {
+        throw new FacebookServiceError("Invalid content id", 400);
+    }
+
+    await ensureAiAnalyticsSchema();
+
+    const row = await getPublishedContentSnapshot(aiContentId);
+    const facebookPostId = normalizeOptionalString(row.facebook_post_id);
+
+    if (facebookPostId) {
+        try {
+            await graphDelete<{ success?: boolean }>(facebookPostId);
+        } catch (error) {
+            if (!(error instanceof FacebookServiceError && error.statusCode === 404)) {
+                throw error;
+            }
+        }
+    }
+
+    await deletePublishedContentRowPool(aiContentId);
+    invalidateFacebookAnalyticsCache();
+
+    return {
+        contentId: Number(row.id),
+        facebookPostId,
     };
 }
 
@@ -1565,5 +1674,18 @@ export async function syncAllContentMetrics(): Promise<SyncAllContentMetricsResu
             message: error instanceof Error ? error.message : "REST sync-all failed",
         });
         return syncAllContentMetricsWithPool();
+    }
+}
+
+export async function deletePublishedContent(aiContentId: number): Promise<DeletePublishedContentResult> {
+    try {
+        return await deletePublishedContentWithRest(aiContentId);
+    } catch (error) {
+        if (shouldFallbackToSupabaseRest(error)) throw error;
+        console.warn("[facebook.delete] REST delete failed, trying pool path", {
+            contentId: aiContentId,
+            message: error instanceof Error ? error.message : "REST delete failed",
+        });
+        return deletePublishedContentWithPool(aiContentId);
     }
 }

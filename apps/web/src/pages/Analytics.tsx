@@ -3,7 +3,7 @@ import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend, PieChart, Pie, Cell,
 } from 'recharts';
-import { Heart, MessageCircle, Share2, Eye, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
+import { Heart, MessageCircle, Share2, Eye, TrendingUp, TrendingDown, RefreshCw, Trash2, Loader2 } from 'lucide-react';
 import { api } from '../lib/api';
 
 function MetricCard({ label, value, icon: Icon, color, bg, change, up }: {
@@ -102,6 +102,7 @@ export default function Analytics() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshSummary, setRefreshSummary] = useState<string | null>(null);
+  const [deletingPostId, setDeletingPostId] = useState<number | null>(null);
   const [selectedTrendDate, setSelectedTrendDate] = useState('');
 
   async function loadAnalytics(showLoading = true) {
@@ -152,14 +153,13 @@ export default function Analytics() {
 
     try {
       const refreshResponse = await api.syncAllFacebookMetrics();
-      await loadAnalytics(false);
-
       const syncData = refreshResponse.data;
       setRefreshSummary(
         syncData.totalFailed > 0
           ? `Synced ${syncData.totalSynced} of ${syncData.totalTracked} tracked posts. Failed IDs: ${syncData.failedIds.join(', ')}`
           : `Synced ${syncData.totalSynced} of ${syncData.totalTracked} tracked posts.`
       );
+      window.dispatchEvent(new Event('facebook-analytics-updated'));
     } catch (e: any) {
       setError(e?.message || 'Failed to refresh Facebook analytics');
     } finally {
@@ -167,7 +167,31 @@ export default function Analytics() {
     }
   }
 
-  const engagementRate = summary.engagementRate.toFixed(1);
+  async function handleDeletePublishedPost(item: AnalyticsPost) {
+    const confirmed = window.confirm(
+      `Delete "${item.title}" from published content? This also deletes the Facebook post.`
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingPostId(item.id);
+    setRefreshSummary(null);
+    setError(null);
+
+    try {
+      await api.deletePublishedFacebookContent(item.id);
+      setRefreshSummary(`Deleted "${item.title}" and refreshed analytics.`);
+      window.dispatchEvent(new Event('facebook-analytics-updated'));
+      window.dispatchEvent(new Event('ai-content-updated'));
+    } catch (e: any) {
+      setError(e?.message || 'Failed to delete published content');
+    } finally {
+      setDeletingPostId(null);
+    }
+  }
+
   const PIE_COLORS = ['#EC4899', '#D4A373', '#4A90D9'];
   const trendDates = useMemo(() => trend.map((item) => item.date), [trend]);
   const selectedTrend = useMemo(
@@ -210,12 +234,11 @@ export default function Analytics() {
   );
 
   return (
-    <div className="max-w-7xl mx-auto space-y-5">
+    <div className="max-w-7xl mx-auto space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-[#111827] text-xl" style={{ fontWeight: 700 }}>Analytics</h1>
           <p className="text-[#6B7280] text-sm">Track engagement and performance across published Facebook content</p>
-          <p className="text-[#9CA3AF] text-xs mt-1">Includes system records in ai_contents that already have a Facebook post ID.</p>
         </div>
         <button
           type="button"
@@ -251,33 +274,6 @@ export default function Analytics() {
         <MetricCard label="Comments" value={summary.comments} icon={MessageCircle} color="text-blue-600" bg="bg-blue-50" />
         <MetricCard label="Shares" value={summary.shares} icon={Share2} color="text-[#D97706]" bg="bg-[#FEF3C7]" />
         <MetricCard label="Total Reach" value={summary.reach} icon={Eye} color="text-purple-600" bg="bg-purple-50" />
-      </div>
-
-      <div className="bg-gradient-to-r from-[#EC4899] to-[#D4A373] rounded-xl p-5 text-white">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <p className="text-white/80 text-sm">Average Engagement Rate</p>
-            <p className="text-4xl mt-1" style={{ fontWeight: 700 }}>{engagementRate}%</p>
-            <p className="text-white/70 text-xs mt-1">{summary.postCount} published Facebook posts</p>
-          </div>
-          <div className="text-right space-y-2">
-            <div>
-              <p className="text-white/70 text-xs">Last Sync</p>
-              <p className="text-white text-sm" style={{ fontWeight: 600 }}>
-                {summary.lastSyncedAt ? new Date(summary.lastSyncedAt).toLocaleString() : 'No sync yet'}
-              </p>
-            </div>
-            <div>
-              <p className="text-white/70 text-xs">Benchmark</p>
-              <p className="text-white text-sm" style={{ fontWeight: 600 }}>2.5%</p>
-            </div>
-            <div className="px-3 py-1 bg-white/20 rounded-lg">
-              <p className="text-white text-xs">
-                {parseFloat(engagementRate) > 2.5 ? 'Above average' : 'Keep growing'}
-              </p>
-            </div>
-          </div>
-        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -427,9 +423,28 @@ export default function Analytics() {
                       <td className="px-5 py-3.5 text-sm text-blue-600">{item.comments}</td>
                       <td className="px-5 py-3.5 text-sm text-[#D97706]">{item.shares}</td>
                       <td className="px-5 py-3.5">
-                        <span className={`text-xs px-2 py-0.5 rounded-full ${parseFloat(rate) > 5 ? 'bg-emerald-100 text-emerald-600' : parseFloat(rate) > 2 ? 'bg-[#FEF3C7] text-[#D97706]' : 'bg-gray-100 text-gray-600'}`}>
-                          {rate}%
-                        </span>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className={`text-xs px-2 py-0.5 rounded-full ${parseFloat(rate) > 5 ? 'bg-emerald-100 text-emerald-600' : parseFloat(rate) > 2 ? 'bg-[#FEF3C7] text-[#D97706]' : 'bg-gray-100 text-gray-600'}`}>
+                            {rate}%
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void handleDeletePublishedPost(item);
+                            }}
+                            disabled={deletingPostId === item.id}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-[#9CA3AF] transition hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                            title="Delete published post"
+                            aria-label={`Delete published post ${item.title}`}
+                          >
+                            {deletingPostId === item.id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );

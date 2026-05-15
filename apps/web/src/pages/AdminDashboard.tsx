@@ -415,6 +415,31 @@ export default function AdminDashboard() {
     return () => { cancelled = true; };
   }, [todayIso]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshAnalyticsEngagement = async () => {
+      try {
+        const analyticsRes = await api.getAnalyticsSummary();
+        if (!cancelled) {
+          setAnalyticsEngagementRate(Number(analyticsRes.data?.engagementRate ?? 0));
+        }
+      } catch {
+        // Keep the current value if analytics refresh is unavailable.
+      }
+    };
+
+    const handleFacebookAnalyticsUpdated = () => {
+      void refreshAnalyticsEngagement();
+    };
+
+    window.addEventListener('facebook-analytics-updated', handleFacebookAnalyticsUpdated);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('facebook-analytics-updated', handleFacebookAnalyticsUpdated);
+    };
+  }, []);
+
 
 
   // ── Filtered sales by date range ──────────────────────────────────────

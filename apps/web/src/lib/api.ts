@@ -13,6 +13,7 @@ export const API_BASE = `${API_ROOT}/api`;
 
 const REQUEST_TIMEOUT_MS = 8_000;
 const FAST_OPTIONAL_TIMEOUT_MS = 4_000;
+const LONG_RUNNING_REQUEST_TIMEOUT_MS = 120_000;
 const LOCAL_USERS_KEY = 'bb_local_users';
 
 // OPTIMIZATION: Simple request cache with TTL to prevent duplicate API calls
@@ -85,6 +86,91 @@ function resolveApiUrl(endpoint: string) {
   return normalized.startsWith('/api/') ? `${API_ROOT}${normalized}` : `${API_BASE}${normalized}`;
 }
 
+function getApiRootCandidates() {
+  const roots = new Set<string>();
+
+  if (configuredApiRoot) {
+    roots.add(configuredApiRoot.replace(/\/$/, ''));
+  }
+
+  if (typeof window !== 'undefined') {
+    const origin = window.location.origin?.trim();
+    if (origin && origin !== 'null') {
+      roots.add(origin.replace(/\/$/, ''));
+    }
+  }
+
+  roots.add('http://127.0.0.1:4000');
+  roots.add('http://localhost:4000');
+
+  return Array.from(roots);
+}
+
+function buildApiUrlCandidates(endpoint: string) {
+  if (/^https?:\/\//i.test(endpoint)) return [endpoint];
+
+  const normalized = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  return getApiRootCandidates().map((root) => {
+    if (normalized.startsWith('/api/')) return `${root}${normalized}`;
+    if (normalized.startsWith('/api')) return `${root}${normalized}`;
+    return `${root}/api${normalized}`;
+  });
+}
+
+async function requestJsonFromEndpoint<T>(endpoint: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
+  const candidates = buildApiUrlCandidates(endpoint);
+  let lastError: unknown;
+  const method = (init?.method || 'GET').toUpperCase();
+
+  for (const url of candidates) {
+    try {
+      const res = await fetchWithTimeout(url, init, timeoutMs);
+      const contentType = res.headers.get('content-type') || '';
+      const isJson = contentType.includes('application/json');
+      const data = isJson ? await res.json() : null;
+
+      if (!res.ok) {
+        if (!isJson) {
+          lastError = new Error(`Unexpected non-JSON response from ${url}`);
+          continue;
+        }
+
+        throw new Error(data?.message || data?.error || `Request failed with status ${res.status}`);
+      }
+
+      if (!isJson) {
+        lastError = new Error(`API returned non-JSON response from ${url}`);
+        continue;
+      }
+
+      return data as T;
+    } catch (error) {
+      const isAbortError =
+        error instanceof DOMException
+          ? error.name === 'AbortError'
+          : error instanceof Error && error.name === 'AbortError';
+
+      if (isAbortError) {
+        if (method !== 'GET') {
+          throw error;
+        }
+
+        lastError = error;
+        continue;
+      }
+
+      const message = error instanceof Error ? error.message : String(error);
+      if (/^Request failed with status \d+/.test(message)) {
+        throw error;
+      }
+
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Network request failed');
+}
+
 export const axiosInstance = {
   async get<T = any>(
     endpoint: string,
@@ -99,18 +185,17 @@ export const axiosInstance = {
       if (value !== undefined) url.searchParams.set(key, String(value));
     });
 
-    const data = await fetchJson<T>(url.toString(), undefined, options?.cacheTtlMs, options?.timeout);
+    const data = await requestJsonFromEndpoint<T>(`${url.pathname}${url.search}`, undefined, options?.timeout);
     return { data };
   },
   async post<T = any>(endpoint: string, body?: unknown, options?: { timeout?: number }) {
-    const data = await fetchJson<T>(
-      resolveApiUrl(endpoint),
+    const data = await requestJsonFromEndpoint<T>(
+      endpoint,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body),
       },
-      undefined,
       options?.timeout
     );
     return { data };
@@ -860,6 +945,7 @@ export const api = {
   },
 
   async createSale(data: {
+    customerName?: string;
     items: { productId: number; qty: number; unitPrice: number }[];
   }) {
     const res = await fetch(`${API_BASE}/sales`, {
@@ -992,7 +1078,19 @@ export const api = {
   }) {
     if (!body.id) throw new Error('Content id is required');
 
-    const res = await fetch(`${API_BASE}/ai/contents/${body.id}/submit`, {
+    const data = await requestJsonFromEndpoint<{
+      ok: boolean;
+      data: {
+        id: number;
+        title: string;
+        content: string;
+        platform: string;
+        hashtags: string;
+        status: string;
+        created_at: string;
+      };
+      message: string | null;
+    }>(`/api/ai/contents/${body.id}/submit`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1002,32 +1100,34 @@ export const api = {
         hashtags: body.hashtags,
       }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || 'Failed to save content');
     return data;
   },
 
   async updateContentStatus(id: number, status: 'approved' | 'rejected' | 'published' | 'failed' | 'cancelled') {
-    const res = await fetch(`${API_BASE}/ai/contents/${id}/status`, {
+    const data = await requestJsonFromEndpoint<{
+      ok: boolean;
+      data: unknown;
+      message: string | null;
+    }>(`/api/ai/contents/${id}/status`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || 'Failed to update status');
     return data;
   },
 
   async deleteContent(id: number, role?: string) {
-    const res = await fetch(`${API_BASE}/ai/contents/${id}`, {
+    const data = await requestJsonFromEndpoint<{
+      ok: boolean;
+      data: { id: number };
+      message: string | null;
+    }>(`/api/ai/contents/${id}`, {
       method: 'DELETE',
       headers: {
         'Content-Type': 'application/json',
         ...(role ? { 'x-user-role': role } : {}),
       },
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || 'Failed to delete content');
     return data as {
       ok: boolean;
       data: { id: number };
@@ -1044,18 +1144,7 @@ export const api = {
     outputMode: string;
     referenceImageUrl?: string;
   }) {
-    const res = await fetch(`${API_ROOT}/api/ai/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.message || 'Failed to generate content');
-    }
-
-    return data as {
+    const data = await requestJsonFromEndpoint<{
       ok: boolean;
       data: {
         id: number;
@@ -1071,7 +1160,13 @@ export const api = {
         status: string;
       };
       message: string | null;
-    };
+    }>('/api/ai/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }, LONG_RUNNING_REQUEST_TIMEOUT_MS);
+
+    return data;
   },
 
   async generateAutoMarketingPrompt(body: {
@@ -1084,42 +1179,19 @@ export const api = {
     referenceImageUrl?: string;
   }) {
     try {
-      const res = await fetch(`${API_ROOT}/api/ai/auto-prompt`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      let data: any = null;
-      try {
-        data = await res.json();
-      } catch {
-        data = null;
-      }
-
-      if (!res.ok) {
-        if (res.status === 404) {
-          return {
-            ok: true,
-            data: {
-              promptText: buildLocalAutoMarketingPrompt(body),
-              provider: 'fallback' as GenerationProvider,
-            },
-            message: null,
-          };
-        }
-
-        throw new Error(data?.message || 'Failed to generate auto prompt');
-      }
-
-      return data as {
+      const data = await requestJsonFromEndpoint<{
         ok: boolean;
         data: {
           promptText: string;
           provider: GenerationProvider;
         };
         message: string | null;
-      };
+      }>('/api/ai/auto-prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }, LONG_RUNNING_REQUEST_TIMEOUT_MS);
+      return data;
     } catch (error) {
       console.warn('[api] auto prompt endpoint unavailable, using local fallback', error);
       return {
@@ -1167,21 +1239,20 @@ export const api = {
   },
 
   async scheduleContent(id: number, scheduledAt: string) {
-    const res = await fetch(`${API_BASE}/ai/contents/${id}/schedule`, {
+    const data = await requestJsonFromEndpoint<{
+      ok: boolean;
+      data: unknown;
+      message: string | null;
+    }>(`/api/ai/contents/${id}/schedule`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scheduledAt }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || 'Failed to schedule content');
     return data;
   },
 
   async getFacebookStatus() {
-    const res = await fetch(`${API_BASE}/facebook/status`);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || 'Failed to load Facebook status');
-    return data as {
+    const data = await requestJsonFromEndpoint<{
       ok: boolean;
       data: {
         valid: boolean;
@@ -1199,16 +1270,12 @@ export const api = {
         };
       };
       message: string | null;
-    };
+    }>('/api/facebook/status');
+    return data;
   },
 
   async publishFacebookContent(id: number) {
-    const res = await fetch(`${API_BASE}/facebook/publish/${id}`, {
-      method: 'POST',
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || 'Failed to publish Facebook content');
-    return data as {
+    const data = await requestJsonFromEndpoint<{
       ok: boolean;
       data: {
         contentId: number;
@@ -1222,16 +1289,25 @@ export const api = {
         initialMetricsSynced: boolean;
       };
       message: string | null;
-    };
+    }>(`/api/facebook/publish/${id}`, {
+      method: 'POST',
+    }, LONG_RUNNING_REQUEST_TIMEOUT_MS);
+    return data;
+  },
+
+  async deletePublishedFacebookContent(id: number) {
+    const data = await requestJsonFromEndpoint<{
+      ok: boolean;
+      data: { id: number };
+      message: string | null;
+    }>(`/api/facebook/published-content/${id}`, {
+      method: 'DELETE',
+    }, LONG_RUNNING_REQUEST_TIMEOUT_MS);
+    return data;
   },
 
   async syncAllFacebookMetrics() {
-    const res = await fetch(`${API_BASE}/facebook/sync-all`, {
-      method: 'POST',
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || 'Failed to refresh Facebook analytics');
-    return data as {
+    const data = await requestJsonFromEndpoint<{
       ok: boolean;
       data: {
         totalTracked: number;
@@ -1252,61 +1328,122 @@ export const api = {
         }>;
       };
       message: string | null;
-    };
+    }>('/api/facebook/sync-all', {
+      method: 'POST',
+    }, LONG_RUNNING_REQUEST_TIMEOUT_MS);
+    return data;
   },
 
   async getAnalyticsSummary() {
-    return { ok: true, data: (await getSupabaseAnalytics()).summary, message: null } as {
-      ok: boolean;
-      data: {
-        likes: number;
-        comments: number;
-        shares: number;
-        reach: number;
-        engagementRate: number;
-        postCount: number;
-        lastSyncedAt: string | null;
+    try {
+      return { ok: true, data: (await getSupabaseAnalytics()).summary, message: null } as {
+        ok: boolean;
+        data: {
+          likes: number;
+          comments: number;
+          shares: number;
+          reach: number;
+          engagementRate: number;
+          postCount: number;
+          lastSyncedAt: string | null;
+        };
+        message: string | null;
       };
-      message: string | null;
-    };
+    } catch (error) {
+      console.warn('[api] Supabase analytics summary unavailable, using backend fallback', error);
+      return await requestJsonFromEndpoint<{
+        ok: boolean;
+        data: {
+          likes: number;
+          comments: number;
+          shares: number;
+          reach: number;
+          engagementRate: number;
+          postCount: number;
+          lastSyncedAt: string | null;
+        };
+        message: string | null;
+      }>('/api/analytics/summary', undefined, FAST_OPTIONAL_TIMEOUT_MS);
+    }
   },
 
   async getAnalyticsTrend(days = 7) {
-    return { ok: true, data: (await getSupabaseAnalytics(days)).trend, message: null } as {
-      ok: boolean;
-      data: Array<{
-        date: string;
-        label: string;
-        likes: number;
-        comments: number;
-        shares: number;
-        reach: number;
-        engagementRate: number;
-      }>;
-      message: string | null;
-    };
+    try {
+      return { ok: true, data: (await getSupabaseAnalytics(days)).trend, message: null } as {
+        ok: boolean;
+        data: Array<{
+          date: string;
+          label: string;
+          likes: number;
+          comments: number;
+          shares: number;
+          reach: number;
+          engagementRate: number;
+        }>;
+        message: string | null;
+      };
+    } catch (error) {
+      console.warn('[api] Supabase analytics trend unavailable, using backend fallback', error);
+      const params = new URLSearchParams({ days: String(days) });
+      return await requestJsonFromEndpoint<{
+        ok: boolean;
+        data: Array<{
+          date: string;
+          label: string;
+          likes: number;
+          comments: number;
+          shares: number;
+          reach: number;
+          engagementRate: number;
+        }>;
+        message: string | null;
+      }>(`/api/analytics/trend?${params.toString()}`, undefined, FAST_OPTIONAL_TIMEOUT_MS);
+    }
   },
 
   async getAnalyticsPosts() {
-    return { ok: true, data: (await getSupabaseAnalytics()).posts, message: null } as {
-      ok: boolean;
-      data: Array<{
-        id: number;
-        title: string;
-        content: string;
-        platform: string;
-        facebookPostId: string | null;
-        publishedAt: string | null;
-        createdAt: string;
-        lastMetricsSyncAt: string | null;
-        likes: number;
-        comments: number;
-        shares: number;
-        reach: number;
-        engagementRate: number;
-      }>;
-      message: string | null;
-    };
+    try {
+      return { ok: true, data: (await getSupabaseAnalytics()).posts, message: null } as {
+        ok: boolean;
+        data: Array<{
+          id: number;
+          title: string;
+          content: string;
+          platform: string;
+          facebookPostId: string | null;
+          publishedAt: string | null;
+          createdAt: string;
+          lastMetricsSyncAt: string | null;
+          likes: number;
+          comments: number;
+          shares: number;
+          reach: number;
+          engagementRate: number;
+        }>;
+        message: string | null;
+      };
+    } catch (error) {
+      console.warn('[api] Supabase analytics posts unavailable, using backend fallback', error);
+      return await requestJsonFromEndpoint<{
+        ok: boolean;
+        data: Array<{
+          id: number;
+          title: string;
+          content: string;
+          platform: string;
+          facebookPostId: string | null;
+          publishedAt: string | null;
+          createdAt: string;
+          lastMetricsSyncAt: string | null;
+          likes: number;
+          comments: number;
+          shares: number;
+          reach: number;
+          engagementRate: number;
+        }>;
+        message: string | null;
+      }>('/api/analytics/posts', undefined, FAST_OPTIONAL_TIMEOUT_MS);
+    }
   },
 
   // USERS

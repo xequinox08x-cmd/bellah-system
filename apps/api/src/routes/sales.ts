@@ -8,9 +8,14 @@ const router = Router();
  * Create sale with transaction + stock deduction
  */
 router.post("/", async (req, res) => {
-  const { items } = req.body as {
+  const { items, customerName } = req.body as {
     items?: { productId: number; qty: number; unitPrice: number }[];
+    customerName?: string;
   };
+  const normalizedCustomerName =
+    typeof customerName === "string" && customerName.trim()
+      ? customerName.trim()
+      : null;
 
   // Validate request body
   if (!items || !Array.isArray(items) || items.length === 0) {
@@ -66,10 +71,10 @@ router.post("/", async (req, res) => {
 
     // 3) Insert sale
     const saleResult = await client.query(
-      `INSERT INTO sales (total, created_at)
-       VALUES ($1, NOW())
-       RETURNING id, total, created_at`,
-      [total]
+      `INSERT INTO sales (total, customer_name, created_at)
+       VALUES ($1, $2, NOW())
+       RETURNING id, total, customer_name, created_at`,
+      [total, normalizedCustomerName]
     );
 
     const sale = saleResult.rows[0];
@@ -141,7 +146,7 @@ router.get("/:id", async (req, res) => {
 
   try {
     const saleResult = await pool.query(
-      "SELECT id, total, created_at FROM sales WHERE id = $1",
+      "SELECT id, total, customer_name, created_at FROM sales WHERE id = $1",
       [saleId]
     );
 

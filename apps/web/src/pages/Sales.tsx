@@ -25,6 +25,32 @@ type Product = {
   description?: string;
 };
 
+type RecentSaleLineItem = {
+  id: string;
+  saleId: number;
+  productId: number;
+  productName: string;
+  category: string;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+  profit: number;
+  date: string;
+  createdAt: string;
+  customerName: string;
+  staffName: string;
+};
+
+type RecentSaleRow = {
+  saleId: number;
+  customerName: string;
+  createdAt: string;
+  items: Array<{ productName: string; quantity: number }>;
+  itemSummary: string;
+  revenue: number;
+  searchText: string;
+};
+
 // ─── constants ────────────────────────────────────────────────────────────────
 // ─── Searchable Product Combobox ──────────────────────────────────────────────
 function ProductCombobox({
@@ -182,6 +208,81 @@ function formatDateInput(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+function formatSalesDateTime(value?: string | null) {
+  if (!value) return '—';
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: '2-digit',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function buildRecentSaleRows(records: RecentSaleLineItem[]): RecentSaleRow[] {
+  const grouped = new Map<number, RecentSaleRow>();
+
+  records.forEach((record) => {
+    const customerName = record.customerName?.trim() || 'Walk-in Customer';
+    const createdAt = record.createdAt || record.date;
+    const itemLabel = `${record.productName}${record.quantity > 1 ? ` ×${record.quantity}` : ''}`;
+    const searchBits = [
+      String(record.saleId),
+      customerName,
+      record.productName,
+      record.category,
+      itemLabel,
+      String(record.quantity),
+      String(record.total ?? 0),
+    ]
+      .join(' ')
+      .toLowerCase();
+
+    const existing = grouped.get(record.saleId);
+    if (!existing) {
+      grouped.set(record.saleId, {
+        saleId: record.saleId,
+        customerName,
+        createdAt,
+        items: [{ productName: record.productName, quantity: Number(record.quantity ?? 0) }],
+        itemSummary: itemLabel,
+        revenue: Number(record.total ?? 0),
+        searchText: searchBits,
+      });
+      return;
+    }
+
+    existing.items.push({ productName: record.productName, quantity: Number(record.quantity ?? 0) });
+    existing.itemSummary = existing.items
+      .map((item) => `${item.productName}${item.quantity > 1 ? ` ×${item.quantity}` : ''}`)
+      .join(', ');
+    existing.revenue += Number(record.total ?? 0);
+    existing.searchText = [
+      String(existing.saleId),
+      existing.customerName,
+      existing.itemSummary,
+      ...existing.items.map((item) => item.productName),
+      String(existing.revenue),
+    ]
+      .join(' ')
+      .toLowerCase();
+
+    if (createdAt && new Date(createdAt).getTime() > new Date(existing.createdAt).getTime()) {
+      existing.createdAt = createdAt;
+    }
+  });
+
+  return Array.from(grouped.values()).sort((a, b) => {
+    const dateDiff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    if (dateDiff !== 0) return dateDiff;
+    return b.saleId - a.saleId;
+  });
+}
+
 // ─── Qty Stepper ──────────────────────────────────────────────────────────────
 function QtyStepper({
   value, min, max, onChange,
@@ -276,13 +377,18 @@ export default function Sales() {
 
   const [products, setProducts] = useState<Product[]>([]);
   const [sales, setSales] = useState<any[]>([]);
+  const [recentSaleLines, setRecentSaleLines] = useState<RecentSaleLineItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
       try {
         setLoading(true);
-        const rawProducts = await api.getProducts(token);
+        const [rawProducts, rawSales, rawRecentSaleLines] = await Promise.all([
+          api.getProducts(token),
+          api.getSales(token),
+          api.getDashboardSalesRecords().catch(() => ({ data: [] as RecentSaleLineItem[] })),
+        ]);
         const normalizedProducts: Product[] = rawProducts.map((p: any) => ({
           id: String(p.id),
           sku: p.sku,
@@ -295,8 +401,8 @@ export default function Sales() {
           description: p.description ?? "",
         }));
         setProducts(normalizedProducts);
-        const rawSales = await api.getSales(token);
         setSales(rawSales);
+        setRecentSaleLines(Array.isArray(rawRecentSaleLines.data) ? rawRecentSaleLines.data : []);
       } catch (err: any) {
         console.error(err);
         toast.error(err.message || "Failed to load from backend");
@@ -369,14 +475,22 @@ export default function Sales() {
     if (!selectedProduct) return;
     try {
       setSubmitting(true);
-      await api.createSale({ items: [{ productId: Number(productId), qty: quantity, unitPrice: selectedProduct.price }] }, token);
-      const rawProducts = await api.getProducts(token);
+      await api.createSale({
+        customerName: customerName.trim() || undefined,
+        items: [{ productId: Number(productId), qty: quantity, unitPrice: selectedProduct.price }],
+      }, token);
+      const [rawProducts, rawSales, rawRecentSaleLines] = await Promise.all([
+        api.getProducts(token),
+        api.getSales(token),
+        api.getDashboardSalesRecords().catch(() => ({ data: [] as RecentSaleLineItem[] })),
+      ]);
       setProducts(rawProducts.map((p: any) => ({
         id: String(p.id), sku: p.sku, name: p.name, category: p.category,
         price: Number(p.price), cost: Number(p.cost), stock: Number(p.stock),
         lowStockThreshold: Number(p.lowStockThreshold), description: p.description ?? '',
       })));
-      setSales(await api.getSales(token));
+      setSales(rawSales);
+      setRecentSaleLines(Array.isArray(rawRecentSaleLines.data) ? rawRecentSaleLines.data : []);
       toast.success(`Sale recorded — ${selectedProduct.name} ×${quantity}`);
       resetForm();
     } catch (err: any) {
@@ -429,22 +543,22 @@ export default function Sales() {
 
   // ── Filtered recent sales ─────────────────────────────────────────────
   const isSelectedDateMode = salesViewMode === 'date';
+  const recentSalesRows = useMemo(() => buildRecentSaleRows(recentSaleLines), [recentSaleLines]);
   const filteredSales = useMemo(() => {
-    return sales.filter((s: any) => {
+    return recentSalesRows.filter((s) => {
       const q = search.trim().toLowerCase();
 
       const matchSearch =
         !q ||
-        String(s.id).includes(q) ||
-        String(s.total ?? "").toLowerCase().includes(q);
+        s.searchText.includes(q);
 
-      const created = s.created_at ? new Date(s.created_at) : null;
+      const created = s.createdAt ? new Date(s.createdAt) : null;
       const saleDate = created ? formatDateInput(created) : '';
       const matchDate = isSelectedDateMode ? saleDate === selectedDate : true;
 
       return matchSearch && matchDate;
     });
-  }, [sales, search, isSelectedDateMode, selectedDate]);
+  }, [recentSalesRows, search, isSelectedDateMode, selectedDate]);
 
   const INPUT_CLS = 'w-full px-3 py-2.5 border border-[#E5E7EB] rounded-lg text-sm text-[#111827] placeholder-[#C5C5C5] focus:outline-none focus:ring-2 focus:ring-[#EC4899]/15 focus:border-[#EC4899] bg-white transition-all';
 
@@ -811,7 +925,7 @@ export default function Sales() {
       <input
         value={search}
         onChange={(e) => setSearch(e.target.value)}
-        placeholder="Search product, customer…"
+        placeholder="Search product or customer..."
         className="w-full pl-9 pr-3 py-2 text-xs border border-[#E5E7EB] rounded-lg focus:outline-none focus:border-[#F9A8C0] focus:ring-1 focus:ring-[#EC4899]/15 bg-white"
       />
     </div>
@@ -866,52 +980,58 @@ export default function Sales() {
 
   {/* Table */}
   <div className="overflow-x-auto">
-    <table className="w-full">
+    <table className="w-full min-w-[780px] table-fixed">
       <thead>
         <tr className="bg-[#F9FAFB] border-b border-[#F3F4F6]">
-          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-left">ID</th>
-          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-left">Date &amp; Time</th>
-          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-left">Items</th>
-          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-right">Revenue</th>
+          <th className="w-[84px] px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-left whitespace-nowrap">ID</th>
+          <th className="w-[180px] px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-left whitespace-nowrap">Name</th>
+          <th className="w-[220px] px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-left whitespace-nowrap">Date &amp; Time</th>
+          <th className="px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-left whitespace-nowrap">Items</th>
+          <th className="w-[140px] px-4 py-2.5 text-[10px] text-[#9CA3AF] uppercase tracking-wider text-right whitespace-nowrap">Revenue</th>
         </tr>
       </thead>
 
       <tbody className="divide-y divide-[#F3F4F6]">
         {filteredSales.length === 0 ? (
           <tr>
-            <td colSpan={4} className="py-14 text-center text-xs text-[#9CA3AF]">
+            <td colSpan={5} className="py-14 text-center text-xs text-[#9CA3AF]">
               No sales records match your filters
             </td>
           </tr>
         ) : (
-          filteredSales.map((s: any) => {
-            const created = s.created_at ? new Date(s.created_at) : null;
-            const itemNames: string[] = Array.isArray(s.items)
-              ? s.items.map((it: any) => it.product_name ?? it.name ?? `#${it.product_id}`)
-              : [];
+          filteredSales.map((s) => {
             return (
               <tr
-                key={s.id}
+                key={s.saleId}
                 onClick={async () => {
                   try {
-                    const details = await api.getSaleById(s.id, token);
-                    setModalSale({ ...s, items: details.items ?? [] });
+                    const details = await api.getSaleById(s.saleId, token);
+                    setModalSale({
+                      id: s.saleId,
+                      total: s.revenue,
+                      customer_name: s.customerName,
+                      created_at: s.createdAt,
+                      items: details.items ?? [],
+                    });
                   } catch (err: any) {
                     toast.error(err.message || 'Failed to load sale details');
                   }
                 }}
                 className="hover:bg-[#FDF2F8] active:bg-[#FCE7F3] transition-colors cursor-pointer"
               >
-                <td className="px-4 py-3 text-xs text-[#111827] whitespace-nowrap" style={{ fontWeight: 600 }}>#{s.id}</td>
-                <td className="px-4 py-3 text-xs text-[#6B7280] whitespace-nowrap">{created ? created.toLocaleString() : '—'}</td>
-                <td className="px-4 py-3 text-xs text-[#6B7280] max-w-[220px]">
-                  {itemNames.length > 0
-                    ? <span className="truncate block">{itemNames.join(', ')}</span>
+                <td className="px-4 py-3 text-xs text-[#111827] whitespace-nowrap" style={{ fontWeight: 600 }}>#{s.saleId}</td>
+                <td className="px-4 py-3 text-xs text-[#111827] whitespace-nowrap truncate" style={{ fontWeight: 500 }}>
+                  {s.customerName}
+                </td>
+                <td className="px-4 py-3 text-xs text-[#6B7280] whitespace-nowrap">{formatSalesDateTime(s.createdAt)}</td>
+                <td className="px-4 py-3 text-xs text-[#6B7280]">
+                  {s.itemSummary
+                    ? <span className="truncate block">{s.itemSummary}</span>
                     : <span className="text-[#C5C5C5] italic">Tap to view items</span>
                   }
                 </td>
                 <td className="px-4 py-3 text-xs text-right text-[#111827] whitespace-nowrap" style={{ fontWeight: 700 }}>
-                  ₱{Number(s.total ?? 0).toFixed(2)}
+                  ₱{Number(s.revenue ?? 0).toFixed(2)}
                 </td>
               </tr>
             );
@@ -930,7 +1050,7 @@ export default function Sales() {
         <span className="text-[#111827]" style={{ fontWeight: 700 }}>
           ₱
           {filteredSales
-            .reduce((sum: number, x: any) => sum + Number(x.total ?? 0), 0)
+            .reduce((sum: number, x) => sum + Number(x.revenue ?? 0), 0)
             .toLocaleString("en-US", { minimumFractionDigits: 2 })}
         </span>
       </span>

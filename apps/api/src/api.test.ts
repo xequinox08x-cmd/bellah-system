@@ -341,7 +341,7 @@ describe('API functionality', () => {
       expect(res.body.data.generatedImageUrl).toBe('data:image/png;base64,QUJDRA==');
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(fetchMock.mock.calls[0]?.[0]).toBe(
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent'
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent'
       );
 
       const geminiRequest = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));

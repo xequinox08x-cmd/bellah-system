@@ -9,7 +9,7 @@ interface ScheduledPost {
   id: number;
   content_id: number;
   campaign_id: number | null;
-  scheduled_at: string;
+  scheduled_at: string | null;
   platform: string;
   status: 'pending' | 'published' | 'failed' | 'cancelled';
   facebook_post_id: string | null;
@@ -138,12 +138,72 @@ function ScheduleModal({
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
+function PublishNowModal({
+  content,
+  isPublishing,
+  onClose,
+  onConfirm,
+}: {
+  content: ApprovedContent;
+  isPublishing: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-md p-6 space-y-4">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+            <Send className="w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="text-[#111827] text-base" style={{ fontWeight: 700 }}>Publish Now</h2>
+            <p className="text-sm text-[#6B7280] mt-1">
+              Are you sure you want to publish this post immediately?
+            </p>
+          </div>
+        </div>
+
+        <div className="p-3 bg-[#F9FAFB] rounded-xl border border-[#E5E7EB]">
+          <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>{content.title}</p>
+          <p className="text-xs text-[#6B7280] mt-1 line-clamp-2">{content.output}</p>
+        </div>
+
+        <div className="flex gap-3 pt-1">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isPublishing}
+            className="flex-1 py-2.5 border border-[#E5E7EB] text-[#374151] rounded-lg text-sm hover:bg-[#F9FAFB] transition-all disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={isPublishing}
+            className="flex-1 py-2.5 rounded-lg text-sm flex items-center justify-center gap-2 transition-all disabled:cursor-not-allowed disabled:opacity-50"
+            style={{
+              backgroundColor: '#059669',
+              color: '#ffffff',
+            }}
+          >
+            {isPublishing ? <><RefreshCw className="w-4 h-4 animate-spin" /> Publishing...</> : <><Send className="w-4 h-4" /> Publish Now</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Scheduling() {
   const [posts, setPosts] = useState<ScheduledPost[]>([]);
   const [approvedContent, setApprovedContent] = useState<ApprovedContent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedContent, setSelectedContent] = useState<ApprovedContent | null>(null);
+  const [contentToPublish, setContentToPublish] = useState<ApprovedContent | null>(null);
+  const [publishingContentId, setPublishingContentId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'published' | 'failed'>('all');
 
   const loadData = async () => {
@@ -187,6 +247,28 @@ export default function Scheduling() {
       void loadData();
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to update status');
+    }
+  };
+
+  const handlePublishNow = async () => {
+    if (!contentToPublish || publishingContentId !== null) return;
+
+    setPublishingContentId(contentToPublish.id);
+    try {
+      const res = await api.publishFacebookContent(contentToPublish.id);
+      if (!res.ok) throw new Error(res.message || 'Failed to publish post');
+
+      toast.success('Post published to Facebook!');
+      setApprovedContent((items) => items.filter((item) => item.id !== contentToPublish.id));
+      setActiveTab('all');
+      window.dispatchEvent(new Event('ai-content-updated'));
+      window.dispatchEvent(new Event('facebook-analytics-updated'));
+      setContentToPublish(null);
+      await loadData();
+    } catch (err: unknown) {
+      toast.error((err as Error).message || 'Failed to publish post');
+    } finally {
+      setPublishingContentId(null);
     }
   };
 
@@ -244,11 +326,31 @@ export default function Scheduling() {
                 <p className="text-xs text-[#6B7280] mt-1 line-clamp-2">{item.output}</p>
                 <div className="flex items-center gap-2 mt-2">
                   <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-100 text-blue-600">{item.platform}</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 mt-2">
                   <button
+                    type="button"
                     onClick={e => { e.stopPropagation(); setSelectedContent(item); }}
-                    className="text-[10px] px-2 py-0.5 rounded-full bg-[#EC4899] text-white hover:bg-[#DB2777] transition-all"
+                    disabled={publishingContentId !== null}
+                    className="text-[10px] px-2 py-0.5 rounded-full bg-[#EC4899] text-white hover:bg-[#DB2777] transition-all disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     + Schedule
+                  </button>
+                  <button
+                    type="button"
+                    onClick={e => { e.stopPropagation(); setContentToPublish(item); }}
+                    disabled={publishingContentId !== null}
+                    className="text-[10px] px-2 py-0.5 rounded-full transition-all disabled:cursor-not-allowed disabled:opacity-50"
+                    style={{
+                      alignItems: 'center',
+                      backgroundColor: '#059669',
+                      color: '#ffffff',
+                      display: 'inline-flex',
+                      gap: '4px',
+                    }}
+                  >
+                    {publishingContentId === item.id ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                    {publishingContentId === item.id ? 'Publishing...' : 'Publish Now'}
                   </button>
                 </div>
               </div>
@@ -284,6 +386,7 @@ export default function Scheduling() {
             {!loading && !error && filteredPosts.map(post => {
               const cfg = STATUS_CONFIG[post.status] ?? STATUS_CONFIG.pending;
               const Icon = cfg.icon;
+              const postDate = post.published_at || post.scheduled_at || post.created_at;
               return (
                 <div key={post.id} className="px-5 py-4 flex items-start gap-4">
                   <div className={`w-8 h-8 rounded-lg ${cfg.bg} flex items-center justify-center shrink-0 mt-0.5`}>
@@ -295,7 +398,7 @@ export default function Scheduling() {
                         <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>{post.content_title}</p>
                         <p className="text-xs text-[#9CA3AF] mt-0.5 flex items-center gap-1">
                           <Calendar className="w-3 h-3" />
-                          {new Date(post.scheduled_at).toLocaleString()}
+                          {new Date(postDate).toLocaleString()}
                           {post.campaign_name && <span className="ml-1">· {post.campaign_name}</span>}
                         </p>
                       </div>
@@ -341,6 +444,17 @@ export default function Scheduling() {
           content={selectedContent}
           onClose={() => setSelectedContent(null)}
           onScheduled={loadData}
+        />
+      )}
+
+      {contentToPublish && (
+        <PublishNowModal
+          content={contentToPublish}
+          isPublishing={publishingContentId === contentToPublish.id}
+          onClose={() => {
+            if (publishingContentId === null) setContentToPublish(null);
+          }}
+          onConfirm={() => void handlePublishNow()}
         />
       )}
     </div>

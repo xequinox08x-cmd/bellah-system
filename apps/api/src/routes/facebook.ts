@@ -3,6 +3,7 @@ import {
   getFacebookStatus,
   getPagePosts,
   getPostMetrics,
+  deletePublishedContent,
   publishSystemContent,
   syncAllContentMetrics,
 } from "../services/facebook";
@@ -76,6 +77,24 @@ facebookRouter.post("/publish/:id", async (req: Request, res: Response) => {
       ok: false,
       data: null,
       message: getErrorMessage(error, "Failed to publish Facebook content"),
+    });
+  }
+});
+
+facebookRouter.delete("/published-content/:id", async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ ok: false, data: null, message: "Invalid content id" });
+    }
+
+    await deletePublishedContent(id);
+    return res.json({ ok: true, data: { id }, message: null });
+  } catch (error) {
+    return res.status(getErrorStatus(error)).json({
+      ok: false,
+      data: null,
+      message: getErrorMessage(error, "Failed to delete published Facebook content"),
     });
   }
 });

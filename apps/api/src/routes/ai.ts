@@ -9,6 +9,7 @@ const GENERATED_CONTENT_STATUS = "draft";
 const PENDING_APPROVAL_STATUS = "pending";
 const MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024;
 const REFERENCE_IMAGE_FETCH_TIMEOUT_MS = 8_000;
+const AI_PROVIDER_REQUEST_TIMEOUT_MS = 60_000;
 
 type GenerateRequestBody = {
   productId?: number | string;
@@ -299,6 +300,34 @@ function isReferenceImageProvided(value?: string | null) {
   return Boolean(trimmed && (parseDataUrl(trimmed) || /^https?:\/\//i.test(trimmed)));
 }
 
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = AI_PROVIDER_REQUEST_TIMEOUT_MS,
+  label = "request"
+) {
+  if (init.signal) return fetch(input, init);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error: any) {
+    const isAbortError =
+      error?.name === "AbortError" ||
+      (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError");
+
+    if (isAbortError) {
+      throw new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)} seconds`);
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function resolveReferenceImagePayload(value?: string | null): Promise<DataUrlPayload | null> {
   const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed) return null;
@@ -361,7 +390,7 @@ function getGeminiApiKey() {
 }
 
 function getGeminiImageModel() {
-  return process.env.GEMINI_IMAGE_MODEL?.trim() || "gemini-3.1-flash-image-preview";
+  return process.env.GEMINI_IMAGE_MODEL?.trim() || "gemini-2.5-flash-image";
 }
 
 function getSupabaseUrl() {
@@ -525,18 +554,23 @@ async function generateCaptionWithOpenAi(prompt: string) {
     throw new Error("OPENAI_API_KEY (or AI_API_KEY) is not configured");
   }
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
+  const response = await fetchWithTimeout(
+    "https://api.openai.com/v1/responses",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: getOpenAiCaptionModel(),
+        instructions: "Write concise, polished Facebook marketing captions for beauty products.",
+        input: prompt,
+      }),
     },
-    body: JSON.stringify({
-      model: getOpenAiCaptionModel(),
-      instructions: "Write concise, polished Facebook marketing captions for beauty products.",
-      input: prompt,
-    }),
-  });
+    AI_PROVIDER_REQUEST_TIMEOUT_MS,
+    "OpenAI caption request"
+  );
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -575,46 +609,51 @@ async function generateAutoPromptWithOpenAi(options: {
         ? "caption and poster brief"
         : "caption-only brief";
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
+  const response = await fetchWithTimeout(
+    "https://api.openai.com/v1/responses",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: getOpenAiPromptModel(),
+        instructions: [
+          "You create compact creative briefs for a Facebook beauty-product marketing generator.",
+          "Return only one plain-text prompt.",
+          "Do not write the final caption, hashtags, JSON, bullets, labels, or quotation marks.",
+          "Make the prompt directly usable as the primary instruction for a downstream AI content generator.",
+        ].join(" "),
+        input: [
+          `Platform: ${platform || FACEBOOK_PLATFORM}`,
+          `Content type: ${contentLabel}`,
+          `Tone: ${tone || "fun"}`,
+          `Output mode: ${modeLabel}`,
+          `Product name: ${product.name}`,
+          `Category: ${product.category?.trim() || "Beauty"}`,
+          `Price: PHP ${Number(product.price ?? 0).toFixed(2)}`,
+          `Description: ${product.description?.trim() || "No description provided."}`,
+          `Reference image provided: ${hasReferenceImage ? "yes" : "no"}`,
+          "Requirements:",
+          "- Keep it concise at 2 to 4 sentences.",
+          "- Align the message angle with the selected content type.",
+          "- Match the selected tone exactly.",
+          "- Include a clear CTA direction.",
+          outputMode === "text"
+            ? "- Focus on copy direction, audience intent, and the strongest conversion angle."
+            : "- Include visual direction for a Facebook beauty poster: composition, mood, lighting, and on-brand styling.",
+          hasReferenceImage
+            ? "- Use the reference image as the visual source of truth; preserve the product identity, packaging, label placement, and dominant colors."
+            : "- If no reference image is available, keep the direction grounded in the product name, category, price, and description.",
+          "- Stay grounded in the provided product facts and do not invent claims.",
+          "- Keep the brand feel premium, beauty-focused, and suitable for a Filipino audience.",
+        ].join("\n"),
+      }),
     },
-    body: JSON.stringify({
-      model: getOpenAiPromptModel(),
-      instructions: [
-        "You create compact creative briefs for a Facebook beauty-product marketing generator.",
-        "Return only one plain-text prompt.",
-        "Do not write the final caption, hashtags, JSON, bullets, labels, or quotation marks.",
-        "Make the prompt directly usable as the primary instruction for a downstream AI content generator.",
-      ].join(" "),
-      input: [
-        `Platform: ${platform || FACEBOOK_PLATFORM}`,
-        `Content type: ${contentLabel}`,
-        `Tone: ${tone || "fun"}`,
-        `Output mode: ${modeLabel}`,
-        `Product name: ${product.name}`,
-        `Category: ${product.category?.trim() || "Beauty"}`,
-        `Price: PHP ${Number(product.price ?? 0).toFixed(2)}`,
-        `Description: ${product.description?.trim() || "No description provided."}`,
-        `Reference image provided: ${hasReferenceImage ? "yes" : "no"}`,
-        "Requirements:",
-        "- Keep it concise at 2 to 4 sentences.",
-        "- Align the message angle with the selected content type.",
-        "- Match the selected tone exactly.",
-        "- Include a clear CTA direction.",
-        outputMode === "text"
-          ? "- Focus on copy direction, audience intent, and the strongest conversion angle."
-          : "- Include visual direction for a Facebook beauty poster: composition, mood, lighting, and on-brand styling.",
-        hasReferenceImage
-          ? "- Use the reference image as the visual source of truth; preserve the product identity, packaging, label placement, and dominant colors."
-          : "- If no reference image is available, keep the direction grounded in the product name, category, price, and description.",
-        "- Stay grounded in the provided product facts and do not invent claims.",
-        "- Keep the brand feel premium, beauty-focused, and suitable for a Filipino audience.",
-      ].join("\n"),
-    }),
-  });
+    AI_PROVIDER_REQUEST_TIMEOUT_MS,
+    "OpenAI prompt request"
+  );
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -658,8 +697,9 @@ async function generateImageWithGemini(prompt: string, referenceImageUrl?: strin
 }
 
 async function generateGeminiImage(parts: Array<Record<string, unknown>>, apiKey: string) {
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${getGeminiImageModel()}:generateContent`,
+  const model = getGeminiImageModel();
+  const response = await fetchWithTimeout(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
     {
       method: "POST",
       headers: {
@@ -675,7 +715,9 @@ async function generateGeminiImage(parts: Array<Record<string, unknown>>, apiKey
           },
         },
       }),
-    }
+    },
+    AI_PROVIDER_REQUEST_TIMEOUT_MS,
+    `Gemini image request (${model})`
   );
 
   if (!response.ok) {
@@ -944,7 +986,9 @@ aiRouter.post("/auto-prompt", async (req: Request, res: Response) => {
       promptText: autoPrompt.promptText,
       provider: autoPrompt.provider,
     };
-    setCachedData(cacheKey, data, 60 * 60 * 24);
+    if (autoPrompt.provider === "openai") {
+      setCachedData(cacheKey, data, 60 * 60 * 24);
+    }
 
     return res.json({
       ok: true,
@@ -1068,7 +1112,12 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
       providers,
       status: String(savedContent?.status ?? GENERATED_CONTENT_STATUS),
     };
-    setCachedData(cacheKey, data, 60 * 60 * 24);
+    const textSucceeded = !shouldGenerateCaptionWithOpenAi(parsed.outputMode) || providers.text === "openai";
+    const imageSucceeded = !shouldGeneratePosterWithGemini(parsed.outputMode) || providers.image === "gemini";
+
+    if (textSucceeded && imageSucceeded) {
+      setCachedData(cacheKey, data, 60 * 60 * 24);
+    }
 
     return res.json({
       ok: true,
