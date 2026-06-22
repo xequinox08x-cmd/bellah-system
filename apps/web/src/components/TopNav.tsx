@@ -3,29 +3,22 @@ import {
   AlertTriangle,
   Bell,
   ChevronDown,
-  FileText,
   LogOut,
   Menu,
-  Plus,
   Search,
-  ShieldCheck,
   User,
 } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router';
 import { useAuth } from './AuthContext';
-import { useStore } from '../data/store';
 import { toast } from 'sonner';
-import { api } from '../lib/api';
-import { useDefenseMode } from '../lib/defenseMode';
+import { offlineStore } from '../lib/offlineStore';
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
   '/dashboard': { title: 'Dashboard', sub: 'Overview of your store performance' },
   '/products': { title: 'Inventory', sub: 'Manage products and stock levels' },
   '/sales': { title: 'Sales Recording', sub: 'Log transactions and track revenue' },
-  '/marketing': { title: 'AI Marketing', sub: 'Generate and manage marketing content' },
-  '/approvals': { title: 'Content Approvals', sub: 'Review and approve submitted content' },
-  '/scheduling': { title: 'Post Scheduling', sub: 'Schedule and publish approved posts' },
-  '/analytics': { title: 'Analytics', sub: 'Engagement and performance insights' },
+  '/customers': { title: 'Customers', sub: 'Manage customer records' },
+  '/reports': { title: 'Reports', sub: 'Sales and inventory insights' },
   '/users': { title: 'User Management', sub: 'Manage system users and permissions' },
   '/settings': { title: 'Settings', sub: 'Account and application preferences' },
 };
@@ -36,7 +29,7 @@ type SearchEntry = {
   description: string;
   path: string;
   keywords: string;
-  badge: 'Page' | 'Product' | 'Content';
+  badge: 'Page' | 'Product';
   adminOnly?: boolean;
 };
 
@@ -66,36 +59,19 @@ const SEARCH_PAGES: SearchEntry[] = [
     badge: 'Page',
   },
   {
-    id: 'page-marketing',
-    label: 'Generate Content',
-    description: 'Create Facebook marketing content',
-    path: '/marketing',
-    keywords: 'generate content ai marketing facebook post caption poster',
+    id: 'page-customers',
+    label: 'Customers',
+    description: 'Manage customer records',
+    path: '/customers',
+    keywords: 'customers client buyer contact',
     badge: 'Page',
   },
   {
-    id: 'page-approvals',
-    label: 'Content Approvals',
-    description: 'Review and approve submitted posts',
-    path: '/approvals',
-    keywords: 'approval approvals review pending posts content',
-    badge: 'Page',
-    adminOnly: true,
-  },
-  {
-    id: 'page-scheduling',
-    label: 'Scheduling',
-    description: 'Schedule and publish approved posts',
-    path: '/scheduling',
-    keywords: 'schedule scheduling calendar post posting publish',
-    badge: 'Page',
-  },
-  {
-    id: 'page-analytics',
-    label: 'Analytics',
-    description: 'Engagement and performance insights',
-    path: '/analytics',
-    keywords: 'analytics reports engagement reach insights charts',
+    id: 'page-reports',
+    label: 'Reports',
+    description: 'Sales and inventory insights',
+    path: '/reports',
+    keywords: 'reports analytics sales inventory charts',
     badge: 'Page',
   },
   {
@@ -103,7 +79,7 @@ const SEARCH_PAGES: SearchEntry[] = [
     label: 'Users',
     description: 'Manage user accounts and permissions',
     path: '/users',
-    keywords: 'users staff admin accounts permissions',
+    keywords: 'users admin accounts permissions',
     badge: 'Page',
     adminOnly: true,
   },
@@ -144,29 +120,34 @@ function scoreSearchEntry(entry: SearchEntry, query: string) {
 
 export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
   const { user, logout } = useAuth();
-  const { defenseMode, setDefenseMode } = useDefenseMode();
-  const { contentItems, products } = useStore();
   const navigate = useNavigate();
   const location = useLocation();
   const [showProfile, setShowProfile] = useState(false);
   const [showNotifs, setShowNotifs] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearchResults, setShowSearchResults] = useState(false);
-  const [notificationCounts, setNotificationCounts] = useState({ pending: 0, lowStock: 0 });
-  const [imageNotifs, setImageNotifs] = useState<{ id: string; title: string }[]>([]);
+  const [products, setProducts] = useState(() => offlineStore.getProducts());
+  const [lowStockCount, setLowStockCount] = useState(0);
   const searchRef = useRef<HTMLFormElement | null>(null);
 
-  const storePendingCount = user?.role === 'admin'
-    ? contentItems.filter((item) => item.status === 'pending').length
-    : 0;
-  // Only count products that have a threshold set (>0) AND are at/below it.
-  const storeLowStockCount = products.filter(
-    (p) => Number(p.lowStockThreshold ?? 0) > 0 && Number(p.stock ?? 0) <= Number(p.lowStockThreshold ?? 0)
-  ).length;
-  const pendingCount = user?.role === 'admin' ? notificationCounts.pending : 0;
-  const lowStockCount = notificationCounts.lowStock;
-  const totalNotifs = pendingCount + (lowStockCount > 0 ? 1 : 0) + imageNotifs.length;
+  const totalNotifs = lowStockCount > 0 ? 1 : 0;
   const meta = PAGE_META[location.pathname] ?? { title: 'Dashboard', sub: '' };
+
+  const refreshCounts = useCallback(() => {
+    const nextProducts = offlineStore.getProducts();
+    setProducts(nextProducts);
+    const nextLowStock = nextProducts.filter(
+      (product) => product.lowStockThreshold > 0 && product.stock <= product.lowStockThreshold,
+    ).length;
+    setLowStockCount(nextLowStock);
+  }, []);
+
+  useEffect(() => {
+    refreshCounts();
+    const handleStoreUpdate = () => refreshCounts();
+    window.addEventListener('bellah-store-updated', handleStoreUpdate);
+    return () => window.removeEventListener('bellah-store-updated', handleStoreUpdate);
+  }, [refreshCounts]);
 
   const searchEntries = useMemo(() => {
     const pageEntries = SEARCH_PAGES.filter((entry) => !entry.adminOnly || user?.role === 'admin');
@@ -178,17 +159,9 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
       keywords: `${product.name} ${product.category ?? ''} product inventory stock`,
       badge: 'Product',
     }));
-    const contentEntries: SearchEntry[] = contentItems.map((item) => ({
-      id: `content-${item.id}`,
-      label: item.title,
-      description: `Open content in ${user?.role === 'admin' && item.status === 'pending' ? 'Content Approvals' : 'Generate Content'}`,
-      path: user?.role === 'admin' && item.status === 'pending' ? '/approvals' : '/marketing',
-      keywords: `${item.title} ${item.caption} ${item.productName ?? ''} marketing content post`,
-      badge: 'Content',
-    }));
 
-    return [...pageEntries, ...productEntries, ...contentEntries];
-  }, [contentItems, products, user?.role]);
+    return [...pageEntries, ...productEntries];
+  }, [products, user?.role]);
 
   const searchResults = useMemo(() => {
     const normalizedQuery = searchQuery.trim().toLowerCase();
@@ -216,65 +189,6 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
-
-  const refreshNotificationCounts = useCallback(async () => {
-    const fallback = {
-      pending: storePendingCount,
-      lowStock: storeLowStockCount,
-    };
-
-    try {
-      if (defenseMode) {
-        setNotificationCounts(fallback);
-        return;
-      }
-
-      const [pendingResult, productsResult] = await Promise.allSettled([
-        user?.role === 'admin' ? api.getContentCount('pending') : Promise.resolve(0),
-        api.getProducts(),
-      ]);
-
-      const nextPending = pendingResult.status === 'fulfilled'
-        ? Number(pendingResult.value || 0)
-        : fallback.pending;
-      const nextLowStock = productsResult.status === 'fulfilled' && Array.isArray(productsResult.value)
-        ? productsResult.value.filter((product: any) => {
-            const threshold = Number(product.lowStockThreshold ?? product.low_stock_threshold ?? 0);
-            return threshold > 0 && Number(product.stock ?? 0) <= threshold;
-          }).length
-        : fallback.lowStock;
-
-      setNotificationCounts({
-        pending: nextPending,
-        lowStock: nextLowStock,
-      });
-    } catch {
-      setNotificationCounts(fallback);
-    }
-  }, [defenseMode, storeLowStockCount, storePendingCount, user?.role]);
-
-  useEffect(() => {
-    void refreshNotificationCounts();
-
-    const handleContentUpdated = () => { void refreshNotificationCounts(); };
-    const handleProductsUpdated = () => { void refreshNotificationCounts(); };
-    const handleImageGenComplete = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { title?: string } | undefined;
-      setImageNotifs((prev) => [
-        { id: Date.now().toString(), title: detail?.title || 'AI Content' },
-        ...prev,
-      ]);
-    };
-
-    window.addEventListener('ai-content-updated', handleContentUpdated);
-    window.addEventListener('products-updated', handleProductsUpdated);
-    window.addEventListener('image-generation-complete', handleImageGenComplete);
-    return () => {
-      window.removeEventListener('ai-content-updated', handleContentUpdated);
-      window.removeEventListener('products-updated', handleProductsUpdated);
-      window.removeEventListener('image-generation-complete', handleImageGenComplete);
-    };
-  }, [refreshNotificationCounts]);
 
   const handleLogout = async () => {
     await logout();
@@ -315,7 +229,6 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
   return (
     <header className="h-16 bg-white border-b border-[#E5E7EB] flex items-center justify-between px-3 sm:px-5 shrink-0 z-20">
       <div className="flex items-center gap-3">
-        {/* Hamburger — mobile only */}
         <button
           onClick={onMenuClick}
           className="md:hidden p-2 -ml-1 rounded-lg text-[#6B7280] hover:bg-[#F3F4F6] transition-colors"
@@ -342,7 +255,7 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
               setShowSearchResults(true);
             }}
             onFocus={() => setShowSearchResults(true)}
-            placeholder="Search pages, products, content..."
+            placeholder="Search pages and products..."
             className="pl-9 pr-4 py-2 bg-[#F9FAFB] border border-[#E5E7EB] rounded-lg text-xs text-[#111827] placeholder-[#9CA3AF]
                        focus:outline-none focus:ring-2 focus:ring-[#EC4899]/20 focus:border-[#EC4899] w-64 transition-all"
           />
@@ -381,40 +294,12 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
           )}
         </form>
 
-        {user?.role === 'admin' && (
-          <button
-            onClick={() => navigate('/marketing')}
-            className="hidden sm:flex items-center gap-1.5 px-3 py-2 bg-[#EC4899] text-white rounded-lg text-xs hover:bg-[#DB2777] transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Create Post
-          </button>
-        )}
-
-        <button
-          type="button"
-          onClick={() => setDefenseMode(!defenseMode)}
-          className={`hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs border transition-colors ${
-            defenseMode
-              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-              : 'bg-white text-[#6B7280] border-[#E5E7EB] hover:bg-[#F9FAFB]'
-          }`}
-          title="Prioritize cached data, preloading, and reduced background calls"
-        >
-          <ShieldCheck className="w-3.5 h-3.5" />
-          Defense
-        </button>
-
         <div className="relative">
           <button
             onClick={() => {
               const opening = !showNotifs;
               setShowNotifs(opening);
-              if (opening) {
-                // Mark all as read immediately — badge resets to 0.
-                setNotificationCounts({ pending: 0, lowStock: 0 });
-                setImageNotifs([]);
-              }
+              if (opening) setLowStockCount(0);
               setShowProfile(false);
               setShowSearchResults(false);
             }}
@@ -426,7 +311,7 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
                 className="absolute top-1 right-1 w-4 h-4 bg-[#EC4899] text-white text-[9px] rounded-full flex items-center justify-center"
                 style={{ fontWeight: 700 }}
               >
-                {totalNotifs > 9 ? '9+' : totalNotifs}
+                1
               </span>
             )}
           </button>
@@ -437,38 +322,12 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
                 <p className="text-sm text-[#111827]" style={{ fontWeight: 600 }}>
                   Notifications
                 </p>
-                {totalNotifs > 0 && (
-                  <span className="text-[10px] px-1.5 py-0.5 bg-[#EC4899] text-white rounded-full">
-                    {totalNotifs} new
-                  </span>
-                )}
               </div>
               <div className="py-1 max-h-60 overflow-y-auto">
-                {totalNotifs === 0 && (
+                {lowStockCount === 0 && (
                   <div className="px-4 py-8 text-center">
                     <p className="text-xs text-[#9CA3AF]">All caught up!</p>
                   </div>
-                )}
-                {pendingCount > 0 && (
-                  <button
-                    onClick={() => {
-                      navigate('/approvals');
-                      closeAll();
-                    }}
-                    className="w-full px-4 py-3 text-left hover:bg-[#F9FAFB] transition-colors border-b border-[#F9FAFB]"
-                  >
-                    <div className="flex items-start gap-3">
-                      <div className="w-7 h-7 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
-                        <FileText className="w-3.5 h-3.5 text-amber-600" />
-                      </div>
-                      <div>
-                        <p className="text-xs text-[#111827]" style={{ fontWeight: 500 }}>
-                          {pendingCount} post{pendingCount > 1 ? 's' : ''} awaiting approval
-                        </p>
-                        <p className="text-[10px] text-[#9CA3AF]">Content Approvals to Review now</p>
-                      </div>
-                    </div>
-                  </button>
                 )}
                 {lowStockCount > 0 && (
                   <button
@@ -491,21 +350,6 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
                     </div>
                   </button>
                 )}
-                {imageNotifs.map((notif) => (
-                  <div key={notif.id} className="w-full px-4 py-3 border-b border-[#F9FAFB]">
-                    <div className="flex items-start gap-3">
-                      <div className="w-7 h-7 rounded-full bg-emerald-100 flex items-center justify-center shrink-0 mt-0.5">
-                        <span className="text-emerald-600 text-xs">✓</span>
-                      </div>
-                      <div>
-                        <p className="text-xs text-[#111827]" style={{ fontWeight: 500 }}>
-                          Image generated successfully
-                        </p>
-                        <p className="text-[10px] text-[#9CA3AF] truncate max-w-[180px]">{notif.title}</p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
               </div>
             </div>
           )}

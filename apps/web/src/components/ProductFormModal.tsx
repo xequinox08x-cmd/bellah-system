@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { X, ImagePlus, Loader2 } from 'lucide-react';
-import { API_BASE } from '../lib/api';
 
 type ProductCategory = 'Skincare' | 'Makeup' | 'Fragrance' | 'Haircare' | 'Miscellaneous';
 const CATEGORIES: ProductCategory[] = ['Skincare', 'Makeup', 'Fragrance', 'Haircare', 'Miscellaneous'];
@@ -113,42 +112,7 @@ export default function ProductFormModal({ initial, onSave, onClose, saving, tok
 
   const uploadImage = async (): Promise<string | undefined> => {
     if (!imgFile) return initial?.imageUrl ?? undefined;
-
-    // Compress first — converts any format to JPEG ≤1200px (typically <500KB)
-    const base64 = await compressImage(imgFile);
-    const filename = imgFile.name.replace(/\.[^.]+$/, '.jpg');
-
-    // Try API route (uses service role key, bypasses Supabase RLS)
-    try {
-      const res = await fetch(`${API_BASE}/products/upload-image`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ base64, filename }),
-      });
-      if (res.ok) {
-        const payload = await res.json();
-        if (payload.url) return payload.url as string;
-      }
-      const errPayload = await res.json().catch(() => ({}));
-      throw new Error(errPayload.error || `API returned ${res.status}`);
-    } catch (apiErr: any) {
-      // Fallback: upload directly to Supabase Storage
-      // (works when local API server is unreachable)
-      console.warn('[upload] API unavailable, trying Supabase direct:', apiErr.message);
-      const { supabase } = await import('../lib/supabase');
-      const ext = 'jpg';
-      const path = `products/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-      const blob = await fetch(base64).then(r => r.blob());
-      const { error } = await supabase.storage
-        .from('product-images')
-        .upload(path, blob, { contentType: 'image/jpeg', cacheControl: '3600', upsert: false });
-      if (error) throw new Error(`Image upload failed: ${error.message}`);
-      const { data } = supabase.storage.from('product-images').getPublicUrl(path);
-      return data.publicUrl;
-    }
+    return compressImage(imgFile);
   };
 
 

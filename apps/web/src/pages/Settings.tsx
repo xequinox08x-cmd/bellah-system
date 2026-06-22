@@ -1,9 +1,8 @@
-import { useEffect, useState } from 'react';
-import { User, Shield, Palette, Save, Check, Link2, RefreshCw, AlertCircle } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { User, Shield, Palette, Save, Check, Download, Upload } from 'lucide-react';
 import { APP_THEME_PALETTES, useAppTheme } from '../components/AppThemeProvider';
 import { useAuth } from '../components/AuthContext';
-import { api } from '../lib/api';
-import { supabase } from '../lib/supabase';
+import { offlineStore } from '../lib/offlineStore';
 import { toast } from 'sonner';
 
 type Section = 'profile' | 'security' | 'appearance';
@@ -37,49 +36,15 @@ function Toggle({
   );
 }
 
-type FacebookStatus = {
-  valid: boolean;
-  state: 'connected' | 'expired' | 'invalid' | 'missing_config';
-  pageId: string | null;
-  pageName: string | null;
-  error: string | null;
-  expiresAt: string | null;
-  tokenUpdatedAt: string | null;
-  tokenExpiresAt: string | null;
-  lastKnownSync: {
-    contentId: number | null;
-    facebookPostId: string | null;
-    syncedAt: string | null;
-  };
-};
-
-function formatDateTime(value: string | null) {
-  return value ? new Date(value).toLocaleString() : 'Not available';
-}
-
-function isOfflineSession(session: ReturnType<typeof useAuth>['session']) {
-  return Boolean(
-    session?.access_token?.endsWith('.offline') ||
-    session?.user?.app_metadata?.provider === 'offline'
-  );
-}
-
-function isNetworkAuthError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error || '');
-  return /failed to fetch|fetch failed|network|timeout|timed out|unable to connect/i.test(message);
-}
 
 export default function Settings() {
-  const { user, session, refreshUser } = useAuth();
+  const { user, refreshUser } = useAuth();
   const { palette, paletteId, previewPaletteId, setPreviewPaletteId, commitPalette } = useAppTheme();
   const [activeSection, setActiveSection] = useState<Section>('profile');
   const [saved, setSaved] = useState(false);
-  const [facebookStatus, setFacebookStatus] = useState<FacebookStatus | null>(null);
-  const [facebookStatusLoading, setFacebookStatusLoading] = useState(false);
-  const [facebookStatusError, setFacebookStatusError] = useState<string | null>(null);
-  const [facebookStatusRefreshKey, setFacebookStatusRefreshKey] = useState(0);
   const [profileSaving, setProfileSaving] = useState(false);
   const [passwordSaving, setPasswordSaving] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const [profile, setProfile] = useState({
     name: '',
@@ -110,9 +75,7 @@ export default function Settings() {
   };
 
   const handleProfileSave = async () => {
-    if (!session?.access_token) {
-      throw new Error('No active session');
-    }
+    if (!user) throw new Error('No active user');
 
     const name = profile.name.trim();
     const email = profile.email.trim();
@@ -124,23 +87,13 @@ export default function Settings() {
 
     setProfileSaving(true);
     try {
-      const response = await api.updateCurrentUser(
-        {
-          name,
-          email,
-          username,
-          bio: profile.bio,
-        },
-        session.access_token
-      );
-
+      const updated = offlineStore.updateProfile(Number(user.id), { name, email, username, bio: profile.bio.trim() });
       setProfile({
-        name: response.data.name,
-        email: response.data.email,
-        username: response.data.username,
-        bio: response.data.bio,
+        name: updated.name,
+        email: updated.email,
+        username: updated.username,
+        bio: updated.bio,
       });
-
       await refreshUser();
       markSaved('Profile updated successfully');
     } finally {
@@ -149,9 +102,7 @@ export default function Settings() {
   };
 
   const handlePasswordUpdate = async () => {
-    if (!user?.email) {
-      throw new Error('No active user');
-    }
+    if (!user) throw new Error('No active user');
 
     if (!passwordForm.currentPassword || !passwordForm.newPassword || !passwordForm.confirmPassword) {
       throw new Error('Complete all password fields');
@@ -165,72 +116,34 @@ export default function Settings() {
       throw new Error('Password confirmation does not match');
     }
 
-    const completeLocalPasswordUpdate = () => {
-      try {
-        localStorage.setItem('bb_local_password_updated', JSON.stringify({
-          email: user.email,
-          updatedAt: new Date().toISOString(),
-        }));
-      } catch {
-        // Local marker is best-effort only.
-      }
-
-      setPasswordForm({
-        currentPassword: '',
-        newPassword: '',
-        confirmPassword: '',
-      });
-      markSaved('Password updated successfully');
-    };
-
     setPasswordSaving(true);
     try {
-      if (isOfflineSession(session)) {
-        completeLocalPasswordUpdate();
-        return;
-      }
-
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email: user.email,
-        password: passwordForm.currentPassword,
-      });
-
-      if (signInError) {
-        if (isNetworkAuthError(signInError) && import.meta.env.DEV) {
-          completeLocalPasswordUpdate();
-          return;
-        }
-        throw new Error('Current password is incorrect');
-      }
-
-      const { error: updateError } = await supabase.auth.updateUser({
-        password: passwordForm.newPassword,
-      });
-
-      if (updateError) {
-        if (isNetworkAuthError(updateError) && import.meta.env.DEV) {
-          completeLocalPasswordUpdate();
-          return;
-        }
-        throw new Error(updateError.message || 'Failed to update password');
-      }
-
-      setPasswordForm({
-        currentPassword: '',
-        newPassword: '',
-        confirmPassword: '',
-      });
+      offlineStore.updatePassword(Number(user.id), passwordForm.currentPassword, passwordForm.newPassword);
+      setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
       markSaved('Password updated successfully');
-    } catch (error) {
-      if (isNetworkAuthError(error) && import.meta.env.DEV) {
-        completeLocalPasswordUpdate();
-        return;
-      }
-
-      throw error;
     } finally {
       setPasswordSaving(false);
     }
+  };
+
+  const handleExportData = () => {
+    const payload = offlineStore.exportData();
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `bellah-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    markSaved('Backup downloaded');
+  };
+
+  const handleImportData = async (file: File) => {
+    const text = await file.text();
+    const payload = JSON.parse(text);
+    offlineStore.importData(payload);
+    await refreshUser();
+    markSaved('Backup restored successfully');
   };
 
   const handleSave = async () => {
@@ -265,55 +178,6 @@ export default function Settings() {
       bio: user?.bio || '',
     });
   }, [user?.bio, user?.email, user?.name, user?.username]);
-
-  useEffect(() => {
-    if (activeSection !== 'security' || user?.role !== 'admin') return;
-
-    let active = true;
-
-    async function loadFacebookStatus() {
-      setFacebookStatusLoading(true);
-      setFacebookStatusError(null);
-
-      try {
-        const response = await api.getFacebookStatus();
-        if (!active) return;
-        setFacebookStatus(response.data as FacebookStatus);
-      } catch (error: any) {
-        if (!active) return;
-        setFacebookStatus(null);
-        setFacebookStatusError(error?.message || 'Failed to load Facebook status');
-      } finally {
-        if (active) {
-          setFacebookStatusLoading(false);
-        }
-      }
-    }
-
-    void loadFacebookStatus();
-    return () => {
-      active = false;
-    };
-  }, [activeSection, user?.role, facebookStatusRefreshKey]);
-
-  const canShowFacebookStatus = activeSection === 'security' && user?.role === 'admin';
-  const facebookState = facebookStatus?.state ?? 'missing_config';
-  const facebookStateClasses =
-    facebookState === 'connected'
-      ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-      : facebookState === 'expired'
-        ? 'bg-amber-50 border-amber-200 text-amber-700'
-        : facebookState === 'invalid'
-          ? 'bg-red-50 border-red-200 text-red-700'
-          : 'bg-gray-50 border-gray-200 text-gray-700';
-  const facebookStateLabel =
-    facebookState === 'connected'
-      ? 'Connected'
-      : facebookState === 'expired'
-        ? 'Expired'
-        : facebookState === 'invalid'
-          ? 'Invalid'
-          : 'Missing token';
 
   return (
     <div className="max-w-4xl mx-auto space-y-5">
@@ -405,29 +269,20 @@ export default function Settings() {
             <div className="space-y-4">
               <div className="bg-white rounded-xl border border-[#E5E7EB] p-6 space-y-4">
                 <h2 className="text-[#111827] text-base" style={{ fontWeight: 600 }}>Role & Permissions</h2>
-                <div className={`p-4 rounded-xl border ${user?.role === 'admin' ? 'bg-[#FCE7F3] border-[#F9E0E7]' : 'bg-blue-50 border-blue-200'}`}>
+                <div className="p-4 rounded-xl border bg-[#FCE7F3] border-[#F9E0E7]">
                   <div className="flex items-center gap-2 mb-2">
-                    <Shield className={`w-5 h-5 ${user?.role === 'admin' ? 'text-[#EC4899]' : 'text-blue-600'}`} />
-                    <p className="text-sm text-[#111827] capitalize" style={{ fontWeight: 600 }}>{user?.role} Role</p>
+                    <Shield className="w-5 h-5 text-[#EC4899]" />
+                    <p className="text-sm text-[#111827]" style={{ fontWeight: 600 }}>Admin Role</p>
                   </div>
                   <div className="space-y-1.5">
-                    {(user?.role === 'admin' ? [
-                      'View and manage all content',
-                      'Approve or reject marketing posts',
-                      'Schedule and publish content',
+                    {[
                       'Manage products and inventory',
-                      'Record and view sales',
-                      'Access all analytics',
-                      'Manage user roles',
-                    ] : [
-                      'View products and inventory',
-                      'Record sales transactions',
-                      'Generate AI marketing content',
-                      'Submit content for approval',
-                      'View basic analytics',
-                    ]).map((permission) => (
+                      'Record and view all sales',
+                      'View reports and dashboard',
+                      'Manage administrator accounts',
+                    ].map((permission) => (
                       <div key={permission} className="flex items-center gap-2">
-                        <Check className={`w-3.5 h-3.5 ${user?.role === 'admin' ? 'text-[#EC4899]' : 'text-blue-500'}`} />
+                        <Check className="w-3.5 h-3.5 text-[#EC4899]" />
                         <span className="text-xs text-[#6B7280]">{permission}</span>
                       </div>
                     ))}
@@ -464,91 +319,42 @@ export default function Settings() {
                 </button>
               </div>
 
-              {canShowFacebookStatus && (
-                <div className="bg-white rounded-xl border border-[#E5E7EB] p-6 space-y-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <h2 className="text-[#111827] text-base" style={{ fontWeight: 600 }}>Facebook Connection</h2>
-                      <p className="text-xs text-[#9CA3AF]">Backend-only token health for manual sync and analytics</p>
-                    </div>
+              <div className="bg-white rounded-xl border border-[#E5E7EB] p-6 space-y-4">
+                  <h2 className="text-[#111827] text-base" style={{ fontWeight: 600 }}>Data Backup</h2>
+                  <p className="text-xs text-[#6B7280]">Export or restore all local POS data (products, sales, users, customers).</p>
+                  <div className="flex flex-wrap gap-3">
                     <button
-                      onClick={() => setFacebookStatusRefreshKey((value) => value + 1)}
-                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-[#E5E7EB] text-xs text-[#374151] hover:bg-[#F9FAFB] transition-all"
+                      type="button"
+                      onClick={handleExportData}
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-[#111827] text-white rounded-lg text-sm hover:bg-[#374151] transition-all"
                     >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                      Refresh
+                      <Download className="w-4 h-4" />
+                      Export JSON
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => importInputRef.current?.click()}
+                      className="inline-flex items-center gap-2 px-4 py-2 border border-[#E5E7EB] rounded-lg text-sm text-[#374151] hover:bg-[#F9FAFB] transition-all"
+                    >
+                      <Upload className="w-4 h-4" />
+                      Import JSON
+                    </button>
+                    <input
+                      ref={importInputRef}
+                      type="file"
+                      accept="application/json,.json"
+                      className="hidden"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        if (!file) return;
+                        void handleImportData(file).catch((error: any) => {
+                          toast.error(error?.message || 'Failed to import backup');
+                        });
+                        event.target.value = '';
+                      }}
+                    />
                   </div>
-
-                  {facebookStatusError && (
-                    <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                      <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                      <span>{facebookStatusError}</span>
-                    </div>
-                  )}
-
-                  {facebookStatusLoading ? (
-                    <div className="rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3 text-sm text-[#6B7280]">
-                      Checking Facebook connection...
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className={`rounded-xl border px-4 py-3 ${facebookStateClasses}`}>
-                        <div className="flex items-center gap-2">
-                          {facebookState === 'connected' ? (
-                            <Check className="w-4 h-4" />
-                          ) : (
-                            <AlertCircle className="w-4 h-4" />
-                          )}
-                          <span className="text-sm" style={{ fontWeight: 600 }}>{facebookStateLabel}</span>
-                        </div>
-                        <p className="text-xs mt-1">
-                          {facebookStatus?.error || 'Facebook page access token is active and ready for sync.'}
-                        </p>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div className="rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3">
-                          <div className="flex items-center gap-2 mb-1">
-                            <Link2 className="w-4 h-4 text-[#6B7280]" />
-                            <p className="text-xs text-[#6B7280]">Facebook Page</p>
-                          </div>
-                          <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>
-                            {facebookStatus?.pageName || facebookStatus?.pageId || 'Not configured'}
-                          </p>
-                        </div>
-
-                        <div className="rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3">
-                          <p className="text-xs text-[#6B7280] mb-1">Last Known Sync</p>
-                          <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>
-                            {formatDateTime(facebookStatus?.lastKnownSync?.syncedAt ?? null)}
-                          </p>
-                        </div>
-
-                        <div className="rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3">
-                          <p className="text-xs text-[#6B7280] mb-1">Token Updated</p>
-                          <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>
-                            {formatDateTime(facebookStatus?.tokenUpdatedAt ?? null)}
-                          </p>
-                        </div>
-
-                        <div className="rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3">
-                          <p className="text-xs text-[#6B7280] mb-1">Token Expires</p>
-                          <p className="text-sm text-[#111827]" style={{ fontWeight: 500 }}>
-                            {formatDateTime(facebookStatus?.expiresAt ?? facebookStatus?.tokenExpiresAt ?? null)}
-                          </p>
-                        </div>
-                      </div>
-
-                      {!facebookStatus?.valid && (
-                        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                          Reconnect Facebook or refresh the page access token in the backend env.
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
+              </div>
             </div>
           )}
 
@@ -579,10 +385,9 @@ export default function Settings() {
                 <p className="text-xs text-[#374151] mb-3" style={{ fontWeight: 500 }}>System Info</p>
                 <div className="space-y-2 p-4 bg-[#F9FAFB] rounded-xl border border-[#E5E7EB]">
                   {[
-                    { label: 'System', value: 'BellahBeatrix Smart Marketing v2.0' },
-                    { label: 'Build', value: 'React + Tailwind + shadcn/ui' },
-                    { label: 'Environment', value: 'Production Ready' },
-                    { label: 'Last Updated', value: 'May 6, 2026' },
+                    { label: 'System', value: 'BellahBeatrix Offline POS' },
+                    { label: 'Storage', value: 'Browser localStorage' },
+                    { label: 'Mode', value: 'Fully offline' },
                   ].map((info) => (
                     <div key={info.label} className="flex justify-between text-xs">
                       <span className="text-[#9CA3AF]">{info.label}</span>

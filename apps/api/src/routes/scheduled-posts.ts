@@ -78,9 +78,13 @@ router.get('/', async (_req: Request, res: Response) => {
       contentPath({ select: CONTENT_COLUMNS, order: 'created_at.desc', limit: 500 })
     );
 
-    const scheduledStatuses = new Set(['scheduled', 'published', 'failed', 'cancelled']);
+    const scheduledStatuses = new Set(['scheduled', 'published', 'failed']);
     const data = rows
-      .filter((row) => Boolean(row.scheduled_at) || scheduledStatuses.has(String(row.status || '')))
+      .filter((row) => {
+        const status = String(row.status || '');
+        if (status === 'published') return Boolean(row.scheduled_at || row.published_at);
+        return Boolean(row.scheduled_at) || scheduledStatuses.has(status);
+      })
       .sort((a, b) => getSortDate(b).localeCompare(getSortDate(a)) || Number(b.id) - Number(a.id))
       .map(serializeScheduledPost);
 
@@ -212,20 +216,35 @@ router.delete('/:id', async (req: Request, res: Response) => {
   }
 
   try {
+    const existing = await getContentById(id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    const status = String(existing.status || '');
+    if (!['scheduled', 'published', 'failed', 'cancelled'].includes(status) && !existing.scheduled_at) {
+      return res.status(404).json({ error: 'Queue item not found' });
+    }
+
+    const patchBody =
+      status === 'published'
+        ? { scheduled_at: null, published_at: null }
+        : { status: 'cancelled', scheduled_at: null, published_at: null };
+
     const rows = await supabaseRest<AiContentRow[]>(
-      contentPath({ select: CONTENT_COLUMNS, id: `eq.${id}`, status: 'eq.scheduled' }),
+      contentPath({ select: CONTENT_COLUMNS, id: `eq.${id}` }),
       {
         method: 'PATCH',
         headers: { Prefer: 'return=representation' },
-        body: JSON.stringify({ status: 'cancelled' }),
+        body: JSON.stringify(patchBody),
       }
     );
 
     if (!rows[0]) {
-      return res.status(404).json({ error: 'Post not found or already published' });
+      return res.status(404).json({ error: 'Queue item not found' });
     }
 
-    res.json({ message: 'Post cancelled', data: serializeScheduledPost(rows[0]) });
+    res.json({ ok: true, message: 'Queue item removed', data: serializeScheduledPost(rows[0]) });
   } catch (err) {
     console.error('DELETE /api/scheduled-posts/:id error:', err);
     res.status(500).json({ error: err instanceof Error ? err.message : 'Server error' });

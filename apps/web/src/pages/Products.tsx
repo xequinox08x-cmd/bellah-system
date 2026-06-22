@@ -2,11 +2,9 @@ import { useEffect, useState, useMemo } from 'react';
 import { useLocation } from 'react-router';
 import { Plus, Search, Edit2, Trash2, AlertTriangle, X, Package, DollarSign, BarChart2 } from 'lucide-react';
 import { useAuth } from '../components/AuthContext';
-import { api } from '../lib/api';
+import { offlineStore, type Product as OfflineProduct, type ProductCategory } from '../lib/offlineStore';
 import { toast } from 'sonner';
 import ProductFormModal from '../components/ProductFormModal';
-
-type ProductCategory = 'Skincare' | 'Makeup' | 'Fragrance' | 'Haircare';
 
 interface Product {
   id: number;
@@ -54,9 +52,8 @@ const ProductForm = ProductFormModal;
 
 
 export default function Products() {
-  const { user, session } = useAuth();
+  const { user } = useAuth();
   const location = useLocation();
-  const token = session?.access_token ?? '';
   const isAdmin = user?.role === 'admin';
 
   const [products, setProducts] = useState<Product[]>([]);
@@ -72,21 +69,20 @@ export default function Products() {
   const [filterFromDashboard, setFilterFromDashboard] = useState(false);
 
   // ── Load ──────────────────────────────────────────────────────────────────
-  const load = async () => {
+  const load = () => {
     try {
       setLoading(true);
-      const raw = await api.getProducts(token);
-      setProducts(raw.map((p: any) => ({
-        id: Number(p.id),
+      setProducts(offlineStore.getProducts().map((p) => ({
+        id: p.id,
         sku: p.sku,
         name: p.name,
-        category: p.category,
-        price: Number(p.price),
-        cost: Number(p.cost),
-        stock: Number(p.stock),
-        lowStockThreshold: Number(p.lowStockThreshold),
-        description: p.description ?? '',
-        imageUrl: p.imageUrl ?? undefined,
+        category: p.category as ProductCategory,
+        price: p.price,
+        cost: p.cost,
+        stock: p.stock,
+        lowStockThreshold: p.lowStockThreshold,
+        description: p.description,
+        imageUrl: p.imageUrl,
       })));
     } catch (err: any) {
       toast.error(err.message || 'Failed to load products');
@@ -95,9 +91,12 @@ export default function Products() {
     }
   };
 
-  // Only fetch once on mount — Supabase anon key is sufficient for products.
-  // Avoid re-fetching every time the token string reference changes.
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const handleUpdate = () => load();
+    window.addEventListener('bellah-store-updated', handleUpdate);
+    return () => window.removeEventListener('bellah-store-updated', handleUpdate);
+  }, []);
 
   // Apply stock filter pre-set from dashboard navigation.
   useEffect(() => {
@@ -134,16 +133,22 @@ export default function Products() {
   const handleSave = async (data: Omit<Product, 'id'>) => {
     try {
       setSaving(true);
-      if (editProduct) {
-        await api.updateProduct(editProduct.id, data, token);
-        toast.success('Product updated');
-      } else {
-        await api.createProduct(data, token);
-        toast.success('Product added');
-      }
+      offlineStore.saveProduct({
+        ...(editProduct ? { id: editProduct.id } : {}),
+        sku: data.sku,
+        name: data.name,
+        category: data.category as OfflineProduct['category'],
+        price: data.price,
+        cost: data.cost,
+        stock: data.stock,
+        lowStockThreshold: data.lowStockThreshold,
+        description: data.description,
+        imageUrl: data.imageUrl,
+      } as Parameters<typeof offlineStore.saveProduct>[0]);
+      toast.success(editProduct ? 'Product updated' : 'Product added');
       setShowForm(false);
       setEditProduct(null);
-      await load();
+      load();
     } catch (err: any) {
       toast.error(err.message || 'Failed to save product');
     } finally {
@@ -151,13 +156,12 @@ export default function Products() {
     }
   };
 
-  // ── Delete ────────────────────────────────────────────────────────────────
   const handleDelete = async (id: number, name: string) => {
     if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
     try {
-      await api.deleteProduct(id, token);
+      offlineStore.deleteProduct(id);
       toast.success('Product deleted');
-      await load();
+      load();
     } catch (err: any) {
       toast.error(err.message || 'Failed to delete product');
     }
@@ -383,7 +387,7 @@ export default function Products() {
           onSave={handleSave}
           onClose={() => { setShowForm(false); setEditProduct(null); }}
           saving={saving}
-          token={token}
+          token=""
         />
       )}
     </div>

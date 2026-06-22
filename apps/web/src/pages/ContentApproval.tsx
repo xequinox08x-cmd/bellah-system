@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
-import { CheckCircle, XCircle, Clock, X, Eye } from 'lucide-react';
+import { CheckCircle, XCircle, Clock, X, Eye, Trash2, RefreshCw } from 'lucide-react';
 import { useAuth } from '../components/AuthContext';
 import { Navigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { api } from '../lib/api';
 import { ContentItem } from '../types/content';
+import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,11 +41,15 @@ function ContentCard({
   onApprove,
   onReject,
   onView,
+  onDelete,
+  isDeleting,
 }: {
   item: ContentItem;
   onApprove: (id: number) => void;
   onReject: (item: ContentItem) => void;
   onView: (item: ContentItem) => void;
+  onDelete: (item: ContentItem) => void;
+  isDeleting: boolean;
 }) {
   const plat = PLATFORM_BADGE[item.platform] ?? { label: item.platform, className: 'bg-gray-100 text-gray-500' };
 
@@ -63,9 +68,20 @@ function ContentCard({
             })}
           </p>
         </div>
-        <span className={`text-[10px] px-2 py-1 rounded-full shrink-0 ${plat.className}`}>
-          {plat.label}
-        </span>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className={`text-[10px] px-2 py-1 rounded-full ${plat.className}`}>
+            {plat.label}
+          </span>
+          <button
+            type="button"
+            onClick={() => onDelete(item)}
+            disabled={isDeleting}
+            title="Delete draft"
+            className="flex h-7 w-7 items-center justify-center rounded-lg border border-red-100 bg-red-50 text-red-500 transition-all hover:border-red-200 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isDeleting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+          </button>
+        </div>
       </div>
 
       {/* Content output preview */}
@@ -251,6 +267,8 @@ export default function ContentApproval() {
   const [activeTab, setActiveTab] = useState<ContentStatus | 'all'>('pending');
   const [rejectItem, setRejectItem] = useState<ContentItem | null>(null);
   const [viewItem, setViewItem] = useState<ContentItem | null>(null);
+  const [deleteItem, setDeleteItem] = useState<ContentItem | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   // ── Redirect non-admins ─────────────────────────────────────────────────────
   // Staff should never see this page
@@ -304,6 +322,27 @@ export default function ContentApproval() {
       window.dispatchEvent(new Event('ai-content-updated'));
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to reject content');
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteItem) return;
+    const target = deleteItem;
+    const previousItems = contentItems;
+
+    setDeletingId(target.id);
+    setContentItems(items => items.filter(item => item.id !== target.id));
+
+    try {
+      await api.deleteContent(target.id, user?.role);
+      toast.success('Draft deleted successfully');
+      setDeleteItem(null);
+      window.dispatchEvent(new Event('ai-content-updated'));
+    } catch (err: unknown) {
+      setContentItems(previousItems);
+      toast.error((err as Error).message || 'Failed to delete draft');
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -414,6 +453,8 @@ export default function ContentApproval() {
               onApprove={handleApprove}
               onReject={setRejectItem}
               onView={setViewItem}
+              onDelete={setDeleteItem}
+              isDeleting={deletingId === item.id}
             />
           ))}
         </div>
@@ -431,6 +472,17 @@ export default function ContentApproval() {
         <ViewModal
           item={viewItem}
           onClose={() => setViewItem(null)}
+        />
+      )}
+      {deleteItem && (
+        <ConfirmDeleteModal
+          title="Delete this draft?"
+          description="This action cannot be undone. The draft will be removed from content approvals."
+          isDeleting={deletingId === deleteItem.id}
+          onCancel={() => {
+            if (deletingId === null) setDeleteItem(null);
+          }}
+          onConfirm={handleDelete}
         />
       )}
     </div>

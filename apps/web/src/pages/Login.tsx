@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../components/AuthContext';
-import { Eye, EyeOff, Loader2, AlertCircle } from 'lucide-react';
+import { Loader2, AlertCircle } from 'lucide-react';
 import { preloadCriticalPages } from '../routes';
 
 export default function Login() {
@@ -13,10 +13,9 @@ export default function Login() {
   useEffect(() => {
     if (!loading && user) {
       preloadCriticalPages();
-      navigate(user.role === 'admin' ? '/admin' : '/staff');
+      navigate('/dashboard');
     }
   }, [loading, user, navigate]);
-  const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -88,28 +87,17 @@ export default function Login() {
         {/* Password field */}
         <div style={styles.fieldGroup}>
           <label style={{ ...styles.fieldLabel }} htmlFor="login-password">Password</label>
-          <div
-            style={{ ...styles.inputWrap, position: 'relative' }}
-            className="login-input-wrap"
-          >
+          <div style={{ ...styles.inputWrap }} className="login-input-wrap">
             <input
               id="login-password"
-              type={showPassword ? 'text' : 'password'}
+              type="password"
               value={password}
               onChange={e => setPassword(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="••••••••"
-              style={{ ...styles.input, paddingRight: 42 }}
+              style={{ ...styles.input }}
               autoComplete="current-password"
             />
-            <button
-              onClick={() => setShowPassword(p => !p)}
-              style={{ ...styles.eyeBtn }}
-              type="button"
-              aria-label="Toggle password visibility"
-            >
-              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-            </button>
           </div>
         </div>
 
@@ -140,8 +128,6 @@ export default function Login() {
       </div>
 
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-
         .login-input-wrap:focus-within {
           border-color: #e91e8c !important;
           box-shadow: 0 0 0 3px rgba(233,30,140,0.15) !important;
@@ -269,22 +255,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#111',
   },
 
-  eyeBtn: {
-    position: 'absolute',
-    right: 14,
-    top: '50%',
-    transform: 'translateY(-50%)',
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 2,
-    transition: 'color 0.15s',
-    color: 'rgba(0,0,0,0.35)',
-  },
-
   forgotRow: {
     textAlign: 'right' as const,
     marginBottom: 24,
@@ -334,4 +304,5 @@ const styles: Record<string, React.CSSProperties> = {
     margin: 0,
     color: 'rgba(0,0,0,0.25)',
   },
+
 };

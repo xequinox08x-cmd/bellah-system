@@ -1,14 +1,13 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { NavLink, useLocation } from 'react-router';
 import {
-  LayoutDashboard, Package, ShoppingCart, Sparkles,
-  CheckSquare, Calendar, BarChart2, Settings, LogOut,
-  Shield, Users, ChevronDown, ChevronLeft, ChevronRight,
+  LayoutDashboard, Package, ShoppingCart,
+  BarChart2, Settings, LogOut,
+  Shield, Users, ChevronLeft, ChevronRight, UserRound, FileText,
 } from 'lucide-react';
 import { useAuth } from './AuthContext';
 import { BrandLogo } from './BrandLogo';
 import { toast } from 'sonner';
-import { api } from '../lib/api';
 
 // ─── Logo ─────────────────────────────────────────────────────────────────────
 
@@ -74,81 +73,15 @@ export function Sidebar({ mobileOpen, onMobileClose }: { mobileOpen?: boolean; o
     localStorage.getItem('bb_sidebar_collapsed') === 'true'
   );
 
-  const isOnMarketing = ['/marketing', '/approvals', '/scheduling'].some(
-    p => location.pathname.startsWith(p)
-  );
-  const [marketingOpen, setMarketingOpen] = useState(isOnMarketing);
-  const [approvalDraftCount, setApprovalDraftCount] = useState(0);
   const [signingOut, setSigningOut] = useState(false);
-
-  // Module-level cache so navigating between pages doesn't re-fetch
-  const draftCountCache = useRef<{ count: number; ts: number } | null>(null);
-  const draftCountFailedAt = useRef<number>(0);
-  const DRAFT_CACHE_TTL = 5 * 60 * 1000;   // 5 minutes
-  const DRAFT_FAIL_BACKOFF = 2 * 60 * 1000; // 2 minutes backoff on error
 
   useEffect(() => {
     localStorage.setItem('bb_sidebar_collapsed', String(collapsed));
   }, [collapsed]);
 
   useEffect(() => {
-    if (isOnMarketing) setMarketingOpen(true);
-  }, [location.pathname, isOnMarketing]);
-
-  // Close mobile drawer on navigation
-  useEffect(() => {
     onMobileClose?.();
   }, [location.pathname]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const loadApprovalCount = async (force = false) => {
-      if (user?.role !== 'admin') {
-        setApprovalDraftCount(0);
-        return;
-      }
-
-      // Use cache if fresh
-      const cache = draftCountCache.current;
-      if (!force && cache && Date.now() - cache.ts < DRAFT_CACHE_TTL) {
-        setApprovalDraftCount(cache.count);
-        return;
-      }
-
-      // Backoff after recent failure — don't hammer Supabase on timeout
-      if (!force && Date.now() - draftCountFailedAt.current < DRAFT_FAIL_BACKOFF) {
-        setApprovalDraftCount(draftCountCache.current?.count ?? 0);
-        return;
-      }
-
-      try {
-        // Lightweight count-only query — no joins, no full rows, just a HEAD count
-        const n = await api.getContentCount('pending');
-
-        if (cancelled) return;
-
-        draftCountCache.current = { count: n, ts: Date.now() };
-        setApprovalDraftCount(n);
-      } catch {
-        draftCountFailedAt.current = Date.now(); // start backoff
-        if (!cancelled) setApprovalDraftCount(draftCountCache.current?.count ?? 0);
-      }
-    };
-
-    loadApprovalCount();
-
-    const handleContentUpdated = () => { loadApprovalCount(true); };
-    window.addEventListener('ai-content-updated', handleContentUpdated);
-    return () => {
-      cancelled = true;
-      window.removeEventListener('ai-content-updated', handleContentUpdated);
-    };
-  }, [user?.role]);
-
-
-  const isAdmin = user?.role === 'admin';
-  const draftCount = approvalDraftCount;
 
   const handleLogout = async () => {
     if (signingOut) return;
@@ -166,10 +99,7 @@ export function Sidebar({ mobileOpen, onMobileClose }: { mobileOpen?: boolean; o
   };
 
   const toggleCollapse = () => {
-    setCollapsed(prev => {
-      if (!prev) setMarketingOpen(false); // close submenu on collapse
-      return !prev;
-    });
+    setCollapsed((prev) => !prev);
   };
 
   const sidebarContent = (
@@ -189,7 +119,7 @@ export function Sidebar({ mobileOpen, onMobileClose }: { mobileOpen?: boolean; o
               <p className="text-[#111827] text-[13px] leading-tight truncate" style={{ fontWeight: 700 }}>
                 BellahBeatrix
               </p>
-              <p className="text-[#9CA3AF] text-[10px]">Smart Marketing</p>
+              <p className="text-[#9CA3AF] text-[10px]">Offline POS</p>
             </div>
           )}
         </div>
@@ -225,91 +155,17 @@ export function Sidebar({ mobileOpen, onMobileClose }: { mobileOpen?: boolean; o
         <NavItem to="/dashboard" icon={LayoutDashboard} label="Dashboard" collapsed={collapsed} />
         <NavItem to="/products" icon={Package} label="Inventory" collapsed={collapsed} />
         <NavItem to="/sales" icon={ShoppingCart} label="Sales" collapsed={collapsed} />
+        <NavItem to="/customers" icon={UserRound} label="Customers" collapsed={collapsed} />
 
-        {/* Marketing */}
-        {!collapsed && <SectionLabel label="Marketing" />}
-        {collapsed && <div className="h-px bg-[#F3F4F6] mx-2 my-2" />}
-
-        {!collapsed ? (
-          /* Expanded: collapsible marketing section */
-          <div>
-            <button
-              onClick={() => setMarketingOpen(prev => !prev)}
-              className={`${NAV_BASE} ${isOnMarketing ? NAV_ACTIVE : NAV_IDLE}`}
-            >
-              <Sparkles className="w-4 h-4 shrink-0" />
-              <span className="flex-1 text-left truncate">Marketing</span>
-              <ChevronDown
-                className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${marketingOpen ? 'rotate-180' : ''
-                  }`}
-              />
-            </button>
-
-            {/* Sub-items */}
-            <div
-              className="overflow-hidden transition-all duration-200"
-              style={{ maxHeight: marketingOpen ? 200 : 0 }}
-            >
-              <div className="pt-0.5 space-y-0.5">
-                <NavLink to="/marketing" className={subNavClass}>Generate Content</NavLink>
-                {isAdmin && (
-                  <NavLink to="/approvals" className={subNavClass}>
-                    Content Approvals
-                    {draftCount > 0 && (
-                      <span className="ml-auto text-[9px] px-1.5 py-0.5 bg-[#EC4899] text-white rounded-full shrink-0">
-                        {draftCount}
-                      </span>
-                    )}
-                  </NavLink>
-                )}
-                <NavLink to="/scheduling" className={subNavClass}>Scheduling</NavLink>
-              </div>
-            </div>
-          </div>
-        ) : (
-          /* Collapsed: just the Sparkles icon */
-          <div className="relative group/nav">
-            <NavLink
-              to="/marketing"
-              className={navClass}
-              title="Marketing"
-            >
-              <Sparkles className="w-4 h-4 shrink-0" />
-              {draftCount > 0 && (
-                <span className="absolute top-1 right-1 w-2 h-2 bg-[#EC4899] rounded-full" />
-              )}
-            </NavLink>
-            <div className="pointer-events-none absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2 py-1 bg-[#111827] text-white text-xs rounded-md opacity-0 group-hover/nav:opacity-100 transition-opacity whitespace-nowrap z-50 shadow-lg">
-              Marketing
-            </div>
-          </div>
-        )}
-
-        {/* Insights */}
         {!collapsed && <SectionLabel label="Insights" />}
         {collapsed && <div className="h-px bg-[#F3F4F6] mx-2 my-2" />}
 
-        <NavItem to="/analytics" icon={BarChart2} label="Analytics" collapsed={collapsed} />
+        <NavItem to="/reports" icon={FileText} label="Reports" collapsed={collapsed} />
 
-        {/* Admin section */}
-        {isAdmin && (
-          <>
-            {!collapsed && <SectionLabel label="Administration" />}
-            {collapsed && <div className="h-px bg-[#F3F4F6] mx-2 my-2" />}
-
-            <NavItem to="/users" icon={Users} label="Users" collapsed={collapsed} />
-            <NavItem to="/settings" icon={Settings} label="Settings" collapsed={collapsed} />
-          </>
-        )}
-
-        {/* Staff: just settings */}
-        {!isAdmin && (
-          <>
-            {!collapsed && <SectionLabel label="Account" />}
-            {collapsed && <div className="h-px bg-[#F3F4F6] mx-2 my-2" />}
-            <NavItem to="/settings" icon={Settings} label="Settings" collapsed={collapsed} />
-          </>
-        )}
+        {!collapsed && <SectionLabel label="Administration" />}
+        {collapsed && <div className="h-px bg-[#F3F4F6] mx-2 my-2" />}
+        <NavItem to="/users" icon={Users} label="Users" collapsed={collapsed} />
+        <NavItem to="/settings" icon={Settings} label="Settings" collapsed={collapsed} />
       </nav>
 
       {/* ── User Footer ───────────────────────────────────────────────── */}

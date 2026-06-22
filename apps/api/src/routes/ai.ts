@@ -1350,7 +1350,7 @@ aiRouter.patch("/contents/:id/status", async (req: Request, res: Response) => {
   }
 });
 
-aiRouter.delete("/contents/:id", async (req: Request, res: Response) => {
+export async function deleteAiContentById(req: Request, res: Response) {
   try {
     if (!isAdminRequest(req)) {
       return res.status(403).json({ ok: false, data: null, message: "Admin access required" });
@@ -1361,11 +1361,33 @@ aiRouter.delete("/contents/:id", async (req: Request, res: Response) => {
       return res.status(400).json({ ok: false, data: null, message: "Invalid id" });
     }
 
-    const existing = await supabaseRest<Array<{ id: number }>>(
-      aiContentPath({ select: "id", id: `eq.${id}`, limit: 1 })
+    const existing = await supabaseRest<Array<{
+      id: number;
+      status: string | null;
+      scheduled_at: string | null;
+      published_at: string | null;
+      facebook_post_id: string | null;
+    }>>(
+      aiContentPath({ select: "id,status,scheduled_at,published_at,facebook_post_id", id: `eq.${id}`, limit: 1 })
     );
     if (!existing.length) {
       return res.status(404).json({ ok: false, data: null, message: "Content not found" });
+    }
+
+    const row = existing[0];
+    const status = String(row.status || "").toLowerCase();
+    if (
+      status === "scheduled" ||
+      status === "published" ||
+      Boolean(row.scheduled_at) ||
+      Boolean(row.published_at) ||
+      Boolean(row.facebook_post_id)
+    ) {
+      return res.status(409).json({
+        ok: false,
+        data: null,
+        message: "Published or scheduled content cannot be deleted from approvals. Remove it from the queue instead.",
+      });
     }
 
     await supabaseRest<null>(aiContentPath({ id: `eq.${id}` }), { method: "DELETE" });
@@ -1382,7 +1404,10 @@ aiRouter.delete("/contents/:id", async (req: Request, res: Response) => {
       message: e?.message || "Failed to delete content",
     });
   }
-});
+}
+
+aiRouter.delete("/contents/:id", deleteAiContentById);
+aiRouter.delete("/content/:id", deleteAiContentById);
 
 aiRouter.patch("/contents/:id/approve", async (_req: Request, res: Response) => {
   return res.status(501).json({ ok: false, data: null, message: "Not implemented yet" });

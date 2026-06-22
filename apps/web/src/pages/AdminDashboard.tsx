@@ -9,15 +9,23 @@ import {
   ArrowUpRight, ArrowDownRight, Activity, X, RefreshCw,
 } from 'lucide-react';
 import { useAuth } from '../components/AuthContext';
-import type { ContentItem } from '../data/store';
-import { type DashboardSummary, type LowStockProduct } from '../api/dashboard';
+import type { DashboardSummary, LowStockProduct } from '../api/dashboard';
 import { getSales, type SalesRecordDTO } from '../api/sales';
 import { getProducts, type ProductDTO } from '../api/products';
-import { api } from '../lib/api';
 
 // ─── Dashboard Cache (stale-while-revalidate) ─────────────────────────────────
 const DASH_CACHE_KEY = 'bb_dashboard_v2';
 const DASH_CACHE_TTL = 90_000; // 90 seconds
+
+type ContentItem = {
+  id: string;
+  title: string;
+  status: string;
+  scheduledAt?: string;
+  platform?: string;
+  createdBy?: string;
+  productName?: string;
+};
 
 type DashboardCache = {
   ts: number;
@@ -275,8 +283,7 @@ export default function AdminDashboard() {
   useEffect(() => {
     let cancelled = false;
 
-    async function loadAll() {
-      // Stale-while-revalidate: serve cached data instantly, refresh in background.
+    function loadAll() {
       const cached = readDashCache();
       if (cached) {
         setSales(cached.sales);
@@ -284,131 +291,61 @@ export default function AdminDashboard() {
         setContentItems(cached.contentItems);
         setDashboardLowStock(cached.dashboardLowStock);
         setDashboardSummary(cached.dashboardSummary);
-        setDashboardLoading(false); // show stale data immediately
+        setDashboardLoading(false);
       } else {
         setDashboardLoading(true);
       }
       setDashboardError(null);
 
-      // Run all heavy queries in parallel — no sequential waterfalls
-      const [salesRes, productsRes, contentFeedRes, analyticsRes] =
-        await Promise.allSettled([
-          getSales(),          // sale_items join (single query)
-          getProducts(),       // products (single query)
-          api.getAiContentFeed(),
-          api.getAnalyticsSummary(),
-        ]);
+      try {
+        const loadedSales = getSales();
+        const loadedProducts = getProducts();
+        if (cancelled) return;
 
-      if (cancelled) return;
-
-      let loadedSales: typeof sales = [];
-      let loadedProducts: typeof products = [];
-
-      // Sales
-      if (salesRes.status === 'fulfilled') {
-        loadedSales = salesRes.value;
         setSales(loadedSales);
-      }
-
-      // Products
-      if (productsRes.status === 'fulfilled') {
-        loadedProducts = productsRes.value;
         setProducts(loadedProducts);
+        setContentItems([]);
+
+        const rangeSales = loadedSales.filter((s) => s.date >= todayIso && s.date <= todayIso);
+        const lowStock = loadedProducts
+          .filter((p) => p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold)
+          .map((p) => ({
+            id: p.id,
+            name: p.name,
+            sku: p.sku ?? null,
+            category: p.category ?? null,
+            stock: p.stock,
+            lowStockThreshold: p.lowStockThreshold,
+            status: (p.stock <= p.lowStockThreshold * 0.6 ? 'critical' : 'low') as 'critical' | 'low',
+            ratio: p.lowStockThreshold > 0 ? p.stock / p.lowStockThreshold : 0,
+          }));
+
+        const finalSummary = {
+          totalSales: rangeSales.length,
+          revenueToday: rangeSales.reduce((sum, s) => sum + Number(s.total ?? 0), 0),
+          lowStockItems: lowStock.length,
+          scheduledPosts: 0,
+          engagementRate: 0,
+        };
+
+        setDashboardSummary(finalSummary);
+        setDashboardLowStock(lowStock);
+        setAnalyticsEngagementRate(0);
+
+        writeDashCache({
+          sales: loadedSales,
+          products: loadedProducts,
+          contentItems: [],
+          dashboardLowStock: lowStock,
+          dashboardSummary: finalSummary,
+        });
+      } catch (error: any) {
+        if (!cancelled) {
+          setDashboardError(error?.message || 'Failed to load dashboard data');
+        }
+      } finally {
+        if (!cancelled) setDashboardLoading(false);
       }
-
-      // Derive dashboard summary locally — no extra round-trip
-      const startDate = todayIso;
-      const endDate = todayIso;
-      const rangeSales = loadedSales.filter(s => s.date >= startDate && s.date <= endDate);
-      const lowStock = loadedProducts
-        .filter(p => (p as any).lowStockThreshold > 0 && (p as any).stock <= (p as any).lowStockThreshold)
-        .map(p => ({
-          id: (p as any).id,
-          name: (p as any).name,
-          sku: (p as any).sku ?? null,
-          category: (p as any).category ?? null,
-          stock: (p as any).stock,
-          lowStockThreshold: (p as any).lowStockThreshold,
-          status: ((p as any).stock <= (p as any).lowStockThreshold * 0.6 ? 'critical' : 'low') as 'critical' | 'low',
-          ratio: (p as any).lowStockThreshold > 0 ? (p as any).stock / (p as any).lowStockThreshold : 0,
-        }));
-
-      setDashboardSummary({
-        totalSales: rangeSales.length,
-        revenueToday: rangeSales.reduce((sum, s) => sum + Number(s.total ?? 0), 0),
-        lowStockItems: lowStock.length,
-        scheduledPosts: 0,
-        engagementRate: 0,
-      });
-      setDashboardLowStock(lowStock);
-
-      // AI Content Feed
-      if (contentFeedRes.status === 'fulfilled') {
-        setContentItems(
-          Array.isArray(contentFeedRes.value.data)
-            ? contentFeedRes.value.data.map((item) => ({
-                id: String(item.id),
-                title: item.title,
-                caption: item.content,
-                hashtags: '',
-                platform: item.platform as ContentItem['platform'],
-                status: item.status as ContentItem['status'],
-                createdBy: item.created_by_name,
-                createdByRole: 'admin',
-                createdAt: item.created_at,
-                scheduledAt: item.scheduled_at ?? undefined,
-                publishedAt: item.published_at ?? undefined,
-                approvedBy: undefined,
-                productName: item.product_name ?? undefined,
-              }))
-            : []
-        );
-      }
-
-      if (salesRes.status === 'rejected') {
-        setDashboardError(salesRes.reason?.message || 'Failed to load sales data');
-      }
-
-      if (analyticsRes.status === 'fulfilled') {
-        setAnalyticsEngagementRate(Number(analyticsRes.value.data?.engagementRate ?? 0));
-      }
-
-      // Persist fresh data to cache for next visit.
-      const finalContentItems = contentFeedRes.status === 'fulfilled' && Array.isArray(contentFeedRes.value.data)
-        ? contentFeedRes.value.data.map((item: any) => ({
-            id: String(item.id),
-            title: item.title,
-            caption: item.content,
-            hashtags: '',
-            platform: item.platform as ContentItem['platform'],
-            status: item.status as ContentItem['status'],
-            createdBy: item.created_by_name,
-            createdByRole: 'admin' as const,
-            createdAt: item.created_at,
-            scheduledAt: item.scheduled_at ?? undefined,
-            publishedAt: item.published_at ?? undefined,
-            approvedBy: undefined,
-            productName: item.product_name ?? undefined,
-          }))
-        : [];
-
-      const finalSummary = {
-        totalSales: loadedSales.filter(s => s.date >= todayIso && s.date <= todayIso).length,
-        revenueToday: loadedSales.filter(s => s.date >= todayIso && s.date <= todayIso).reduce((sum, s) => sum + Number(s.total ?? 0), 0),
-        lowStockItems: lowStock.length,
-        scheduledPosts: 0,
-        engagementRate: 0,
-      };
-
-      writeDashCache({
-        sales: loadedSales,
-        products: loadedProducts,
-        contentItems: finalContentItems,
-        dashboardLowStock: lowStock,
-        dashboardSummary: finalSummary,
-      });
-
-      setDashboardLoading(false);
     }
 
     loadAll();
@@ -416,28 +353,14 @@ export default function AdminDashboard() {
   }, [todayIso]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    const refreshAnalyticsEngagement = async () => {
-      try {
-        const analyticsRes = await api.getAnalyticsSummary();
-        if (!cancelled) {
-          setAnalyticsEngagementRate(Number(analyticsRes.data?.engagementRate ?? 0));
-        }
-      } catch {
-        // Keep the current value if analytics refresh is unavailable.
-      }
+    const handleStoreUpdate = () => {
+      const loadedSales = getSales();
+      const loadedProducts = getProducts();
+      setSales(loadedSales);
+      setProducts(loadedProducts);
     };
-
-    const handleFacebookAnalyticsUpdated = () => {
-      void refreshAnalyticsEngagement();
-    };
-
-    window.addEventListener('facebook-analytics-updated', handleFacebookAnalyticsUpdated);
-    return () => {
-      cancelled = true;
-      window.removeEventListener('facebook-analytics-updated', handleFacebookAnalyticsUpdated);
-    };
+    window.addEventListener('bellah-store-updated', handleStoreUpdate);
+    return () => window.removeEventListener('bellah-store-updated', handleStoreUpdate);
   }, []);
 
 
@@ -546,7 +469,7 @@ export default function AdminDashboard() {
     [contentItems]
   );
 
-  // ── Staff activity log ────────────────────────────────────────────────
+  // Recent sales activity
   const activityLog = useMemo(() => {
     type LogEntry = { id: string; type: 'sale' | 'content'; title: string; meta: string; date: string; actor: string };
     const entries: LogEntry[] = [];
@@ -914,9 +837,9 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        {/* Staff Activity Log */}
+        {/* Sales Activity Log */}
         <div className="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden">
-          <SectionHeader title="Staff Activity Log" sub="Recent actions across the system" />
+          <SectionHeader title="Sales Activity" sub="Recent sales across the system" />
           <div className="divide-y divide-[#F3F4F6] overflow-y-auto max-h-[340px]">
             {activityLog.map(a => (
               <div key={a.id} className="px-5 py-3 flex items-start gap-3">

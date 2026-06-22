@@ -1,9 +1,10 @@
 import express from 'express';
 import cors from 'cors';
-import { aiRouter } from './routes/ai';
+import { aiRouter, deleteAiContentById } from './routes/ai';
 import { analyticsRouter } from './routes/analytics';
 import campaignsRouter from './routes/campaigns';
 import { dashboardRouter } from './routes/dashboard';
+import { debugRouter } from './routes/debug';
 import { facebookRouter } from './routes/facebook';
 import { healthRouter } from './routes/health';
 import { errorHandler } from './middleware/errorHandler';
@@ -43,9 +44,12 @@ export function createApp() {
   // `dashboardRouter` already declares absolute dashboard paths internally.
   app.use(dashboardRouter);
   app.use("/api/ai", aiRouter);
+  app.delete("/api/content/:id", deleteAiContentById);
   app.use("/api/campaigns", campaignsRouter);
   app.use("/api/scheduled-posts", scheduledPostsRouter);
+  app.use("/api/queue", scheduledPostsRouter);
   app.use("/api/users", usersRouter);
+  app.use("/api/debug", debugRouter);
   app.use("/api/facebook", facebookRouter);
   app.use("/api/analytics", analyticsRouter);
 

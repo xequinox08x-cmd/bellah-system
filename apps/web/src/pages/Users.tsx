@@ -2,22 +2,29 @@ import { useState, useMemo, useEffect } from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '../components/AuthContext';
 import {
-  Users as UsersIcon, Plus, Edit2, Trash2, Shield, User,
+  Users as UsersIcon, Plus, Edit2, Trash2, Shield,
   Search, X, CheckCircle, XCircle, Mail, Clock,
   UserCheck, UserX, Loader2, Key
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { api, ApiUser } from '../lib/api';
+import { offlineStore } from '../lib/offlineStore';
+
+type ApiUser = {
+  id: number;
+  name: string;
+  email: string;
+  role: 'admin';
+  status: 'active' | 'inactive';
+  username: string;
+  bio: string;
+  created_at: string;
+};
 
 // ─── Small helpers ─────────────────────────────────────────────────────────────
-function RoleBadge({ role }: { role: 'admin' | 'staff' }) {
-  return role === 'admin' ? (
+function RoleBadge() {
+  return (
     <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 bg-[#FCE7F3] text-[#EC4899] rounded-full border border-[#F9A8C0]/30">
       <Shield className="w-2.5 h-2.5" /> Admin
-    </span>
-  ) : (
-    <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 bg-blue-50 text-blue-600 rounded-full border border-blue-200/50">
-      <User className="w-2.5 h-2.5" /> Staff
     </span>
   );
 }
@@ -65,7 +72,7 @@ function UserFormModal({ initial, onSave, onClose }: UserFormProps) {
     name: initial?.name || '',
     email: initial?.email || '',
     password: '',
-    role: (initial?.role || 'staff') as 'admin' | 'staff',
+    role: 'admin' as const,
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errors, setErrors] = useState<any>({});
@@ -158,26 +165,6 @@ function UserFormModal({ initial, onSave, onClose }: UserFormProps) {
             </div>
           )}
 
-          <div>
-            <label className="block text-xs text-[#374151] mb-1.5" style={{ fontWeight: 500 }}>Role</label>
-            <div className="flex gap-1.5">
-              {(['staff', 'admin'] as const).map(r => (
-                <button
-                  key={r}
-                  type="button"
-                  onClick={() => setForm(p => ({ ...p, role: r }))}
-                  className={`flex-1 py-2 rounded-lg text-xs capitalize transition-all ${
-                    form.role === r
-                      ? r === 'admin' ? 'bg-[#EC4899] text-white' : 'bg-blue-500 text-white'
-                      : 'bg-[#F9FAFB] text-[#6B7280] hover:bg-[#F3F4F6]'
-                  }`}
-                >
-                  {r}
-                </button>
-              ))}
-            </div>
-          </div>
-
           <div className="flex gap-3 pt-2">
             <button
               type="button"
@@ -205,78 +192,90 @@ function UserFormModal({ initial, onSave, onClose }: UserFormProps) {
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 export default function Users() {
-  const { user: currentUser, session } = useAuth();
+  const { user: currentUser } = useAuth();
   if (currentUser?.role !== 'admin') return <Navigate to="/dashboard" replace />;
 
   const [users, setUsers] = useState<ApiUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [roleFilter, setRoleFilter] = useState<'all' | 'admin' | 'staff'>('all');
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState<ApiUser | null>(null);
   const [deleteUser, setDeleteUser] = useState<ApiUser | null>(null);
 
-  const fetchUsers = async () => {
-    console.log('Fetching users with token:', session?.access_token ? 'Present' : 'Missing');
+  const fetchUsers = () => {
     try {
-      const res = await api.getUsers(session?.access_token || '');
-      console.log('Users fetch success:', res);
-      if (res && res.data) {
-        setUsers(res.data);
-      } else {
-        console.warn('Users fetch returned unexpected format:', res);
-        setUsers([]);
-      }
+      setUsers(offlineStore.getUsers().map((u) => ({
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        role: u.role,
+        status: u.status,
+        username: u.username,
+        bio: u.bio,
+        created_at: u.createdAt,
+      })));
     } catch (err: any) {
-      console.error('Users fetch error details:', err);
       toast.error('Failed to load users: ' + (err.message || 'Unknown error'));
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => { 
-    if (session) {
-      fetchUsers(); 
-    } else {
-      setLoading(false); // No session yet, stop loading spinner
-    }
-  }, [session]);
+  useEffect(() => {
+    fetchUsers();
+    const handleUpdate = () => fetchUsers();
+    window.addEventListener('bellah-store-updated', handleUpdate);
+    return () => window.removeEventListener('bellah-store-updated', handleUpdate);
+  }, []);
 
   const stats = useMemo(() => ({
     total: users.length,
     admins: users.filter(u => u.role === 'admin').length,
-    staff: users.filter(u => u.role === 'staff').length,
   }), [users]);
 
   const filtered = useMemo(() =>
     users.filter(u => {
       const q = search.toLowerCase();
       const matchQ = !q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
-      const matchR = roleFilter === 'all' || u.role === roleFilter;
-      return matchQ && matchR;
-    }), [users, search, roleFilter]
+      return matchQ;
+    }), [users, search]
   );
 
   const handleSave = async (data: any) => {
-    const token = session?.access_token || '';
     if (editUser) {
-      const res = await api.updateUser(editUser.id, { name: data.name, role: data.role }, token);
-      setUsers(prev => prev.map(u => u.id === editUser.id ? res.data : u));
+      offlineStore.saveUser({
+        id: editUser.id,
+        name: data.name,
+        email: editUser.email,
+        role: data.role,
+        password: '',
+        status: editUser.status,
+        username: editUser.username,
+        bio: editUser.bio,
+      });
+      setUsers((prev) => prev.map((u) => u.id === editUser.id ? { ...u, name: data.name, role: data.role } : u));
       toast.success(`${data.name} updated`);
     } else {
-      const res = await api.createUser(data, token);
-      setUsers(prev => [...prev, res.data]);
+      offlineStore.saveUser({
+        name: data.name,
+        email: data.email,
+        role: data.role,
+        password: data.password,
+        status: 'active',
+        username: data.email.split('@')[0],
+        bio: '',
+      });
+      fetchUsers();
       toast.success(`Account created for ${data.name}`);
     }
     setShowForm(false);
   };
 
   const handleDelete = async () => {
-    if (!deleteUser) return;
+    if (!deleteUser || !currentUser) return;
     try {
-      await api.deleteUser(deleteUser.id, session?.access_token || '');
-      setUsers(prev => prev.filter(u => u.id !== deleteUser.id));
+      offlineStore.deleteUser(deleteUser.id, Number(currentUser.id));
+      setUsers((prev) => prev.filter((u) => u.id !== deleteUser.id));
       toast.success('User removed');
     } catch (err: any) {
       toast.error(err.message || 'Delete failed');
@@ -298,7 +297,7 @@ export default function Users() {
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-[#111827] text-xl font-bold">User Management</h1>
-          <p className="text-[#6B7280] text-sm mt-0.5">Manage staff access and permissions</p>
+          <p className="text-[#6B7280] text-sm mt-0.5">Manage administrator accounts</p>
         </div>
         <button
           onClick={() => { setEditUser(null); setShowForm(true); }}
@@ -308,11 +307,10 @@ export default function Users() {
         </button>
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         {[
           { label: 'Total Users', value: stats.total, icon: UsersIcon, bg: 'bg-[#FCE7F3]', text: 'text-[#EC4899]' },
           { label: 'Admins', value: stats.admins, icon: Shield, bg: 'bg-purple-50', text: 'text-purple-600' },
-          { label: 'Staff', value: stats.staff, icon: User, bg: 'bg-blue-50', text: 'text-blue-600' },
         ].map(card => (
           <div key={card.label} className="bg-white rounded-xl border border-[#E5E7EB] p-4 flex items-center gap-3">
             <div className={`w-9 h-9 rounded-lg ${card.bg} flex items-center justify-center shrink-0`}>
@@ -336,19 +334,6 @@ export default function Users() {
               placeholder="Search by name or email..."
               className="w-full pl-9 pr-3 py-2 text-xs border border-[#E5E7EB] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#EC4899]/15 focus:border-[#EC4899]"
             />
-          </div>
-          <div className="flex gap-1.5">
-            {(['all', 'admin', 'staff'] as const).map(r => (
-              <button
-                key={r}
-                onClick={() => setRoleFilter(r)}
-                className={`px-3 py-1.5 rounded-lg text-xs capitalize transition-all ${
-                  roleFilter === r ? 'bg-[#EC4899] text-white' : 'bg-[#F9FAFB] text-[#6B7280] border border-[#E5E7EB]'
-                }`}
-              >
-                {r}
-              </button>
-            ))}
           </div>
         </div>
 
@@ -374,7 +359,7 @@ export default function Users() {
                       </div>
                     </div>
                   </td>
-                  <td className="px-5 py-3.5"><RoleBadge role={u.role} /></td>
+                  <td className="px-5 py-3.5"><RoleBadge /></td>
                   <td className="px-5 py-3.5 text-xs text-[#9CA3AF]">
                     {new Date(u.created_at).toLocaleDateString()}
                   </td>

@@ -5,7 +5,7 @@ export interface AuthRequest extends Request {
   user?: {
     id: string;
     auth_id: string;
-    role: 'admin' | 'staff';
+    role: 'admin';
     email: string;
   };
 }
@@ -33,6 +33,10 @@ export async function authenticate(req: AuthRequest, res: Response, next: NextFu
       return res.status(403).json({ error: 'Forbidden: User profile not found' });
     }
 
+    if (result.rows[0].role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden: Admin access required' });
+    }
+
     req.user = result.rows[0];
     next();
   } catch (err) {
@@ -41,7 +45,7 @@ export async function authenticate(req: AuthRequest, res: Response, next: NextFu
   }
 }
 
-export function authorize(roles: ('admin' | 'staff')[]) {
+export function authorize(roles: 'admin'[]) {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user || !roles.includes(req.user.role)) {
       return res.status(403).json({ error: 'Forbidden: Insufficient permissions' });

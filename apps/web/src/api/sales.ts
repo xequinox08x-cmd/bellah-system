@@ -1,4 +1,4 @@
-import { api } from '../lib/api';
+import { getSalesRecords } from '../lib/dashboardData';
 
 export type SalesRecordDTO = {
   id: string;
@@ -16,7 +16,6 @@ export type SalesRecordDTO = {
   staffName: string;
 };
 
-export async function getSales(): Promise<SalesRecordDTO[]> {
-  const response = await api.getDashboardSalesRecords();
-  return Array.isArray(response.data) ? response.data : [];
+export function getSales(): SalesRecordDTO[] {
+  return getSalesRecords();
 }

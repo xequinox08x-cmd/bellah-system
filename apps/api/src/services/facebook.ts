@@ -9,10 +9,11 @@ const DEFAULT_GRAPH_API_VERSION = "v25.0";
 const TRACKED_ANALYTICS_STATUS = "published";
 const PUBLISHABLE_CONTENT_STATUSES = new Set(["approved", "scheduled", TRACKED_ANALYTICS_STATUS]);
 const FACEBOOK_OPTIONAL_TIMEOUT_MS = 2_500;
+const FACEBOOK_GRAPH_TIMEOUT_MS = Number(process.env.FACEBOOK_GRAPH_TIMEOUT_MS ?? 8000);
 const FACEBOOK_POST_FIELDS =
-    "id,message,created_time,permalink_url,full_picture,attachments{media_type,media,subattachments},likes.summary(true),comments.summary(true),shares";
+    "id,message,created_time,permalink_url,full_picture,attachments{media_type,media,subattachments},reactions.summary(total_count),comments.summary(total_count),shares";
 const FACEBOOK_PHOTO_FIELDS =
-    "id,name,created_time,permalink_url,images,likes.summary(true),comments.summary(true)";
+    "id,name,created_time,permalink_url,images,reactions.summary(total_count),comments.summary(total_count)";
 const PUBLISH_CONTENT_COLUMNS = [
     "id",
     "title",
@@ -82,6 +83,7 @@ type FacebookPostResponse = {
             };
         }>;
     };
+    reactions?: { summary?: { total_count?: number } };
     likes?: { summary?: { total_count?: number } };
     comments?: { summary?: { total_count?: number } };
     shares?: { count?: number };
@@ -93,6 +95,7 @@ type FacebookPhotoResponse = {
     created_time?: string;
     permalink_url?: string;
     images?: Array<{ source?: string }>;
+    reactions?: { summary?: { total_count?: number } };
     likes?: { summary?: { total_count?: number } };
     comments?: { summary?: { total_count?: number } };
 };
@@ -172,6 +175,18 @@ export type FacebookPostMetrics = {
     likesCount: number;
     commentsCount: number;
     sharesCount: number;
+    reachCount: number;
+};
+
+type SyncMetricsOptions = {
+    forceLive?: boolean;
+};
+
+type MetricsSnapshotUpsertResult = {
+    id: number | null;
+    snapshotAt: string | null;
+    action: "inserted" | "updated";
+    rowCount: number | null;
 };
 
 export type SyncContentMetricsResult = {
@@ -182,6 +197,7 @@ export type SyncContentMetricsResult = {
     likesCount: number;
     commentsCount: number;
     sharesCount: number;
+    reachCount: number;
 };
 
 export type PublishSystemContentResult = {
@@ -293,6 +309,14 @@ function logFacebookPublish(message: string, details: Record<string, unknown>) {
     console.info(`[facebook.publish] ${message}`, details);
 }
 
+function redactGraphUrl(url: URL) {
+    const redacted = new URL(url.toString());
+    if (redacted.searchParams.has("access_token")) {
+        redacted.searchParams.set("access_token", "[redacted]");
+    }
+    return redacted.toString();
+}
+
 function contentPath(params: Record<string, string | number>) {
     const search = new URLSearchParams();
     Object.entries(params).forEach(([key, value]) => search.set(key, String(value)));
@@ -378,10 +402,23 @@ async function parseGraphResponse<T>(response: Response) {
     if (!response.ok || payload?.error) {
         const friendlyAuthError = getFriendlyAuthError(payload?.error);
         if (friendlyAuthError) {
+            console.warn("[facebook.graph] token/auth error detected", {
+                status: response.status,
+                code: payload?.error?.code ?? null,
+                type: payload?.error?.type ?? null,
+                state: friendlyAuthError.state,
+                message: friendlyAuthError.message,
+            });
             throw friendlyAuthError;
         }
 
         const message = payload?.error?.message || response.statusText || "Facebook Graph API request failed";
+        console.warn("[facebook.graph] API error response", {
+            status: response.status,
+            code: payload?.error?.code ?? null,
+            type: payload?.error?.type ?? null,
+            message,
+        });
         throw new FacebookServiceError(message, response.status || 502);
     }
 
@@ -392,6 +429,7 @@ async function graphGet<T>(path: string, params: Record<string, string | undefin
     const config = requireFacebookConfig();
     const normalizedPath = path.replace(/^\/+/, "");
     const url = new URL(`https://graph.facebook.com/${config.graphApiVersion}/${normalizedPath}`);
+    const startedAt = Date.now();
 
     Object.entries(params).forEach(([key, value]) => {
         if (value) {
@@ -400,8 +438,45 @@ async function graphGet<T>(path: string, params: Record<string, string | undefin
     });
 
     url.searchParams.set("access_token", config.accessToken);
+    console.info("[facebook.graph] GET request", {
+        ...graphLogDetails(normalizedPath, params),
+        requestUrl: redactGraphUrl(url),
+    });
 
-    const response = await fetch(url.toString());
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), FACEBOOK_GRAPH_TIMEOUT_MS);
+    let response: Response;
+
+    try {
+        response = await fetch(url.toString(), {
+            signal: controller.signal,
+            cache: "no-store",
+            headers: {
+                "Cache-Control": "no-cache",
+                Pragma: "no-cache",
+            },
+        });
+    } catch (error) {
+        console.warn("[facebook.graph] GET failed before response", {
+            ...graphLogDetails(normalizedPath, params),
+            durationMs: Date.now() - startedAt,
+            message: error instanceof Error ? error.message : "Facebook Graph API GET failed",
+        });
+        const message = error instanceof Error && error.name === "AbortError"
+            ? `Facebook Graph API GET timed out after ${FACEBOOK_GRAPH_TIMEOUT_MS}ms`
+            : error instanceof Error ? error.message : "Facebook Graph API GET failed";
+        throw new FacebookServiceError(message, 504);
+    } finally {
+        clearTimeout(timeout);
+    }
+
+    console.info("[facebook.graph] GET response", {
+        ...graphLogDetails(normalizedPath, params),
+        status: response.status,
+        ok: response.ok,
+        durationMs: Date.now() - startedAt,
+    });
+
     return parseGraphResponse<T>(response);
 }
 
@@ -410,6 +485,7 @@ async function graphPost<T>(path: string, params: Record<string, string | undefi
     const normalizedPath = path.replace(/^\/+/, "");
     const url = new URL(`https://graph.facebook.com/${config.graphApiVersion}/${normalizedPath}`);
     const body = new URLSearchParams();
+    const startedAt = Date.now();
 
     Object.entries(params).forEach(([key, value]) => {
         if (value) {
@@ -419,12 +495,38 @@ async function graphPost<T>(path: string, params: Record<string, string | undefi
 
     body.set("access_token", config.accessToken);
 
-    const response = await fetch(url.toString(), {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body,
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), FACEBOOK_GRAPH_TIMEOUT_MS);
+    let response: Response;
+
+    try {
+        response = await fetch(url.toString(), {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body,
+            signal: controller.signal,
+        });
+    } catch (error) {
+        console.warn("[facebook.graph] POST failed before response", {
+            endpoint: `/${normalizedPath}`,
+            durationMs: Date.now() - startedAt,
+            message: error instanceof Error ? error.message : "Facebook Graph API POST failed",
+        });
+        const message = error instanceof Error && error.name === "AbortError"
+            ? `Facebook Graph API POST timed out after ${FACEBOOK_GRAPH_TIMEOUT_MS}ms`
+            : error instanceof Error ? error.message : "Facebook Graph API POST failed";
+        throw new FacebookServiceError(message, 504);
+    } finally {
+        clearTimeout(timeout);
+    }
+
+    console.info("[facebook.graph] POST response", {
+        endpoint: `/${normalizedPath}`,
+        status: response.status,
+        ok: response.ok,
+        durationMs: Date.now() - startedAt,
     });
 
     return parseGraphResponse<T>(response);
@@ -434,12 +536,39 @@ async function graphPostMultipart<T>(path: string, form: FormData) {
     const config = requireFacebookConfig();
     const normalizedPath = path.replace(/^\/+/, "");
     const url = new URL(`https://graph.facebook.com/${config.graphApiVersion}/${normalizedPath}`);
+    const startedAt = Date.now();
 
     form.set("access_token", config.accessToken);
 
-    const response = await fetch(url.toString(), {
-        method: "POST",
-        body: form,
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), FACEBOOK_GRAPH_TIMEOUT_MS);
+    let response: Response;
+
+    try {
+        response = await fetch(url.toString(), {
+            method: "POST",
+            body: form,
+            signal: controller.signal,
+        });
+    } catch (error) {
+        console.warn("[facebook.graph] multipart POST failed before response", {
+            endpoint: `/${normalizedPath}`,
+            durationMs: Date.now() - startedAt,
+            message: error instanceof Error ? error.message : "Facebook Graph API multipart POST failed",
+        });
+        const message = error instanceof Error && error.name === "AbortError"
+            ? `Facebook Graph API multipart POST timed out after ${FACEBOOK_GRAPH_TIMEOUT_MS}ms`
+            : error instanceof Error ? error.message : "Facebook Graph API multipart POST failed";
+        throw new FacebookServiceError(message, 504);
+    } finally {
+        clearTimeout(timeout);
+    }
+
+    console.info("[facebook.graph] multipart POST response", {
+        endpoint: `/${normalizedPath}`,
+        status: response.status,
+        ok: response.ok,
+        durationMs: Date.now() - startedAt,
     });
 
     return parseGraphResponse<T>(response);
@@ -468,6 +597,29 @@ async function graphDelete<T>(path: string, params: Record<string, string | unde
 function calculateEngagementRate(likesCount: number, commentsCount: number, sharesCount: number, reachCount: number) {
     if (reachCount <= 0) return 0;
     return Number((((likesCount + commentsCount + sharesCount) / reachCount) * 100).toFixed(2));
+}
+
+function graphLogDetails(path: string, params: Record<string, string | undefined>) {
+    return {
+        endpoint: `/${path.replace(/^\/+/, "")}`,
+        fields: params.fields ?? null,
+        metric: params.metric ?? null,
+    };
+}
+
+function isRetryableSyncError(error: unknown) {
+    const statusCode = (error as { statusCode?: unknown })?.statusCode;
+    const message = error instanceof Error ? error.message : String(error || "");
+
+    return (
+        statusCode === 408 ||
+        statusCode === 429 ||
+        statusCode === 500 ||
+        statusCode === 502 ||
+        statusCode === 503 ||
+        statusCode === 504 ||
+        /timeout|timed out|network|ECONN|ENOTFOUND|ETIMEDOUT|fetch failed/i.test(message)
+    );
 }
 
 function mergeFacebookCaptionAndHashtags(content: string, hashtags: string | null) {
@@ -546,7 +698,7 @@ function normalizePhoto(post: FacebookPhotoResponse): NormalizedFacebookPost {
         id: post.id,
         platform: FACEBOOK_PLATFORM,
         message: post.name ?? "",
-        likes: toNumber(post.likes?.summary?.total_count),
+        likes: toNumber(post.reactions?.summary?.total_count ?? post.likes?.summary?.total_count),
         comments: toNumber(post.comments?.summary?.total_count),
         shares: 0,
         createdAt: toTimestamp(post.created_time),
@@ -590,24 +742,34 @@ async function insertMetricsSnapshot(client: PoolClient, input: InsertMetricsSna
     const reachCount = toNumber(input.reachCount);
     const engagementRate = calculateEngagementRate(likesCount, commentsCount, sharesCount, reachCount);
 
-    await client.query(
+    const updateResult = await client.query<{ id: number; snapshot_at: string }>(
         `
-    INSERT INTO ai_content_metrics (
-      ai_content_id,
-      facebook_post_id,
-      likes_count,
-      comments_count,
-      shares_count,
-      reach_count,
-      likes,
-      comments,
-      shares,
-      reach,
-      engagement_rate,
-      fetched_at,
-      snapshot_at
+    WITH latest_today AS (
+      SELECT id
+      FROM ai_content_metrics
+      WHERE ai_content_id = $1
+        AND snapshot_at >= CURRENT_DATE
+        AND snapshot_at < CURRENT_DATE + INTERVAL '1 day'
+      ORDER BY snapshot_at DESC, fetched_at DESC, id DESC
+      LIMIT 1
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $3, $4, $5, $6, $7, NOW(), NOW())
+    UPDATE ai_content_metrics m
+    SET
+      facebook_post_id = $2,
+      likes_count = $3,
+      comments_count = $4,
+      shares_count = $5,
+      reach_count = $6,
+      likes = $3,
+      comments = $4,
+      shares = $5,
+      reach = $6,
+      engagement_rate = $7,
+      fetched_at = NOW(),
+      snapshot_at = NOW()
+    FROM latest_today
+    WHERE m.id = latest_today.id
+    RETURNING m.id, m.snapshot_at
     `,
         [
             input.aiContentId,
@@ -619,6 +781,65 @@ async function insertMetricsSnapshot(client: PoolClient, input: InsertMetricsSna
             engagementRate,
         ]
     );
+
+    let upsertResult: MetricsSnapshotUpsertResult = {
+        id: updateResult.rows[0]?.id ?? null,
+        snapshotAt: updateResult.rows[0]?.snapshot_at ?? null,
+        action: "updated",
+        rowCount: updateResult.rowCount,
+    };
+
+    if (!updateResult.rowCount) {
+        const insertResult = await client.query<{ id: number; snapshot_at: string }>(
+            `
+      INSERT INTO ai_content_metrics (
+        ai_content_id,
+        facebook_post_id,
+        likes_count,
+        comments_count,
+        shares_count,
+        reach_count,
+        likes,
+        comments,
+        shares,
+        reach,
+        engagement_rate,
+        fetched_at,
+        snapshot_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $3, $4, $5, $6, $7, NOW(), NOW())
+      RETURNING id, snapshot_at
+      `,
+            [
+                input.aiContentId,
+                input.facebookPostId,
+                likesCount,
+                commentsCount,
+                sharesCount,
+                reachCount,
+                engagementRate,
+            ]
+        );
+        upsertResult = {
+            id: insertResult.rows[0]?.id ?? null,
+            snapshotAt: insertResult.rows[0]?.snapshot_at ?? null,
+            action: "inserted",
+            rowCount: insertResult.rowCount,
+        };
+    }
+
+    console.info("[facebook.sync] metrics snapshot upserted via pool", {
+        contentId: input.aiContentId,
+        facebookPostId: input.facebookPostId,
+        likesCount,
+        commentsCount,
+        sharesCount,
+        reachCount,
+        snapshotId: upsertResult.id,
+        snapshotAt: upsertResult.snapshotAt,
+        action: upsertResult.action,
+        rowCount: upsertResult.rowCount,
+    });
 }
 
 async function insertMetricsSnapshotRest(input: InsertMetricsSnapshotInput) {
@@ -628,28 +849,90 @@ async function insertMetricsSnapshotRest(input: InsertMetricsSnapshotInput) {
     const reachCount = toNumber(input.reachCount);
     const engagementRate = calculateEngagementRate(likesCount, commentsCount, sharesCount, reachCount);
     const now = new Date().toISOString();
+    const todayStart = new Date();
+    todayStart.setUTCHours(0, 0, 0, 0);
 
-    await supabaseRest<unknown[]>(
-        "/ai_content_metrics",
-        {
-            method: "POST",
-            body: JSON.stringify({
-                ai_content_id: input.aiContentId,
-                facebook_post_id: input.facebookPostId,
-                likes_count: likesCount,
-                comments_count: commentsCount,
-                shares_count: sharesCount,
-                reach_count: reachCount,
-                likes: likesCount,
-                comments: commentsCount,
-                shares: sharesCount,
-                reach: reachCount,
-                engagement_rate: engagementRate,
-                fetched_at: now,
-                snapshot_at: now,
-            }),
-        }
+    const existingRows = await supabaseRest<Array<{ id?: number; snapshot_at?: string }>>(
+        `/ai_content_metrics?${new URLSearchParams({
+            select: "id,snapshot_at",
+            ai_content_id: `eq.${input.aiContentId}`,
+            snapshot_at: `gte.${todayStart.toISOString()}`,
+            order: "snapshot_at.desc",
+            limit: "1",
+        }).toString()}`
     );
+
+    const body = {
+        facebook_post_id: input.facebookPostId,
+        likes_count: likesCount,
+        comments_count: commentsCount,
+        shares_count: sharesCount,
+        reach_count: reachCount,
+        likes: likesCount,
+        comments: commentsCount,
+        shares: sharesCount,
+        reach: reachCount,
+        engagement_rate: engagementRate,
+        fetched_at: now,
+        snapshot_at: now,
+    };
+
+    const existingId = existingRows[0]?.id;
+    let upsertResult: MetricsSnapshotUpsertResult;
+
+    if (existingId) {
+        const result = await supabaseRest<unknown[]>(
+            `/ai_content_metrics?id=eq.${existingId}`,
+            {
+                method: "PATCH",
+                headers: {
+                    Prefer: "return=representation",
+                },
+                body: JSON.stringify(body),
+            }
+        );
+
+        upsertResult = {
+            id: existingId,
+            snapshotAt: Array.isArray(result) ? (result[0] as { snapshot_at?: string } | undefined)?.snapshot_at ?? null : null,
+            action: "updated",
+            rowCount: Array.isArray(result) ? result.length : null,
+        };
+    } else {
+        const result = await supabaseRest<unknown[]>(
+            "/ai_content_metrics",
+            {
+                method: "POST",
+                headers: {
+                    Prefer: "return=representation",
+                },
+                body: JSON.stringify({
+                    ai_content_id: input.aiContentId,
+                    ...body,
+                }),
+            }
+        );
+
+        upsertResult = {
+            id: Array.isArray(result) ? (result[0] as { id?: number } | undefined)?.id ?? null : null,
+            snapshotAt: Array.isArray(result) ? (result[0] as { snapshot_at?: string } | undefined)?.snapshot_at ?? null : null,
+            action: "inserted",
+            rowCount: Array.isArray(result) ? result.length : null,
+        };
+    }
+
+    console.info("[facebook.sync] metrics snapshot upserted via REST", {
+        contentId: input.aiContentId,
+        facebookPostId: input.facebookPostId,
+        likesCount,
+        commentsCount,
+        sharesCount,
+        reachCount,
+        snapshotId: upsertResult.id,
+        snapshotAt: upsertResult.snapshotAt,
+        action: upsertResult.action,
+        rowCount: upsertResult.rowCount,
+    });
 }
 
 function normalizePost(post: FacebookPostResponse): NormalizedFacebookPost {
@@ -657,7 +940,7 @@ function normalizePost(post: FacebookPostResponse): NormalizedFacebookPost {
         id: post.id,
         platform: FACEBOOK_PLATFORM,
         message: post.message ?? "",
-        likes: toNumber(post.likes?.summary?.total_count),
+        likes: toNumber(post.reactions?.summary?.total_count ?? post.likes?.summary?.total_count),
         comments: toNumber(post.comments?.summary?.total_count),
         shares: toNumber(post.shares?.count),
         createdAt: toTimestamp(post.created_time),
@@ -1070,6 +1353,14 @@ async function getPostSnapshot(postId: string): Promise<FacebookPostMetrics> {
     }
 
     const config = requireFacebookConfig();
+    console.info("[facebook.sync] fetching post snapshot", {
+        postId: trimmedPostId,
+        pageId: config.pageId || null,
+        postEndpoint: `/${trimmedPostId}`,
+        insightsEndpoint: `/${trimmedPostId}/insights`,
+        liveFields: "reactions.summary(total_count),comments.summary(total_count),shares",
+    });
+
     try {
         const post = await graphGet<FacebookPostResponse>(trimmedPostId, {
             fields: FACEBOOK_POST_FIELDS,
@@ -1078,6 +1369,18 @@ async function getPostSnapshot(postId: string): Promise<FacebookPostMetrics> {
             ...post,
             id: post.id || trimmedPostId,
         });
+        const reachCount = await getOptionalPostReach(normalized.id);
+
+        console.info("[facebook.sync] live engagement counts returned", {
+            postId: normalized.id,
+            reactionsCount: normalized.likes,
+            commentsCount: normalized.comments,
+            sharesCount: normalized.shares,
+            reachCount,
+            liveFetch: true,
+            engagementEndpoint: `/${trimmedPostId}`,
+            reachSource: "insights",
+        });
 
         return {
             postId: normalized.id,
@@ -1086,8 +1389,13 @@ async function getPostSnapshot(postId: string): Promise<FacebookPostMetrics> {
             likesCount: normalized.likes,
             commentsCount: normalized.comments,
             sharesCount: normalized.shares,
+            reachCount,
         };
     } catch (error) {
+        console.warn("[facebook.sync] post endpoint failed, trying photo endpoint", {
+            postId: trimmedPostId,
+            message: error instanceof Error ? error.message : "Post snapshot failed",
+        });
         const photo = await graphGet<FacebookPhotoResponse>(trimmedPostId, {
             fields: FACEBOOK_PHOTO_FIELDS,
         });
@@ -1095,6 +1403,18 @@ async function getPostSnapshot(postId: string): Promise<FacebookPostMetrics> {
             ...photo,
             id: photo.id || trimmedPostId,
         });
+        const reachCount = await getOptionalPostReach(normalized.id);
+
+        console.info("[facebook.sync] live engagement counts returned from photo fallback", {
+            postId: normalized.id,
+            reactionsCount: normalized.likes,
+            commentsCount: normalized.comments,
+            sharesCount: normalized.shares,
+            reachCount,
+            liveFetch: true,
+            engagementEndpoint: `/${trimmedPostId}`,
+            reachSource: "insights",
+        });
 
         return {
             postId: normalized.id,
@@ -1103,6 +1423,7 @@ async function getPostSnapshot(postId: string): Promise<FacebookPostMetrics> {
             likesCount: normalized.likes,
             commentsCount: normalized.comments,
             sharesCount: normalized.shares,
+            reachCount,
         };
     }
 }
@@ -1115,6 +1436,153 @@ type FacebookPageProbe = {
     id?: string;
     name?: string;
 };
+
+type FacebookInsightsResponse = {
+    data?: Array<{
+        name?: string;
+        values?: Array<{ value?: number | string | Record<string, number> }>;
+    }>;
+};
+
+async function getOptionalPostReach(postId: string) {
+    try {
+        const insights = await graphGet<FacebookInsightsResponse>(`${postId}/insights`, {
+            metric: "post_impressions",
+        });
+        const values = insights.data?.[0]?.values ?? [];
+        const value = values.length ? values[values.length - 1]?.value : undefined;
+        const reach = typeof value === "number" || typeof value === "string" ? toNumber(value) : 0;
+
+        if (reach <= 0) {
+            console.info("[facebook.sync] reach insight unavailable or zero", {
+                postId,
+                metric: "post_impressions",
+                returnedMetrics: insights.data?.map((item) => item.name) ?? [],
+            });
+        }
+
+        return reach;
+    } catch (error) {
+        console.warn("[facebook.sync] reach insight fetch failed; trying unique impressions fallback", {
+            postId,
+            metric: "post_impressions",
+            message: error instanceof Error ? error.message : "Failed to fetch reach insight",
+        });
+
+        try {
+            const insights = await graphGet<FacebookInsightsResponse>(`${postId}/insights`, {
+                metric: "post_impressions_unique",
+            });
+            const values = insights.data?.[0]?.values ?? [];
+            const value = values.length ? values[values.length - 1]?.value : undefined;
+            return typeof value === "number" || typeof value === "string" ? toNumber(value) : 0;
+        } catch (fallbackError) {
+            console.warn("[facebook.sync] reach insight fallback failed; continuing with engagement counts", {
+                postId,
+                metric: "post_impressions_unique",
+                message: fallbackError instanceof Error ? fallbackError.message : "Failed to fetch reach insight",
+            });
+            return 0;
+        }
+    }
+}
+
+function redactGraphPayload(value: unknown): unknown {
+    if (typeof value === "string") {
+        return value.replace(/access_token=[^&\s"]+/gi, "access_token=[redacted]");
+    }
+
+    if (Array.isArray(value)) {
+        return value.map(redactGraphPayload);
+    }
+
+    if (value && typeof value === "object") {
+        return Object.fromEntries(
+            Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+                key,
+                /token/i.test(key) ? "[redacted]" : redactGraphPayload(item),
+            ])
+        );
+    }
+
+    return value;
+}
+
+async function debugGraphRequest(path: string, params: Record<string, string | undefined> = {}) {
+    const startedAt = Date.now();
+
+    try {
+        const data = await graphGet<unknown>(path, params);
+        return {
+            ok: true,
+            endpoint: `/${path.replace(/^\/+/, "")}`,
+            params,
+            durationMs: Date.now() - startedAt,
+            data: redactGraphPayload(data),
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            endpoint: `/${path.replace(/^\/+/, "")}`,
+            params,
+            durationMs: Date.now() - startedAt,
+            error: error instanceof Error ? error.message : "Facebook Graph request failed",
+            statusCode: (error as { statusCode?: unknown })?.statusCode ?? null,
+        };
+    }
+}
+
+export async function getFacebookAnalyticsDebug() {
+    const config = getFacebookConfig();
+    const startedAt = Date.now();
+
+    console.info("[facebook.debug] live analytics debug requested", {
+        pageId: config.pageId || null,
+        graphApiVersion: config.graphApiVersion,
+        hasAccessToken: Boolean(config.accessToken),
+        tokenLength: config.accessToken.length,
+    });
+
+    const status = await getFacebookStatus();
+    const page = config.pageId
+        ? await debugGraphRequest(config.pageId, { fields: "id,name" })
+        : { ok: false, endpoint: null, error: "FACEBOOK_PAGE_ID is not configured" };
+    const posts = config.pageId
+        ? await debugGraphRequest(`${config.pageId}/posts`, {
+            fields: "id,created_time,permalink_url,reactions.summary(total_count),comments.summary(total_count),shares",
+            limit: "5",
+        })
+        : { ok: false, endpoint: null, error: "FACEBOOK_PAGE_ID is not configured" };
+    const firstPostId = Array.isArray((posts as { data?: { data?: unknown[] } }).data?.data)
+        ? ((posts as { data: { data: Array<{ id?: string }> } }).data.data[0]?.id ?? null)
+        : null;
+    const firstPost = firstPostId
+        ? await debugGraphRequest(firstPostId, {
+            fields: "id,created_time,permalink_url,reactions.summary(total_count),comments.summary(total_count),shares",
+        })
+        : { ok: false, endpoint: null, error: "No page posts returned for first-post probe" };
+    const firstPostInsights = firstPostId
+        ? await debugGraphRequest(`${firstPostId}/insights`, { metric: "post_impressions_unique" })
+        : { ok: false, endpoint: null, error: "No page posts returned for insights probe" };
+
+    return {
+        checkedAt: new Date().toISOString(),
+        durationMs: Date.now() - startedAt,
+        config: {
+            pageId: config.pageId || null,
+            graphApiVersion: config.graphApiVersion,
+            hasAccessToken: Boolean(config.accessToken),
+            tokenLength: config.accessToken.length,
+            tokenUpdatedAt: config.tokenUpdatedAt || null,
+            tokenExpiresAt: config.tokenExpiresAt || null,
+        },
+        status,
+        page,
+        posts,
+        firstPost,
+        firstPostInsights,
+    };
+}
 
 type LastKnownSyncRow = {
     id: number;
@@ -1157,7 +1625,19 @@ export async function getFacebookStatus(): Promise<FacebookStatusResult> {
     const config = getFacebookConfig();
     const lastKnownSync = await getLastKnownSync();
 
+    console.info("[facebook.status] validating Facebook token", {
+        pageId: config.pageId || null,
+        graphApiVersion: config.graphApiVersion,
+        hasAccessToken: Boolean(config.accessToken),
+        tokenLength: config.accessToken.length,
+        tokenExpiresAt: config.tokenExpiresAt || null,
+    });
+
     if (!config.pageId || !config.accessToken) {
+        console.warn("[facebook.status] missing Facebook configuration", {
+            hasPageId: Boolean(config.pageId),
+            hasAccessToken: Boolean(config.accessToken),
+        });
         return {
             valid: false,
             state: "missing_config",
@@ -1176,6 +1656,11 @@ export async function getFacebookStatus(): Promise<FacebookStatusResult> {
             fields: "id,name",
         });
 
+        console.info("[facebook.status] token validation succeeded", {
+            pageId: probe.id ?? config.pageId,
+            pageName: probe.name ?? null,
+        });
+
         return {
             valid: true,
             state: "connected",
@@ -1189,6 +1674,11 @@ export async function getFacebookStatus(): Promise<FacebookStatusResult> {
         };
     } catch (error) {
         if (error instanceof FacebookAuthError) {
+            console.warn("[facebook.status] token validation failed", {
+                pageId: config.pageId,
+                state: error.state,
+                message: error.message,
+            });
             return {
                 valid: false,
                 state: error.state,
@@ -1332,7 +1822,7 @@ async function publishSystemContentWithPool(aiContentId: number): Promise<Publis
     return toPublishResult(updated, publishMode, initialMetricsSynced);
 }
 
-async function syncContentMetricsWithPool(aiContentId: number): Promise<SyncContentMetricsResult> {
+async function syncContentMetricsWithPool(aiContentId: number, options: SyncMetricsOptions = {}): Promise<SyncContentMetricsResult> {
     if (!Number.isInteger(aiContentId) || aiContentId <= 0) {
         throw new FacebookServiceError("Invalid content id", 400);
     }
@@ -1345,6 +1835,11 @@ async function syncContentMetricsWithPool(aiContentId: number): Promise<SyncCont
         await client.query("BEGIN");
 
         const content = await getContentForSync(client, aiContentId);
+        console.info("[facebook.sync] live metrics fetch started via pool", {
+            contentId: content.id,
+            facebookPostId: content.facebook_post_id,
+            forceLive: Boolean(options.forceLive),
+        });
         const metrics = await getPostSnapshot(content.facebook_post_id as string);
 
         await insertMetricsSnapshot(client, {
@@ -1353,10 +1848,10 @@ async function syncContentMetricsWithPool(aiContentId: number): Promise<SyncCont
             likesCount: metrics.likesCount,
             commentsCount: metrics.commentsCount,
             sharesCount: metrics.sharesCount,
-            reachCount: 0,
+            reachCount: metrics.reachCount,
         });
 
-        await client.query(
+        const updateResult = await client.query(
             `
       UPDATE ai_contents
       SET
@@ -1368,6 +1863,15 @@ async function syncContentMetricsWithPool(aiContentId: number): Promise<SyncCont
       `,
             [content.id, metrics.postId, metrics.facebookPageId, metrics.facebookPermalinkUrl]
         );
+        console.info("[facebook.sync] content sync timestamp updated via pool", {
+            contentId: content.id,
+            facebookPostId: metrics.postId,
+            likesCount: metrics.likesCount,
+            commentsCount: metrics.commentsCount,
+            sharesCount: metrics.sharesCount,
+            reachCount: metrics.reachCount,
+            rowCount: updateResult.rowCount,
+        });
 
         await client.query("COMMIT");
         invalidateFacebookAnalyticsCache();
@@ -1380,6 +1884,7 @@ async function syncContentMetricsWithPool(aiContentId: number): Promise<SyncCont
             likesCount: metrics.likesCount,
             commentsCount: metrics.commentsCount,
             sharesCount: metrics.sharesCount,
+            reachCount: metrics.reachCount,
         };
     } catch (error) {
         await client.query("ROLLBACK");
@@ -1389,18 +1894,40 @@ async function syncContentMetricsWithPool(aiContentId: number): Promise<SyncCont
     }
 }
 
-async function syncAllContentMetricsWithPool(): Promise<SyncAllContentMetricsResult> {
+async function syncAllContentMetricsWithPool(options: SyncMetricsOptions = {}): Promise<SyncAllContentMetricsResult> {
     await ensureAiAnalyticsSchema();
 
     const trackedRows = await getTrackedContentRows();
+    console.info("[facebook.sync] pool sync-all tracked rows loaded", {
+        totalTracked: trackedRows.length,
+    });
     const results: SyncContentMetricsResult[] = [];
     const errors: SyncAllContentMetricsResult["errors"] = [];
 
     for (const row of trackedRows) {
         try {
-            const synced = await syncContentMetrics(row.id);
+            const synced = await syncContentMetricsWithPool(row.id, options);
             results.push(synced);
         } catch (error) {
+            if (isRetryableSyncError(error)) {
+                try {
+                    console.warn("[facebook.sync] retrying pool sync after transient failure", {
+                        contentId: row.id,
+                        facebookPostId: row.facebook_post_id,
+                        message: error instanceof Error ? error.message : "Transient sync failure",
+                    });
+                    const synced = await syncContentMetricsWithPool(row.id, options);
+                    results.push(synced);
+                    continue;
+                } catch (retryError) {
+                    error = retryError;
+                }
+            }
+            console.warn("[facebook.sync] pool sync failed for content", {
+                contentId: row.id,
+                facebookPostId: row.facebook_post_id,
+                message: error instanceof Error ? error.message : "Failed to sync Facebook metrics",
+            });
             errors.push({
                 contentId: row.id,
                 facebookPostId: row.facebook_post_id,
@@ -1506,12 +2033,17 @@ async function publishSystemContentWithRest(aiContentId: number): Promise<Publis
     return toPublishResult(updated, publishMode, initialMetricsSynced);
 }
 
-async function syncContentMetricsWithRest(aiContentId: number): Promise<SyncContentMetricsResult> {
+async function syncContentMetricsWithRest(aiContentId: number, options: SyncMetricsOptions = {}): Promise<SyncContentMetricsResult> {
     if (!Number.isInteger(aiContentId) || aiContentId <= 0) {
         throw new FacebookServiceError("Invalid content id", 400);
     }
 
     const content = await getContentForSyncRest(aiContentId);
+    console.info("[facebook.sync] live metrics fetch started via REST", {
+        contentId: content.id,
+        facebookPostId: content.facebook_post_id,
+        forceLive: Boolean(options.forceLive),
+    });
     const metrics = await getPostSnapshot(content.facebook_post_id as string);
 
     await insertMetricsSnapshotRest({
@@ -1520,13 +2052,16 @@ async function syncContentMetricsWithRest(aiContentId: number): Promise<SyncCont
         likesCount: metrics.likesCount,
         commentsCount: metrics.commentsCount,
         sharesCount: metrics.sharesCount,
-        reachCount: 0,
+        reachCount: metrics.reachCount,
     });
 
-    await supabaseRest<unknown[]>(
+    const updateResult = await supabaseRest<unknown[]>(
         contentPath({ id: `eq.${content.id}` }),
         {
             method: "PATCH",
+            headers: {
+                Prefer: "return=representation",
+            },
             body: JSON.stringify({
                 facebook_post_id: metrics.postId,
                 ...(metrics.facebookPageId ? { facebook_page_id: metrics.facebookPageId } : {}),
@@ -1535,7 +2070,19 @@ async function syncContentMetricsWithRest(aiContentId: number): Promise<SyncCont
             }),
         }
     );
+<<<<<<< HEAD
     invalidateFacebookAnalyticsCache();
+=======
+    console.info("[facebook.sync] content sync timestamp updated via REST", {
+        contentId: content.id,
+        facebookPostId: metrics.postId,
+        likesCount: metrics.likesCount,
+        commentsCount: metrics.commentsCount,
+        sharesCount: metrics.sharesCount,
+        reachCount: metrics.reachCount,
+        updatedRows: Array.isArray(updateResult) ? updateResult.length : null,
+    });
+>>>>>>> c70c2ab4be5181e422f432b8bf9e9bb66926a54a
 
     return {
         contentId: content.id,
@@ -1545,19 +2092,42 @@ async function syncContentMetricsWithRest(aiContentId: number): Promise<SyncCont
         likesCount: metrics.likesCount,
         commentsCount: metrics.commentsCount,
         sharesCount: metrics.sharesCount,
+        reachCount: metrics.reachCount,
     };
 }
 
-async function syncAllContentMetricsWithRest(): Promise<SyncAllContentMetricsResult> {
+async function syncAllContentMetricsWithRest(options: SyncMetricsOptions = {}): Promise<SyncAllContentMetricsResult> {
     const trackedRows = await getTrackedContentRowsRest();
+    console.info("[facebook.sync] REST sync-all tracked rows loaded", {
+        totalTracked: trackedRows.length,
+    });
     const results: SyncContentMetricsResult[] = [];
     const errors: SyncAllContentMetricsResult["errors"] = [];
 
     for (const row of trackedRows) {
         try {
-            const synced = await syncContentMetricsWithRest(row.id);
+            const synced = await syncContentMetricsWithRest(row.id, options);
             results.push(synced);
         } catch (error) {
+            if (isRetryableSyncError(error)) {
+                try {
+                    console.warn("[facebook.sync] retrying REST sync after transient failure", {
+                        contentId: row.id,
+                        facebookPostId: row.facebook_post_id,
+                        message: error instanceof Error ? error.message : "Transient sync failure",
+                    });
+                    const synced = await syncContentMetricsWithRest(row.id, options);
+                    results.push(synced);
+                    continue;
+                } catch (retryError) {
+                    error = retryError;
+                }
+            }
+            console.warn("[facebook.sync] REST sync failed for content", {
+                contentId: row.id,
+                facebookPostId: row.facebook_post_id,
+                message: error instanceof Error ? error.message : "Failed to sync Facebook metrics",
+            });
             errors.push({
                 contentId: row.id,
                 facebookPostId: row.facebook_post_id,
@@ -1652,28 +2222,28 @@ export async function publishSystemContent(aiContentId: number): Promise<Publish
     }
 }
 
-export async function syncContentMetrics(aiContentId: number): Promise<SyncContentMetricsResult> {
+export async function syncContentMetrics(aiContentId: number, options: SyncMetricsOptions = {}): Promise<SyncContentMetricsResult> {
     try {
-        return await syncContentMetricsWithRest(aiContentId);
+        return await syncContentMetricsWithRest(aiContentId, options);
     } catch (error) {
         if (shouldFallbackToSupabaseRest(error)) throw error;
         console.warn("[facebook.sync] REST sync failed, trying pool path", {
             contentId: aiContentId,
             message: error instanceof Error ? error.message : "REST sync failed",
         });
-        return syncContentMetricsWithPool(aiContentId);
+        return syncContentMetricsWithPool(aiContentId, options);
     }
 }
 
-export async function syncAllContentMetrics(): Promise<SyncAllContentMetricsResult> {
+export async function syncAllContentMetrics(options: SyncMetricsOptions = {}): Promise<SyncAllContentMetricsResult> {
     try {
-        return await syncAllContentMetricsWithRest();
+        return await syncAllContentMetricsWithRest(options);
     } catch (error) {
         if (shouldFallbackToSupabaseRest(error)) throw error;
         console.warn("[facebook.sync] REST sync-all failed, trying pool path", {
             message: error instanceof Error ? error.message : "REST sync-all failed",
         });
-        return syncAllContentMetricsWithPool();
+        return syncAllContentMetricsWithPool(options);
     }
 }
 

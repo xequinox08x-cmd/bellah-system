@@ -1,0 +1,21 @@
+  [31morigin/HEAD[m -> origin/main
+  [31morigin/MarketingCampaigns[m
+  [31morigin/bella-v3[m
+  [31morigin/bella1[m
+  [31morigin/bella13[m
+  [31morigin/bellav10[m
+  [31morigin/bellav11[m
+  [31morigin/bellav12[m
+  [31morigin/bellav13[m
+  [31morigin/bellav5[m
+  [31morigin/bellav6[m
+  [31morigin/bellav8[m
+  [31morigin/bellav9[m
+  [31morigin/feature/ai-automation[m
+  [31morigin/feature/dashboard-summary[m
+  [31morigin/feature/inventory[m
+  [31morigin/feature/inventory-clean[m
+  [31morigin/feature/sales-api[m
+  [31morigin/feature/sales-api-v2[m
+  [31morigin/feature/sales-inventory-v2[m
+  [31morigin/main[m

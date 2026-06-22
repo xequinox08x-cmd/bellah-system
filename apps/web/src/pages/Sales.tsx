@@ -1,5 +1,6 @@
 import React from "react";
-import { api } from "../lib/api";
+import { offlineStore } from "../lib/offlineStore";
+import { getSalesRecords, getSaleById } from "../lib/dashboardData";
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import {
   Search, ShoppingCart, TrendingUp, ChevronDown,
@@ -372,46 +373,45 @@ function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: stri
 
 // ─── Sales Page ───────────────────────────────────────────────────────────────
 export default function Sales() {
-  const { user, session } = useAuth();
-  const token = session?.access_token ?? '';
+  const { user } = useAuth();
 
   const [products, setProducts] = useState<Product[]>([]);
   const [sales, setSales] = useState<any[]>([]);
   const [recentSaleLines, setRecentSaleLines] = useState<RecentSaleLineItem[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function load() {
-      try {
-        setLoading(true);
-        const [rawProducts, rawSales, rawRecentSaleLines] = await Promise.all([
-          api.getProducts(token),
-          api.getSales(token),
-          api.getDashboardSalesRecords().catch(() => ({ data: [] as RecentSaleLineItem[] })),
-        ]);
-        const normalizedProducts: Product[] = rawProducts.map((p: any) => ({
-          id: String(p.id),
-          sku: p.sku,
-          name: p.name,
-          category: p.category,
-          price: Number(p.price),
-          cost: Number(p.cost),
-          stock: Number(p.stock),
-          lowStockThreshold: Number(p.lowStockThreshold),
-          description: p.description ?? "",
-        }));
-        setProducts(normalizedProducts);
-        setSales(rawSales);
-        setRecentSaleLines(Array.isArray(rawRecentSaleLines.data) ? rawRecentSaleLines.data : []);
-      } catch (err: any) {
-        console.error(err);
-        toast.error(err.message || "Failed to load from backend");
-      } finally {
-        setLoading(false);
-      }
+  const load = useCallback(() => {
+    try {
+      setLoading(true);
+      const rawProducts = offlineStore.getProducts();
+      const normalizedProducts: Product[] = rawProducts.map((p) => ({
+        id: String(p.id),
+        sku: p.sku,
+        name: p.name,
+        category: p.category,
+        price: p.price,
+        cost: p.cost,
+        stock: p.stock,
+        lowStockThreshold: p.lowStockThreshold,
+        description: p.description ?? "",
+      }));
+      setProducts(normalizedProducts);
+      setSales(offlineStore.getSalesWithItems());
+      setRecentSaleLines(getSalesRecords() as RecentSaleLineItem[]);
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || "Failed to load sales data");
+    } finally {
+      setLoading(false);
     }
+  }, []);
+
+  useEffect(() => {
     load();
-  }, [token]);
+    const handleUpdate = () => load();
+    window.addEventListener('bellah-store-updated', handleUpdate);
+    return () => window.removeEventListener('bellah-store-updated', handleUpdate);
+  }, [load]);
 
   // ── Form state ─────────────────────────────────────────────────────────
   const [productId,      setProductId]      = useState('');
@@ -475,22 +475,15 @@ export default function Sales() {
     if (!selectedProduct) return;
     try {
       setSubmitting(true);
-      await api.createSale({
+      if (!user) throw new Error('Not signed in');
+      offlineStore.recordSale({
         customerName: customerName.trim() || undefined,
-        items: [{ productId: Number(productId), qty: quantity, unitPrice: selectedProduct.price }],
-      }, token);
-      const [rawProducts, rawSales, rawRecentSaleLines] = await Promise.all([
-        api.getProducts(token),
-        api.getSales(token),
-        api.getDashboardSalesRecords().catch(() => ({ data: [] as RecentSaleLineItem[] })),
-      ]);
-      setProducts(rawProducts.map((p: any) => ({
-        id: String(p.id), sku: p.sku, name: p.name, category: p.category,
-        price: Number(p.price), cost: Number(p.cost), stock: Number(p.stock),
-        lowStockThreshold: Number(p.lowStockThreshold), description: p.description ?? '',
-      })));
-      setSales(rawSales);
-      setRecentSaleLines(Array.isArray(rawRecentSaleLines.data) ? rawRecentSaleLines.data : []);
+        discountType: discountType === '₱' ? 'PHP' : '%',
+        discountValue: discountValue === '' ? 0 : Number(discountValue),
+        staffUserId: Number(user.id),
+        items: [{ productId: Number(productId), quantity }],
+      });
+      load();
       toast.success(`Sale recorded — ${selectedProduct.name} ×${quantity}`);
       resetForm();
     } catch (err: any) {
@@ -1003,9 +996,9 @@ export default function Sales() {
             return (
               <tr
                 key={s.saleId}
-                onClick={async () => {
+                onClick={() => {
                   try {
-                    const details = await api.getSaleById(s.saleId, token);
+                    const details = getSaleById(s.saleId);
                     setModalSale({
                       id: s.saleId,
                       total: s.revenue,

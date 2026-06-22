@@ -4,7 +4,7 @@ import { pool } from '../db/pool';
 
 const router = Router();
 
-type UserRole = 'admin' | 'staff';
+type UserRole = 'admin';
 
 type DbUserRow = {
   id: number;
@@ -87,7 +87,7 @@ function decodeJwtPayload(req: Request): Record<string, unknown> | null {
 }
 
 function normalizeRole(value: unknown): UserRole | null {
-  return value === 'admin' || value === 'staff' ? value : null;
+  return value === 'admin' ? value : null;
 }
 
 function getAuthUserId(data: AuthAdminUserResponse) {
@@ -114,13 +114,13 @@ async function getSupabaseUserMetadata(authId: string) {
 async function listDbUsers() {
   try {
     return await withUserBackendTimeout(
-      supabaseRest<DbUserRow[]>(usersPath({ select: USER_COLUMNS, order: 'created_at.asc' }))
+      supabaseRest<DbUserRow[]>(usersPath({ select: USER_COLUMNS, role: 'eq.admin', order: 'created_at.asc' }))
     );
   } catch (error) {
     if (shouldFallbackToSupabaseRest(error)) throw error;
     console.warn('[users] Supabase REST unavailable, listing users via pool fallback', error);
     const result = await withUserBackendTimeout(pool.query<DbUserRow>(
-      `SELECT ${USER_COLUMNS} FROM users ORDER BY created_at ASC`
+      `SELECT ${USER_COLUMNS} FROM users WHERE role = 'admin' ORDER BY created_at ASC`
     ));
     return result.rows;
   }
@@ -293,7 +293,8 @@ router.get('/me', async (req: Request, res: Response) => {
       const meta = (payload.user_metadata ?? {}) as Record<string, unknown>;
       const email = String(payload.email ?? meta.email ?? '');
       const appRole = payload.app_metadata ? (payload.app_metadata as any).role : undefined;
-      const role: UserRole = normalizeRole(meta.role ?? appRole) ?? 'staff';
+      const role = normalizeRole(meta.role ?? appRole);
+      if (!role) return res.status(403).json({ error: 'Admin access required' });
       return res.json({
         data: {
           id: 0,
@@ -311,6 +312,9 @@ router.get('/me', async (req: Request, res: Response) => {
 
     if (!row) {
       return res.status(404).json({ error: 'User not found' });
+    }
+    if (row.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
     }
 
     let metadata: Record<string, unknown> = {};
@@ -398,7 +402,7 @@ router.post('/', async (req: Request, res: Response) => {
   const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
   const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
   const password = typeof req.body?.password === 'string' ? req.body.password : '';
-  const role = normalizeRole(req.body?.role ?? 'staff');
+  const role = normalizeRole(req.body?.role ?? 'admin');
 
   if (!name || !email || !password) {
     return res.status(400).json({ error: 'name, email and password are required' });
@@ -409,7 +413,7 @@ router.post('/', async (req: Request, res: Response) => {
   }
 
   if (!role) {
-    return res.status(400).json({ error: 'role must be admin or staff' });
+    return res.status(400).json({ error: 'role must be admin' });
   }
 
   try {
@@ -461,7 +465,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
   }
 
   if (req.body?.role !== undefined && !role) {
-    return res.status(400).json({ error: 'role must be admin or staff' });
+    return res.status(400).json({ error: 'role must be admin' });
   }
 
   try {

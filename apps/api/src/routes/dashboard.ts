@@ -36,36 +36,6 @@ type LowStockProduct = {
   ratio: number;
 };
 
-type TodaySalesRow = {
-  sale_id: number;
-  product_id: number;
-  product_name: string;
-  category: string | null;
-  customer_name: string | null;
-  qty: number;
-  line_total: string | number;
-  line_profit: string | number;
-};
-
-type TodaySalesItem = {
-  saleId: number;
-  productId: number;
-  productName: string;
-  category: string;
-  customerName: string;
-  qty: number;
-  lineTotal: number;
-  lineProfit: number;
-};
-
-type TodaySalesSummary = {
-  transactionCount: number;
-  unitsSold: number;
-  revenueTotal: number;
-  profitTotal: number;
-  items: TodaySalesItem[];
-};
-
 type SalesRecordRow = {
   sale_id: number;
   product_id: number;
@@ -145,65 +115,6 @@ dashboardRouter.get("/api/dashboard/sales-records", async (_req, res) => {
     return res.status(500).json({
       ok: false,
       message: e?.message || "Failed to load dashboard sales records",
-    });
-  }
-});
-
-dashboardRouter.get("/api/staff/dashboard/today-sales", async (_req, res) => {
-  try {
-    const cacheKey = "dashboard:today-sales";
-    const cached = getCachedData(cacheKey);
-    if (cached) {
-      return res.json({ ok: true, todaySales: cached, cached: true });
-    }
-
-    const result = await pool.query<TodaySalesRow>(
-      `
-      SELECT
-        s.id AS sale_id,
-        p.id AS product_id,
-        p.name AS product_name,
-        COALESCE(p.category, 'Uncategorized') AS category,
-        COALESCE(NULLIF(TRIM(s.customer_name), ''), 'Walk-in Customer') AS customer_name,
-        si.qty,
-        (si.qty * si.unit_price) AS line_total,
-        (si.qty * (si.unit_price - COALESCE(p.cost, 0))) AS line_profit
-      FROM sale_items si
-      JOIN sales s ON s.id = si.sale_id
-      JOIN products p ON p.id = si.product_id
-      WHERE s.created_at::date = CURRENT_DATE
-      ORDER BY s.created_at DESC, si.id DESC
-      `
-    );
-
-    const items: TodaySalesItem[] = result.rows.map((row) => ({
-      saleId: Number(row.sale_id),
-      productId: Number(row.product_id),
-      productName: String(row.product_name),
-      category: String(row.category ?? "Uncategorized"),
-      customerName: String(row.customer_name ?? "Walk-in Customer"),
-      qty: Number(row.qty ?? 0),
-      lineTotal: Number(row.line_total ?? 0),
-      lineProfit: Number(row.line_profit ?? 0),
-    }));
-
-    const summary: TodaySalesSummary = {
-      transactionCount: new Set(items.map((item) => item.saleId)).size,
-      unitsSold: items.reduce((sum, item) => sum + item.qty, 0),
-      revenueTotal: items.reduce((sum, item) => sum + item.lineTotal, 0),
-      profitTotal: items.reduce((sum, item) => sum + item.lineProfit, 0),
-      items,
-    };
-    setCachedData(cacheKey, summary, 60);
-
-    return res.json({
-      ok: true,
-      todaySales: summary,
-    });
-  } catch (e: any) {
-    return res.status(500).json({
-      ok: false,
-      message: e?.message || "Failed to load today's sales",
     });
   }
 });

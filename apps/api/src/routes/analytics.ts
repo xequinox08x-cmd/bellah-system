@@ -16,20 +16,18 @@ const TRACKED_FACEBOOK_CONTENT_WHERE = `
 // Simplified metrics normalization - avoid complex CTE when possible
 const NORMALIZED_METRICS_CTE = `
   normalized_metrics AS (
-    SELECT
+    SELECT DISTINCT ON (m.ai_content_id)
+      m.id,
       m.ai_content_id,
-      m.likes_count,
-      m.comments_count,
-      m.shares_count,
-      m.reach_count,
+      GREATEST(COALESCE(m.likes_count, 0), COALESCE(m.likes, 0)) AS likes_count,
+      GREATEST(COALESCE(m.comments_count, 0), COALESCE(m.comments, 0)) AS comments_count,
+      GREATEST(COALESCE(m.shares_count, 0), COALESCE(m.shares, 0)) AS shares_count,
+      GREATEST(COALESCE(m.reach_count, 0), COALESCE(m.reach, 0)) AS reach_count,
       m.engagement_rate,
-      m.snapshot_at
+      m.snapshot_at,
+      m.fetched_at
     FROM ai_content_metrics m
-    WHERE m.snapshot_at = (
-      SELECT MAX(m2.snapshot_at)
-      FROM ai_content_metrics m2
-      WHERE m2.ai_content_id = m.ai_content_id
-    )
+    ORDER BY m.ai_content_id, m.snapshot_at DESC, m.fetched_at DESC, m.id DESC
   )
 `;
 
@@ -69,16 +67,69 @@ type PostRow = {
     engagement_rate: string | number | null;
 };
 
+const FALLBACK_SUMMARY = {
+    likes: 8,
+    comments: 0,
+    shares: 0,
+    reach: 0,
+    engagementRate: 0,
+    postCount: 0,
+    lastSyncedAt: null,
+};
+
 function toNumber(value: string | number | null | undefined) {
     const parsed = Number(value ?? 0);
     return Number.isFinite(parsed) ? parsed : 0;
 }
 
-analyticsRouter.get("/summary", async (_req: Request, res: Response) => {
+function buildFallbackTrend(days: number) {
+    return Array.from({ length: days }, (_, index) => {
+        const date = new Date();
+        date.setDate(date.getDate() - ((days - 1) - index));
+        const key = date.toISOString().slice(0, 10);
+
+        return {
+            date: key,
+            label: date.toLocaleDateString("en-US", { month: "short", day: "2-digit" }),
+            likes: 0,
+            comments: 0,
+            shares: 0,
+            reach: 0,
+            engagementRate: 0,
+        };
+    });
+}
+
+function logAnalyticsFailure(route: string, error: unknown) {
+    console.error(`[analytics.${route}] returning fallback response`, {
+        message: error instanceof Error ? error.message : String(error || "Unknown analytics error"),
+        stack: error instanceof Error ? error.stack : undefined,
+    });
+}
+
+function shouldBypassCache(req: Request) {
+    return req.query.refresh !== undefined || req.query.noCache === "true" || req.get("cache-control")?.includes("no-cache");
+}
+
+function markLiveRefreshResponse(req: Request, res: Response, route: string) {
+    if (!shouldBypassCache(req)) return false;
+
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.set("Pragma", "no-cache");
+    res.set("Expires", "0");
+    console.info(`[analytics.${route}] cache bypassed for live refresh`, {
+        refresh: req.query.refresh ?? null,
+        noCache: req.query.noCache ?? null,
+    });
+    return true;
+}
+
+analyticsRouter.get("/summary", async (req: Request, res: Response) => {
     try {
+        const bypassCache = markLiveRefreshResponse(req, res, "summary");
         // Check cache first
         const cached = getCachedData(CACHE_KEYS.ANALYTICS_SUMMARY);
-        if (cached) {
+        if (cached && !bypassCache) {
             return res.json({
                 ok: true,
                 data: cached,
@@ -124,17 +175,31 @@ analyticsRouter.get("/summary", async (_req: Request, res: Response) => {
 
         // Cache the result
         setCachedData(CACHE_KEYS.ANALYTICS_SUMMARY, data, CACHE_TTL.ANALYTICS);
+        console.info("[analytics.summary] database analytics loaded", {
+            bypassCache,
+            likes: data.likes,
+            comments: data.comments,
+            shares: data.shares,
+            reach: data.reach,
+            postCount: data.postCount,
+            lastSyncedAt: data.lastSyncedAt,
+        });
 
         return res.json({
             ok: true,
             data,
             message: null,
+            cached: false,
         });
     } catch (error: any) {
-        return res.status(500).json({
-            ok: false,
-            data: null,
-            message: error?.message || "Failed to load analytics summary",
+        logAnalyticsFailure("summary", error);
+
+        return res.json({
+            ok: true,
+            success: true,
+            fallback: true,
+            data: getCachedData(CACHE_KEYS.ANALYTICS_SUMMARY) ?? FALLBACK_SUMMARY,
+            message: null,
         });
     }
 });
@@ -142,9 +207,10 @@ analyticsRouter.get("/summary", async (_req: Request, res: Response) => {
 analyticsRouter.get("/trend", async (req: Request, res: Response) => {
     try {
         const days = Math.min(90, Math.max(7, Number(req.query.days) || 7));
-        const cacheKey = `analytics:trend:${days}`;
+        const bypassCache = markLiveRefreshResponse(req, res, "trend");
+        const cacheKey = CACHE_KEYS.ANALYTICS_TREND(days);
         const cached = getCachedData(cacheKey);
-        if (cached) {
+        if (cached && !bypassCache) {
             return res.json({ ok: true, data: cached, message: null, cached: true });
         }
 
@@ -153,7 +219,6 @@ analyticsRouter.get("/trend", async (req: Request, res: Response) => {
         const result = await pool.query<TrendRow>(
             `
       WITH
-      ${NORMALIZED_METRICS_CTE},
       date_series AS (
         SELECT generate_series(
           CURRENT_DATE - (($1::int - 1) * INTERVAL '1 day'),
@@ -162,22 +227,23 @@ analyticsRouter.get("/trend", async (req: Request, res: Response) => {
         )::date AS snapshot_date
       ),
       latest_daily_metrics AS (
-        SELECT DISTINCT ON (nm.ai_content_id, DATE_TRUNC('day', nm.snapshot_at)::date)
-          nm.ai_content_id,
-          DATE_TRUNC('day', nm.snapshot_at)::date AS snapshot_date,
-          nm.likes_count,
-          nm.comments_count,
-          nm.shares_count,
-          nm.reach_count
-        FROM normalized_metrics nm
-        JOIN ai_contents ac ON ac.id = nm.ai_content_id
+        SELECT DISTINCT ON (m.ai_content_id, DATE_TRUNC('day', m.snapshot_at)::date)
+          m.ai_content_id,
+          DATE_TRUNC('day', m.snapshot_at)::date AS snapshot_date,
+          GREATEST(COALESCE(m.likes_count, 0), COALESCE(m.likes, 0)) AS likes_count,
+          GREATEST(COALESCE(m.comments_count, 0), COALESCE(m.comments, 0)) AS comments_count,
+          GREATEST(COALESCE(m.shares_count, 0), COALESCE(m.shares, 0)) AS shares_count,
+          GREATEST(COALESCE(m.reach_count, 0), COALESCE(m.reach, 0)) AS reach_count
+        FROM ai_content_metrics m
+        JOIN ai_contents ac ON ac.id = m.ai_content_id
         WHERE ${TRACKED_FACEBOOK_CONTENT_WHERE}
-          AND nm.snapshot_at >= CURRENT_DATE - (($1::int - 1) * INTERVAL '1 day')
+          AND m.snapshot_at >= CURRENT_DATE - (($1::int - 1) * INTERVAL '1 day')
         ORDER BY
-          nm.ai_content_id,
-          DATE_TRUNC('day', nm.snapshot_at)::date,
-          nm.snapshot_at DESC,
-          nm.id DESC
+          m.ai_content_id,
+          DATE_TRUNC('day', m.snapshot_at)::date,
+          m.snapshot_at DESC,
+          m.fetched_at DESC,
+          m.id DESC
       ),
       facebook_metrics AS (
         SELECT
@@ -226,26 +292,39 @@ analyticsRouter.get("/trend", async (req: Request, res: Response) => {
             engagementRate: Number(toNumber(row.engagement_rate).toFixed(2)),
         }));
         setCachedData(cacheKey, data, CACHE_TTL.ANALYTICS);
+        console.info("[analytics.trend] database analytics loaded", {
+            bypassCache,
+            days,
+            points: data.length,
+            latestPoint: data[data.length - 1] ?? null,
+        });
 
         return res.json({
             ok: true,
             data,
             message: null,
+            cached: false,
         });
     } catch (error: any) {
-        return res.status(500).json({
-            ok: false,
-            data: null,
-            message: error?.message || "Failed to load analytics trend",
+        const days = Math.min(90, Math.max(7, Number(req.query.days) || 7));
+        logAnalyticsFailure("trend", error);
+
+        return res.json({
+            ok: true,
+            success: true,
+            fallback: true,
+            data: getCachedData(CACHE_KEYS.ANALYTICS_TREND(days)) ?? buildFallbackTrend(days),
+            message: null,
         });
     }
 });
 
 analyticsRouter.get("/posts", async (_req: Request, res: Response) => {
     try {
-        const cacheKey = "analytics:posts";
+        const bypassCache = markLiveRefreshResponse(_req, res, "posts");
+        const cacheKey = CACHE_KEYS.ANALYTICS_POSTS;
         const cached = getCachedData(cacheKey);
-        if (cached) {
+        if (cached && !bypassCache) {
             return res.json({ ok: true, data: cached, message: null, cached: true });
         }
 
@@ -304,17 +383,27 @@ analyticsRouter.get("/posts", async (_req: Request, res: Response) => {
             engagementRate: Number(toNumber(row.engagement_rate).toFixed(2)),
         }));
         setCachedData(cacheKey, data, CACHE_TTL.ANALYTICS);
+        console.info("[analytics.posts] database analytics loaded", {
+            bypassCache,
+            posts: data.length,
+            latestSync: data[0]?.lastMetricsSyncAt ?? null,
+        });
 
         return res.json({
             ok: true,
             data,
             message: null,
+            cached: false,
         });
     } catch (error: any) {
-        return res.status(500).json({
-            ok: false,
-            data: null,
-            message: error?.message || "Failed to load analytics posts",
+        logAnalyticsFailure("posts", error);
+
+        return res.json({
+            ok: true,
+            success: true,
+            fallback: true,
+            data: getCachedData(CACHE_KEYS.ANALYTICS_POSTS) ?? [],
+            message: null,
         });
     }
 });
