@@ -1,10 +1,14 @@
 import { Router, type Request, type Response } from "express";
+import { pool } from "../db/pool";
 
 export const aiRouter = Router();
 
 const FACEBOOK_PLATFORM = "facebook";
 const GENERATED_CONTENT_STATUS = "draft";
 const PENDING_APPROVAL_STATUS = "pending";
+const MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024;
+const REFERENCE_IMAGE_FETCH_TIMEOUT_MS = 8_000;
+const DEFAULT_GEMINI_IMAGE_TIMEOUT_MS = 30_000;
 
 type GenerateRequestBody = {
   productId?: number | string;
@@ -14,6 +18,8 @@ type GenerateRequestBody = {
   platform?: string;
   outputMode?: string;
   referenceImageUrl?: string | null;
+  asyncImage?: boolean | string | number | null;
+  promptMode?: string | null;
 };
 
 type OutputMode = "text" | "image" | "text_image";
@@ -31,12 +37,15 @@ type GenerationProviderInfo = {
   usedReferenceImage: boolean;
 };
 
+type ImageGenerationStatus = "none" | "pending" | "complete" | "fallback";
+
 type ProductRecord = {
   id: number;
   name: string;
   category: string | null;
   price: number | string | null;
   description: string | null;
+  image_url: string | null;
 };
 
 type ContentListRow = {
@@ -49,6 +58,18 @@ type ContentListRow = {
   output_mode: string | null;
   reference_image_url: string | null;
   generated_image_url: string | null;
+  status: string;
+  created_at: string;
+  approved_at: string | null;
+  scheduled_at: string | null;
+  published_at: string | null;
+};
+
+type ContentFeedRow = {
+  id: number;
+  title: string | null;
+  content: string | null;
+  platform: string | null;
   status: string;
   created_at: string;
   approved_at: string | null;
@@ -102,7 +123,7 @@ export function buildPrompt(
     `Tone: ${tone || "fun"}`,
     `Content type: ${contentType || "caption"}`,
     `Output mode: ${outputMode}`,
-    `Reference image provided: ${parseDataUrl(referenceImageUrl)?.mimeType ? "yes" : "no"}`,
+    `Reference image provided: ${isReferenceImageProvided(referenceImageUrl) ? "yes" : "no"}`,
     "Rules:",
     "- Keep it short at 1 to 3 sentences, natural for Facebook.",
     "- Make it engaging and conversion-focused.",
@@ -183,24 +204,42 @@ function buildImagePrompt(
 ) {
   if (outputMode === "text") return null;
 
-  const hasReferenceImage = Boolean(parseDataUrl(referenceImageUrl));
+  const hasReferenceImage = isReferenceImageProvided(referenceImageUrl);
+  const category = product.category?.trim() || "beauty";
+  const userBrief = normalizeImageCreativeBrief(promptText);
+  const subject = hasReferenceImage
+    ? "the referenced product shown in the uploaded image"
+    : `a premium ${category.toLowerCase()} product`;
 
   return [
-    `Create a polished Facebook product poster for ${product.name}.`,
-    `Follow this creative brief closely: ${normalizeWhitespace(promptText)}`,
-    `Product category: ${product.category?.trim() || "Beauty"}.`,
-    `Price: PHP ${Number(product.price ?? 0).toFixed(2)}.`,
-    `Product description: ${product.description?.trim() || "No description provided."}.`,
+    `Generate a vertical 4:5 Facebook product poster featuring ${subject}.`,
+    `Visual direction: ${userBrief}.`,
+    `Product category: ${category}.`,
     `Tone: ${tone || "fun"}.`,
-    `Platform: ${platform || FACEBOOK_PLATFORM}.`,
-    "Use a vertical 4:5 marketing layout suitable for Facebook.",
-    "Make the product the clear hero subject with premium beauty-brand styling and a clean composition.",
-    "Follow the user's requested colors, styling, props, lighting, background, and composition as long as they do not change the product identity.",
-    "If you include text, keep it minimal, readable, and relevant to the product and prompt.",
+    "Use premium studio lighting, a clean luxury beauty-ad composition, and a clear hero product placement.",
+    "Do not add readable words, price text, captions, watermarks, or extra product labels unless the visual direction explicitly asks for text.",
     hasReferenceImage
-      ? "Reference image rules: the uploaded product image is the source of truth. Preserve the same product identity, packaging, container shape, label placement, logo area, and dominant product colors from the uploaded image. Do not replace it with a different bottle, jar, tube, box, or brand. Apply the prompt mainly to the scene, styling, background, lighting, props, camera angle, and layout around the product. If the prompt conflicts with the product identity in the reference image, preserve the reference product and adapt the scene around it. Only show multiple products if the prompt explicitly asks for multiples."
-      : "No reference image was provided, so generate the full poster from the prompt and product details.",
+      ? "Use the uploaded image as the product identity source. Preserve the same product packaging, shape, label placement, and dominant product colors. Apply the visual direction mainly to the background, lighting, scene, props, and layout."
+      : "No reference image is attached, so create a plausible premium beauty-product hero shot from the category and visual direction.",
   ].join("\n");
+}
+
+function normalizeImageCreativeBrief(promptText: string) {
+  let brief = normalizeWhitespace(promptText).slice(0, 500);
+  if (!brief) {
+    brief = "premium beauty campaign styling with an elegant background";
+  }
+
+  brief = brief
+    .replace(/\bmake\s+(tt?he|the)\s+background\s+red\b/gi, "use a warm scarlet studio backdrop and red color palette")
+    .replace(/\bred\s+background\b/gi, "warm scarlet studio backdrop")
+    .replace(/\bbackground\s+red\b/gi, "warm scarlet studio backdrop");
+
+  if (brief.length < 48) {
+    brief = `${brief}; premium studio lighting, clean centered composition, luxury beauty campaign mood`;
+  }
+
+  return brief;
 }
 
 function shouldGenerateCaptionWithOpenAi(outputMode: OutputMode) {
@@ -290,6 +329,56 @@ function parseDataUrl(value?: string | null): DataUrlPayload | null {
   };
 }
 
+function isReferenceImageProvided(value?: string | null) {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return Boolean(trimmed && (parseDataUrl(trimmed) || /^https?:\/\//i.test(trimmed)));
+}
+
+async function resolveReferenceImagePayload(value?: string | null): Promise<DataUrlPayload | null> {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) return null;
+
+  const parsedDataUrl = parseDataUrl(trimmed);
+  if (parsedDataUrl) return parsedDataUrl;
+  if (!/^https?:\/\//i.test(trimmed)) return null;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REFERENCE_IMAGE_FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(trimmed, {
+      signal: controller.signal,
+      headers: { Accept: "image/*" },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Reference image request failed with status ${response.status}`);
+    }
+
+    const contentType = (response.headers.get("content-type") || "image/png").split(";")[0].trim();
+    if (!contentType.startsWith("image/")) {
+      throw new Error(`Reference URL did not return an image (${contentType || "unknown type"})`);
+    }
+
+    const contentLength = Number(response.headers.get("content-length") || 0);
+    if (contentLength > MAX_REFERENCE_IMAGE_BYTES) {
+      throw new Error("Reference image is too large");
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    if (arrayBuffer.byteLength > MAX_REFERENCE_IMAGE_BYTES) {
+      throw new Error("Reference image is too large");
+    }
+
+    return {
+      mimeType: contentType,
+      data: Buffer.from(arrayBuffer).toString("base64"),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function getOpenAiApiKey() {
   return process.env.OPENAI_API_KEY?.trim() || process.env.AI_API_KEY?.trim() || "";
 }
@@ -307,7 +396,16 @@ function getGeminiApiKey() {
 }
 
 function getGeminiImageModel() {
-  return process.env.GEMINI_IMAGE_MODEL?.trim() || "gemini-3.1-flash-image-preview";
+  return process.env.GEMINI_IMAGE_MODEL?.trim() || "gemini-3.1-flash-lite-image";
+}
+
+function getGeminiImageTimeoutMs() {
+  const value = Number(process.env.GEMINI_IMAGE_TIMEOUT_MS ?? DEFAULT_GEMINI_IMAGE_TIMEOUT_MS);
+  return Number.isFinite(value) && value >= 15_000 ? value : DEFAULT_GEMINI_IMAGE_TIMEOUT_MS;
+}
+
+function getImagenFallbackModel() {
+  return process.env.IMAGEN_FALLBACK_MODEL?.trim() || "imagen-4.0-fast-generate-001";
 }
 
 function getSupabaseUrl() {
@@ -395,12 +493,35 @@ function serializeContentListRow(row: ContentListRow) {
   };
 }
 
+function contentListSelectSql() {
+  return `
+    SELECT
+      id,
+      product_id,
+      title,
+      content,
+      platform,
+      prompt_text,
+      hashtags,
+      output_mode,
+      reference_image_url,
+      generated_image_url,
+      status,
+      created_at,
+      approved_at,
+      scheduled_at,
+      published_at
+    FROM ai_contents
+  `;
+}
+
 async function getProductForGeneration(productId: number): Promise<ProductRecord | null> {
-  const rows = await supabaseRest<ProductRecord[]>(
-    `/products?select=id,name,category,price,description&id=eq.${productId}&limit=1`
+  const result = await pool.query<ProductRecord>(
+    `SELECT id, name, category, price, description, image_url FROM products WHERE id = $1 LIMIT 1`,
+    [productId]
   );
 
-  return rows[0] ?? null;
+  return result.rows[0] ?? null;
 }
 
 async function saveGeneratedContent(payload: {
@@ -417,32 +538,138 @@ async function saveGeneratedContent(payload: {
   imagePrompt: string | null;
   hashtags: string;
 }) {
-  const rows = await supabaseRest<Array<{ id: number; status: string | null }>>(
-    "/ai_contents?select=id,status",
-    {
-      method: "POST",
-      headers: {
-        Prefer: "return=representation",
-      },
-      body: JSON.stringify({
-        product_id: payload.product.id,
-        title: payload.title,
-        content: payload.content,
-        content_type: payload.contentType,
-        tone: payload.tone,
-        platform: payload.platform,
-        prompt_text: payload.promptText,
-        output_mode: payload.outputMode,
-        reference_image_url: payload.referenceImageUrl,
-        generated_image_url: payload.generatedImageUrl,
-        image_prompt: payload.imagePrompt,
-        hashtags: payload.hashtags,
-        status: GENERATED_CONTENT_STATUS,
-      }),
-    }
+  const result = await pool.query<{ id: number; status: string | null }>(
+    `
+    INSERT INTO ai_contents (
+      product_id,
+      title,
+      content,
+      content_type,
+      tone,
+      platform,
+      prompt_text,
+      output_mode,
+      reference_image_url,
+      generated_image_url,
+      image_prompt,
+      hashtags,
+      status
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+    RETURNING id, status
+    `,
+    [
+      payload.product.id,
+      payload.title,
+      payload.content,
+      payload.contentType,
+      payload.tone,
+      payload.platform,
+      payload.promptText,
+      payload.outputMode,
+      payload.referenceImageUrl,
+      payload.generatedImageUrl,
+      payload.imagePrompt,
+      payload.hashtags,
+      GENERATED_CONTENT_STATUS,
+    ]
   );
 
-  return rows[0] ?? null;
+  return result.rows[0] ?? null;
+}
+
+async function updateGeneratedContentImage(
+  contentId: number,
+  generatedImageUrl: string,
+  captionText: string | null
+) {
+  await pool.query(
+    `
+    UPDATE ai_contents
+    SET generated_image_url = $2,
+        content = CASE
+          WHEN output_mode = 'image' AND NULLIF($3, '') IS NOT NULL THEN $3
+          ELSE content
+        END
+    WHERE id = $1
+    `,
+    [contentId, generatedImageUrl, captionText?.trim() || null]
+  );
+}
+
+function completeImageGenerationInBackground(options: {
+  contentId: number;
+  imagePrompt: string;
+  referenceImageUrl: string | null;
+  fallbackImageUrl: string;
+  fallbackCaptionText: string | null;
+  preferImagen?: boolean;
+}) {
+  const { contentId, imagePrompt, referenceImageUrl, fallbackImageUrl, fallbackCaptionText, preferImagen = false } = options;
+
+  void (async () => {
+    const startedAt = Date.now();
+    try {
+      console.info(`[POST /api/ai/generate] Async Gemini image started for content ${contentId}`);
+      if (preferImagen) {
+        console.info(`[POST /api/ai/generate] Using Imagen first for custom content ${contentId}`);
+        const imagenResult = await generateImageWithImagen(imagePrompt);
+        await updateGeneratedContentImage(contentId, imagenResult.generatedImageUrl, imagenResult.captionText);
+        console.info(`[POST /api/ai/generate] Imagen image saved for content ${contentId}`, {
+          elapsedMs: Date.now() - startedAt,
+        });
+        return;
+      }
+
+      let imageResult;
+      try {
+        imageResult = await generateImageWithGemini(imagePrompt, referenceImageUrl);
+      } catch (firstErr) {
+        if (!referenceImageUrl) {
+          throw firstErr;
+        }
+
+        console.warn(`[POST /api/ai/generate] Async Gemini image retrying without reference for content ${contentId}`, {
+          message: firstErr instanceof Error ? firstErr.message : "Gemini image request failed",
+        });
+        imageResult = await generateImageWithGemini(
+          [
+            imagePrompt,
+            "No reference image is attached for this retry. Recreate the product as a clean beauty-product hero based on the product name and details.",
+          ].join("\n")
+        );
+      }
+
+      await updateGeneratedContentImage(
+        contentId,
+        imageResult.generatedImageUrl,
+        imageResult.captionText
+      );
+      console.info(`[POST /api/ai/generate] Async Gemini image completed for content ${contentId}`, {
+        elapsedMs: Date.now() - startedAt,
+      });
+    } catch (err) {
+      console.error(`[POST /api/ai/generate] Async Gemini image failed for content ${contentId}`, err);
+      try {
+        console.info(`[POST /api/ai/generate] Trying Imagen fallback for content ${contentId}`);
+        const imagenResult = await generateImageWithImagen(imagePrompt);
+        await updateGeneratedContentImage(contentId, imagenResult.generatedImageUrl, imagenResult.captionText);
+        console.info(`[POST /api/ai/generate] Imagen fallback image saved for content ${contentId}`, {
+          elapsedMs: Date.now() - startedAt,
+        });
+        return;
+      } catch (imagenErr) {
+        console.error(`[POST /api/ai/generate] Imagen fallback failed for content ${contentId}`, imagenErr);
+      }
+
+      try {
+        await updateGeneratedContentImage(contentId, fallbackImageUrl, fallbackCaptionText);
+        console.info(`[POST /api/ai/generate] Fallback image saved for content ${contentId}`);
+      } catch (fallbackErr) {
+        console.error(`[POST /api/ai/generate] Failed to save fallback image for content ${contentId}`, fallbackErr);
+      }
+    }
+  })();
 }
 
 function extractOpenAiText(data: any) {
@@ -512,7 +739,7 @@ async function generateAutoPromptWithOpenAi(options: {
   }
 
   const { product, contentType, tone, platform, outputMode, referenceImageUrl } = options;
-  const hasReferenceImage = Boolean(referenceImageUrl);
+  const hasReferenceImage = isReferenceImageProvided(referenceImageUrl);
   const contentLabel = formatLabel(contentType || "caption");
   const modeLabel =
     outputMode === "image"
@@ -582,7 +809,7 @@ async function generateImageWithGemini(prompt: string, referenceImageUrl?: strin
     throw new Error("GEMINI_API_KEY is not configured");
   }
 
-  const parsedReferenceImage = parseDataUrl(referenceImageUrl);
+  const parsedReferenceImage = await resolveReferenceImagePayload(referenceImageUrl);
   if (parsedReferenceImage) {
     const parts: Array<Record<string, unknown>> = [{
       inlineData: {
@@ -604,25 +831,40 @@ async function generateImageWithGemini(prompt: string, referenceImageUrl?: strin
 }
 
 async function generateGeminiImage(parts: Array<Record<string, unknown>>, apiKey: string) {
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${getGeminiImageModel()}:generateContent`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey,
-      },
-      body: JSON.stringify({
-        contents: [{ parts }],
-        generationConfig: {
-          imageConfig: {
-            aspectRatio: "4:5",
-            imageSize: "1K",
-          },
+  const timeoutMs = getGeminiImageTimeoutMs();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Awaited<ReturnType<typeof fetch>>;
+
+  try {
+    response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${getGeminiImageModel()}:generateContent`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
         },
-      }),
+        signal: controller.signal,
+        body: JSON.stringify({
+          contents: [{ parts }],
+          generationConfig: {
+            imageConfig: {
+              aspectRatio: "4:5",
+              imageSize: "1K",
+            },
+          },
+        }),
+      }
+    );
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      throw new Error(`Gemini image request timed out after ${timeoutMs}ms`);
     }
-  );
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -658,6 +900,77 @@ async function generateGeminiImage(parts: Array<Record<string, unknown>>, apiKey
   };
 }
 
+async function generateImageWithImagen(prompt: string) {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is not configured");
+  }
+
+  const timeoutMs = getGeminiImageTimeoutMs();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Awaited<ReturnType<typeof fetch>>;
+
+  try {
+    response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${getImagenFallbackModel()}:predict`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          instances: [{ prompt: buildImagenPrompt(prompt) }],
+          parameters: {
+            sampleCount: 1,
+            aspectRatio: "3:4",
+          },
+        }),
+      }
+    );
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      throw new Error(`Imagen fallback request timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Imagen fallback request failed: ${errorText || response.statusText}`);
+  }
+
+  const data = await response.json();
+  const predictions = Array.isArray(data?.predictions) ? data.predictions : [];
+  const image = predictions.find((prediction: any) => typeof prediction?.bytesBase64Encoded === "string");
+  if (!image?.bytesBase64Encoded) {
+    throw new Error("Imagen fallback did not return an image");
+  }
+
+  const mimeType =
+    typeof image.mimeType === "string" && image.mimeType.trim()
+      ? image.mimeType.trim()
+      : "image/png";
+
+  return {
+    generatedImageUrl: `data:${mimeType};base64,${image.bytesBase64Encoded}`,
+    captionText: null,
+  };
+}
+
+function buildImagenPrompt(prompt: string) {
+  return [
+    normalizeWhitespace(prompt)
+      .replace(/\bthe referenced product shown in the uploaded image\b/gi, "a premium beauty product")
+      .replace(/\bUse the uploaded image as the product identity source\.[\s\S]*$/i, ""),
+    "Create a premium product advertising image. No readable text, no watermark, no extra labels.",
+  ].join(" ");
+}
+
 async function generateMarketingAssets(options: {
   product: ProductRecord;
   prompt: string;
@@ -668,6 +981,7 @@ async function generateMarketingAssets(options: {
   outputMode: OutputMode;
   imagePrompt: string | null;
   referenceImageUrl?: string | null;
+  deferImage?: boolean;
 }) {
   const {
     product,
@@ -679,47 +993,75 @@ async function generateMarketingAssets(options: {
     outputMode,
     imagePrompt,
     referenceImageUrl,
+    deferImage = false,
   } = options;
   const useOpenAiCaption = shouldGenerateCaptionWithOpenAi(outputMode);
   const useGeminiImage = shouldGeneratePosterWithGemini(outputMode);
   const providers: GenerationProviderInfo = {
     text: useOpenAiCaption ? "fallback" : "none",
-    image: useGeminiImage ? "fallback" : "none",
-    usedReferenceImage: Boolean(parseDataUrl(referenceImageUrl)),
+    image: useGeminiImage && !deferImage ? "fallback" : "none",
+    usedReferenceImage: useGeminiImage && isReferenceImageProvided(referenceImageUrl),
   };
+  const imageGenerationStatus: ImageGenerationStatus =
+    useGeminiImage && deferImage ? "pending" : useGeminiImage ? "fallback" : "none";
 
   let content = useOpenAiCaption
     ? buildFakeContent(product, promptText, contentType, tone, platform, outputMode)
     : buildImageOnlyPlaceholderContent(product, promptText);
   let generatedImageUrl: string | null =
-    useGeminiImage ? buildFallbackImageDataUrl(product, promptText, tone, outputMode) : null;
+    useGeminiImage && !deferImage ? buildFallbackImageDataUrl(product, promptText, tone, outputMode) : null;
 
-  try {
-    if (useOpenAiCaption && getOpenAiApiKey()) {
-      content = await generateCaptionWithOpenAi(prompt);
-      providers.text = "openai";
-    }
-  } catch (err) {
-    console.error("[POST /api/ai/generate] OpenAI caption fallback", err);
-  }
-
-  if (useGeminiImage && imagePrompt) {
+  const captionPromise = (async () => {
     try {
-      if (getGeminiApiKey()) {
+      if (useOpenAiCaption && getOpenAiApiKey()) {
+        return {
+          content: await generateCaptionWithOpenAi(prompt),
+          provider: "openai" as GenerationProvider,
+        };
+      }
+    } catch (err) {
+      console.error("[POST /api/ai/generate] OpenAI caption fallback", err);
+    }
+    return null;
+  })();
+
+  const imagePromise = (async () => {
+    try {
+      if (!deferImage && useGeminiImage && imagePrompt && getGeminiApiKey()) {
         const geminiResult = await generateImageWithGemini(imagePrompt, referenceImageUrl);
-        generatedImageUrl = geminiResult.generatedImageUrl;
-        providers.image = "gemini";
-        if (!useOpenAiCaption && geminiResult.captionText) {
-          content = geminiResult.captionText;
-          providers.text = "gemini";
-        }
+        return {
+          ...geminiResult,
+          provider: "gemini" as GenerationProvider,
+        };
       }
     } catch (err) {
       console.error("[POST /api/ai/generate] Gemini image fallback", err);
     }
+    return null;
+  })();
+
+  const [captionResult, imageResult] = await Promise.all([captionPromise, imagePromise]);
+
+  if (captionResult) {
+    content = captionResult.content;
+    providers.text = captionResult.provider;
   }
 
-  return { content, generatedImageUrl, providers };
+  if (imageResult) {
+    generatedImageUrl = imageResult.generatedImageUrl;
+    providers.image = imageResult.provider;
+    if (!useOpenAiCaption && imageResult.captionText) {
+      content = imageResult.captionText;
+      providers.text = "gemini";
+    }
+  }
+
+  return {
+    content,
+    generatedImageUrl,
+    providers,
+    imageGenerationStatus: imageResult ? "complete" as ImageGenerationStatus : imageGenerationStatus,
+  };
 }
 
 function buildAutoPrompt(
@@ -734,21 +1076,21 @@ function buildAutoPrompt(
   const description = product.description?.trim();
   const price = Number(product.price ?? 0).toFixed(2);
   const contentLabel = formatLabel(contentType || "caption");
-  const hasReferenceImage = Boolean(referenceImageUrl);
+  const hasReferenceImage = isReferenceImageProvided(referenceImageUrl);
   const modeInstruction =
     outputMode === "text"
-      ? "Focus on a strong caption angle, emotional hook, and a clear CTA."
-      : "Include visual direction for a clean Facebook beauty poster with premium styling, soft lighting, and the product as the hero.";
+      ? "Write a caption brief with a specific hook, benefit angle, emotional trigger, and clear shop-now CTA."
+      : "Write a poster-generation brief with product hero placement, composition, background, lighting, props, minimal readable text, and premium Facebook 4:5 styling.";
   const referenceInstruction = hasReferenceImage
     ? "Use the provided reference image as the visual source of truth: preserve the product identity, packaging, label placement, and dominant colors while improving the campaign styling around it."
     : "No reference image is provided, so base the concept only on the product name, category, price, and description.";
 
   const parts: string[] = [
-    `Create a ${tone || "fun"} Facebook ${contentLabel} for ${product.name}, a ${category} product priced at PHP ${price}.`,
+    `Create a ${tone || "fun"} Facebook ${contentLabel} creative prompt for ${product.name}, a ${category} product priced at PHP ${price}.`,
   ];
 
   if (description) {
-    parts.push(`Product details: ${description}.`);
+    parts.push(`Use these product facts only as source material, not as the full prompt: ${description}.`);
   }
 
   parts.push(
@@ -803,10 +1145,17 @@ function validateGenerateBody(body: GenerateRequestBody) {
   const outputMode = ["text", "image", "text_image"].includes(outputModeRaw)
     ? (outputModeRaw as OutputMode)
     : "text";
+  const promptMode = typeof body.promptMode === "string" && body.promptMode.trim().toLowerCase() === "custom"
+    ? "custom"
+    : "auto";
   const referenceImageUrl =
     typeof body.referenceImageUrl === "string" && body.referenceImageUrl.trim()
       ? body.referenceImageUrl.trim()
       : null;
+  const asyncImage =
+    body.asyncImage === true ||
+    body.asyncImage === 1 ||
+    (typeof body.asyncImage === "string" && ["1", "true", "yes"].includes(body.asyncImage.trim().toLowerCase()));
 
   const productIdNum = Number(body.productId);
   if (!productIdNum || !Number.isFinite(productIdNum) || !Number.isInteger(productIdNum) || productIdNum <= 0) {
@@ -820,7 +1169,9 @@ function validateGenerateBody(body: GenerateRequestBody) {
     tone: tone || "fun",
     platform: FACEBOOK_PLATFORM,
     outputMode,
+    promptMode,
     referenceImageUrl,
+    asyncImage,
   };
 }
 
@@ -839,6 +1190,7 @@ aiRouter.post("/auto-prompt", async (req: Request, res: Response) => {
     if (!product) {
       return res.status(404).json({ ok: false, data: null, message: "Product not found" });
     }
+    const referenceImageUrl = parsed.referenceImageUrl || product.image_url || null;
 
     const autoPrompt = await resolveAutoPrompt({
       product,
@@ -846,7 +1198,7 @@ aiRouter.post("/auto-prompt", async (req: Request, res: Response) => {
       tone: parsed.tone,
       platform: parsed.platform,
       outputMode: parsed.outputMode,
-      referenceImageUrl: parsed.referenceImageUrl,
+      referenceImageUrl,
     });
 
     return res.json({
@@ -881,6 +1233,7 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
     if (!product) {
       return res.status(404).json({ ok: false, data: null, message: "Product not found" });
     }
+    const referenceImageUrl = parsed.referenceImageUrl || product.image_url || null;
 
     let effectivePromptText = parsed.promptText;
     let promptProvider: GenerationProvider | null = null;
@@ -892,7 +1245,7 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
         tone: parsed.tone,
         platform: parsed.platform,
         outputMode: parsed.outputMode,
-        referenceImageUrl: parsed.referenceImageUrl,
+        referenceImageUrl,
       });
       effectivePromptText = autoPrompt.promptText;
       promptProvider = autoPrompt.provider;
@@ -905,7 +1258,7 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
       parsed.tone,
       parsed.platform,
       parsed.outputMode,
-      parsed.referenceImageUrl
+      referenceImageUrl
     );
     const title = buildTitle(product, parsed.contentType, parsed.tone);
     const imagePrompt = buildImagePrompt(
@@ -914,10 +1267,15 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
       parsed.tone,
       parsed.platform,
       parsed.outputMode,
-      parsed.referenceImageUrl
+      referenceImageUrl
     );
     const hashtags = buildFakeHashtags(product, parsed.contentType, parsed.tone, parsed.platform);
-    const { content, generatedImageUrl, providers } = await generateMarketingAssets({
+    const shouldDeferImage =
+      parsed.asyncImage &&
+      shouldGeneratePosterWithGemini(parsed.outputMode) &&
+      Boolean(imagePrompt) &&
+      Boolean(getGeminiApiKey());
+    const { content, generatedImageUrl, providers, imageGenerationStatus } = await generateMarketingAssets({
       product,
       prompt,
       promptText: effectivePromptText,
@@ -926,7 +1284,8 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
       platform: parsed.platform,
       outputMode: parsed.outputMode,
       imagePrompt,
-      referenceImageUrl: parsed.referenceImageUrl,
+      referenceImageUrl,
+      deferImage: shouldDeferImage,
     });
 
     const savedContent = await saveGeneratedContent({
@@ -938,7 +1297,7 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
       platform: parsed.platform,
       promptText: effectivePromptText,
       outputMode: parsed.outputMode,
-      referenceImageUrl: parsed.referenceImageUrl,
+      referenceImageUrl,
       generatedImageUrl,
       imagePrompt,
       hashtags,
@@ -946,20 +1305,33 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
     if (!savedContent?.id) {
       throw new Error("Generated content was not saved");
     }
+    const savedContentId = Number(savedContent.id);
+
+    if (shouldDeferImage && imagePrompt) {
+      completeImageGenerationInBackground({
+        contentId: savedContentId,
+        imagePrompt,
+        referenceImageUrl,
+        fallbackImageUrl: buildFallbackImageDataUrl(product, effectivePromptText, parsed.tone, parsed.outputMode),
+        fallbackCaptionText: content,
+        preferImagen: parsed.promptMode === "custom",
+      });
+    }
 
     return res.json({
       ok: true,
       data: {
-        id: Number(savedContent?.id),
+        id: savedContentId,
         title,
         caption: content,
         hashtags,
         generatedImageUrl,
-        referenceImageUrl: parsed.referenceImageUrl,
+        referenceImageUrl,
         promptText: effectivePromptText,
         promptProvider,
         outputMode: parsed.outputMode,
         providers,
+        imageGenerationStatus,
         status: String(savedContent?.status ?? GENERATED_CONTENT_STATUS),
       },
       message: null,
@@ -975,23 +1347,39 @@ aiRouter.post("/generate", async (req: Request, res: Response) => {
 
 aiRouter.get("/contents/feed", async (_req: Request, res: Response) => {
   try {
-    const rows = await supabaseRest<ContentListRow[]>(
-      aiContentPath({ select: AI_CONTENT_LIST_COLUMNS, order: "created_at.desc", limit: 500 })
+    const feedStatuses = ["published", "scheduled", "approved"];
+    const result = await pool.query<ContentFeedRow>(
+      `
+      SELECT
+        id,
+        title,
+        content,
+        platform,
+        status,
+        created_at,
+        approved_at,
+        scheduled_at,
+        published_at
+      FROM ai_contents
+      WHERE status = ANY($1::text[])
+      ORDER BY
+        CASE status
+          WHEN 'published' THEN 1
+          WHEN 'scheduled' THEN 2
+          WHEN 'approved' THEN 3
+          ELSE 4
+        END,
+        COALESCE(published_at, scheduled_at, approved_at, created_at) DESC,
+        id DESC
+      LIMIT 100
+      `,
+      [feedStatuses]
     );
-    const feedStatuses = new Set(["published", "scheduled", "approved"]);
+    const rows = result.rows;
 
     return res.json({
       ok: true,
       data: rows
-        .filter((row) => feedStatuses.has(String(row.status)))
-        .sort((a, b) => {
-          const statusRank: Record<string, number> = { published: 1, scheduled: 2, approved: 3 };
-          const rankDiff = (statusRank[String(a.status)] ?? 4) - (statusRank[String(b.status)] ?? 4);
-          if (rankDiff !== 0) return rankDiff;
-          const aDate = a.published_at || a.scheduled_at || a.approved_at || a.created_at || "";
-          const bDate = b.published_at || b.scheduled_at || b.approved_at || b.created_at || "";
-          return bDate.localeCompare(aDate) || Number(b.id) - Number(a.id);
-        })
         .map((row) => ({
           id: Number(row.id),
           title: String(row.title ?? "Untitled Content"),
@@ -1023,18 +1411,29 @@ aiRouter.get("/contents", async (req: Request, res: Response) => {
     const offset = (page - 1) * limit;
     const status = typeof req.query.status === "string" ? req.query.status.trim() : "";
 
-    const pathParams: Record<string, string | number> = {
-      select: AI_CONTENT_LIST_COLUMNS,
-      order: "created_at.desc",
-      limit,
-      offset,
-    };
-
+    const values: unknown[] = [];
+    const where: string[] = [];
     if (status && status !== "all") {
-      pathParams.status = `eq.${status}`;
+      values.push(status);
+      where.push(`status = $${values.length}`);
     }
 
-    const rows = await supabaseRest<ContentListRow[]>(aiContentPath(pathParams));
+    values.push(limit);
+    const limitParam = values.length;
+    values.push(offset);
+    const offsetParam = values.length;
+
+    const result = await pool.query<ContentListRow>(
+      `
+      ${contentListSelectSql()}
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ORDER BY created_at DESC
+      LIMIT $${limitParam}
+      OFFSET $${offsetParam}
+      `,
+      values
+    );
+    const rows = result.rows;
 
     return res.json({
       ok: true,
@@ -1053,6 +1452,40 @@ aiRouter.get("/contents", async (req: Request, res: Response) => {
   }
 });
 
+aiRouter.get("/contents/:id", async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ ok: false, data: null, message: "Invalid id" });
+    }
+
+    const result = await pool.query<ContentListRow>(
+      `
+      ${contentListSelectSql()}
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [id]
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return res.status(404).json({ ok: false, data: null, message: "Content not found" });
+    }
+
+    return res.json({
+      ok: true,
+      data: serializeContentListRow(row),
+      message: null,
+    });
+  } catch (e: any) {
+    return res.status(500).json({
+      ok: false,
+      data: null,
+      message: e?.message || "Failed to load content",
+    });
+  }
+});
+
 aiRouter.patch("/contents/:id/submit", async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
@@ -1067,15 +1500,21 @@ aiRouter.patch("/contents/:id/submit", async (req: Request, res: Response) => {
     const platform = FACEBOOK_PLATFORM;
     const hashtags = typeof body.hashtags === "string" ? body.hashtags.trim() : "";
 
-    const existingRows = await supabaseRest<SubmitTargetRow[]>(
-      aiContentPath({ select: "id,output_mode,generated_image_url,content", id: `eq.${id}`, limit: 1 })
+    const existingResult = await pool.query<SubmitTargetRow>(
+      `
+      SELECT id, output_mode, generated_image_url, content
+      FROM ai_contents
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [id]
     );
 
-    if (!existingRows.length) {
+    if (!existingResult.rows.length) {
       return res.status(404).json({ ok: false, data: null, message: "Content not found" });
     }
 
-    const existing = existingRows[0];
+    const existing = existingResult.rows[0];
     const isImageOnly = (existing.output_mode ?? "text").trim() === "image";
     const hasGeneratedImage = hasNonEmptyString(existing.generated_image_url);
     const allowBlankContent = isImageOnly && hasGeneratedImage;
@@ -1092,7 +1531,7 @@ aiRouter.patch("/contents/:id/submit", async (req: Request, res: Response) => {
       });
     }
 
-    const rows = await supabaseRest<Array<{
+    const updateResult = await pool.query<{
       id: number;
       title: string | null;
       content: string | null;
@@ -1100,22 +1539,21 @@ aiRouter.patch("/contents/:id/submit", async (req: Request, res: Response) => {
       hashtags: string | null;
       status: string;
       created_at: string;
-    }>>(
-      aiContentPath({ select: "id,title,content,platform,hashtags,status,created_at", id: `eq.${id}` }),
-      {
-        method: "PATCH",
-        headers: { Prefer: "return=representation" },
-        body: JSON.stringify({
-          title,
-          content,
-          platform,
-          hashtags,
-          status: PENDING_APPROVAL_STATUS,
-        }),
-      }
+    }>(
+      `
+      UPDATE ai_contents
+      SET title = $2,
+          content = $3,
+          platform = $4,
+          hashtags = $5,
+          status = $6
+      WHERE id = $1
+      RETURNING id, title, content, platform, hashtags, status, created_at
+      `,
+      [id, title, content, platform, hashtags, PENDING_APPROVAL_STATUS]
     );
 
-    const updated = rows[0];
+    const updated = updateResult.rows[0];
     if (!updated) {
       return res.status(404).json({ ok: false, data: null, message: "Content not found" });
     }
@@ -1150,26 +1588,25 @@ aiRouter.patch("/contents/:id/status", async (req: Request, res: Response) => {
       return res.status(400).json({ ok: false, data: null, message: "Invalid status" });
     }
 
-    const rows = await supabaseRest<Array<{
+    const updateResult = await pool.query<{
       id: number;
       title: string | null;
       status: string;
       approved_at: string | null;
       published_at: string | null;
-    }>>(
-      aiContentPath({ select: "id,title,status,approved_at,published_at", id: `eq.${id}` }),
-      {
-        method: "PATCH",
-        headers: { Prefer: "return=representation" },
-        body: JSON.stringify({
-          status,
-          ...(status === "approved" ? { approved_at: new Date().toISOString() } : {}),
-          ...(status === "published" ? { published_at: new Date().toISOString() } : {}),
-        }),
-      }
+    }>(
+      `
+      UPDATE ai_contents
+      SET status = $2,
+          approved_at = CASE WHEN $2 = 'approved' THEN NOW() ELSE approved_at END,
+          published_at = CASE WHEN $2 = 'published' THEN NOW() ELSE published_at END
+      WHERE id = $1
+      RETURNING id, title, status, approved_at, published_at
+      `,
+      [id, status]
     );
 
-    const updated = rows[0];
+    const updated = updateResult.rows[0];
     if (!updated) {
       return res.status(404).json({ ok: false, data: null, message: "Content not found" });
     }
@@ -1201,14 +1638,15 @@ aiRouter.delete("/contents/:id", async (req: Request, res: Response) => {
       return res.status(400).json({ ok: false, data: null, message: "Invalid id" });
     }
 
-    const existing = await supabaseRest<Array<{ id: number }>>(
-      aiContentPath({ select: "id", id: `eq.${id}`, limit: 1 })
+    const existing = await pool.query<{ id: number }>(
+      `SELECT id FROM ai_contents WHERE id = $1 LIMIT 1`,
+      [id]
     );
-    if (!existing.length) {
+    if (!existing.rows.length) {
       return res.status(404).json({ ok: false, data: null, message: "Content not found" });
     }
 
-    await supabaseRest<null>(aiContentPath({ id: `eq.${id}` }), { method: "DELETE" });
+    await pool.query(`DELETE FROM ai_contents WHERE id = $1`, [id]);
 
     return res.json({
       ok: true,
@@ -1256,24 +1694,23 @@ aiRouter.patch("/contents/:id/schedule", async (req: Request, res: Response) => 
       return res.status(400).json({ ok: false, data: null, message: "Invalid scheduledAt" });
     }
 
-    const rows = await supabaseRest<Array<{
+    const updateResult = await pool.query<{
       id: number;
       title: string | null;
       status: string;
       scheduled_at: string | null;
-    }>>(
-      aiContentPath({ select: "id,title,status,scheduled_at", id: `eq.${id}` }),
-      {
-        method: "PATCH",
-        headers: { Prefer: "return=representation" },
-        body: JSON.stringify({
-          status: "scheduled",
-          scheduled_at: scheduledAt.toISOString(),
-        }),
-      }
+    }>(
+      `
+      UPDATE ai_contents
+      SET status = 'scheduled',
+          scheduled_at = $2
+      WHERE id = $1
+      RETURNING id, title, status, scheduled_at
+      `,
+      [id, scheduledAt.toISOString()]
     );
 
-    const updated = rows[0];
+    const updated = updateResult.rows[0];
     if (!updated) {
       return res.status(404).json({ ok: false, data: null, message: "Content not found" });
     }

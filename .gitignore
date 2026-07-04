@@ -11,6 +11,8 @@ node_modules/
 dist/
 build/
 .vite/
+release/
+*.dump
 
 # logs
 *.log

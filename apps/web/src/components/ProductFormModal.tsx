@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { X, ImagePlus, Loader2 } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { API_BASE } from '../lib/api';
 
 type ProductCategory = 'Skincare' | 'Makeup' | 'Fragrance' | 'Haircare' | 'Miscellaneous';
 const CATEGORIES: ProductCategory[] = ['Skincare', 'Makeup', 'Fragrance', 'Haircare', 'Miscellaneous'];
@@ -88,17 +88,57 @@ export default function ProductFormModal({ initial, onSave, onClose, saving, tok
     }
   };
 
+  // Resize + compress image via Canvas before uploading (keeps payload small)
+  const compressImage = (file: File, maxPx = 1200, quality = 0.85): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Failed to read image'));
+      reader.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error('Failed to decode image'));
+        img.onload = () => {
+          const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
+          const w = Math.round(img.width * scale);
+          const h = Math.round(img.height * scale);
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          canvas.getContext('2d')!.drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.src = reader.result as string;
+      };
+      reader.readAsDataURL(file);
+    });
+
   const uploadImage = async (): Promise<string | undefined> => {
     if (!imgFile) return initial?.imageUrl ?? undefined;
-    const ext = imgFile.name.split('.').pop() || 'jpg';
-    const path = `products/${Date.now()}-${Math.random().toString(36).slice(2,8)}.${ext}`;
-    const { error } = await supabase.storage
-      .from('product-images')
-      .upload(path, imgFile, { cacheControl: '3600', upsert: false });
-    if (error) throw new Error(`Image upload failed: ${error.message}`);
-    const { data } = supabase.storage.from('product-images').getPublicUrl(path);
-    return data.publicUrl;
+
+    // Compress first — converts any format to JPEG ≤1200px (typically <500KB)
+    const base64 = await compressImage(imgFile);
+    const filename = imgFile.name.replace(/\.[^.]+$/, '.jpg');
+
+    // Try API route (uses service role key, bypasses Supabase RLS)
+    try {
+      const res = await fetch(`${API_BASE}/products/upload-image`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ base64, filename }),
+      });
+      if (res.ok) {
+        const payload = await res.json();
+        if (payload.url) return payload.url as string;
+      }
+      const errPayload = await res.json().catch(() => ({}));
+      throw new Error(errPayload.error || `API returned ${res.status}`);
+    } catch (apiErr: any) {
+      throw new Error(apiErr?.message || 'Image upload failed');
+    }
   };
+
 
   const handleSave = async () => {
     const req: FKey[] = ['name', 'sku', 'price', 'cost', 'stock'];

@@ -8,4 +8,15 @@ if (!process.env.DATABASE_URL) {
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
+  max: Number(process.env.DB_POOL_MAX ?? 5), // keep pool small — hosted Postgres tiers have limited slots
+  idleTimeoutMillis: 10_000,  // release idle connections after 10s
+  connectionTimeoutMillis: 5_000, // fail fast if can't connect in 5s
+  query_timeout: Number(process.env.DB_QUERY_TIMEOUT_MS ?? 15_000),
+  statement_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS ?? 15_000),
+});
+
+// CRITICAL: without this handler, a terminated connection emits an unhandled
+// 'error' event that crashes the entire Node process.
+pool.on('error', (err) => {
+  console.warn('[pool] idle client error — connection will be replaced:', err.message);
 });

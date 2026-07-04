@@ -73,6 +73,7 @@ function ScheduleModal({
       });
       if (res.error) throw new Error(res.error);
       toast.success('Post scheduled!');
+      window.dispatchEvent(new Event('ai-content-updated'));
       onScheduled();
       onClose();
     } catch (err: unknown) {
@@ -143,6 +144,7 @@ export default function Scheduling() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedContent, setSelectedContent] = useState<ApprovedContent | null>(null);
+  const [publishingId, setPublishingId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'published' | 'failed'>('all');
 
   const loadData = async () => {
@@ -169,20 +171,26 @@ export default function Scheduling() {
       const res = await api.deleteScheduledPost(id);
       if (res.error) throw new Error(res.error);
       toast.success('Post cancelled');
-      loadData();
+      window.dispatchEvent(new Event('ai-content-updated'));
+      void loadData();
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to cancel post');
     }
   };
 
-  const handleMarkPublished = async (id: number) => {
+  const handlePublishNow = async (id: number) => {
+    setPublishingId(id);
     try {
-      const res = await api.updatePostStatus(id, 'published');
-      if (res.error) throw new Error(res.error);
-      toast.success('Marked as published');
-      loadData();
+      const res = await api.publishFacebookContent(id);
+      if (!res.ok) throw new Error(res.message || 'Failed to publish post');
+      toast.success('Published to Facebook page!');
+      window.dispatchEvent(new Event('ai-content-updated'));
+      window.dispatchEvent(new Event('facebook-analytics-updated'));
+      void loadData();
     } catch (err: unknown) {
-      toast.error((err as Error).message || 'Failed to update status');
+      toast.error((err as Error).message || 'Failed to publish to Facebook');
+    } finally {
+      setPublishingId(null);
     }
   };
 
@@ -302,11 +310,16 @@ export default function Scheduling() {
                         {post.status === 'pending' && (
                           <>
                             <button
-                              onClick={() => handleMarkPublished(post.id)}
-                              title="Mark as published"
-                              className="w-6 h-6 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center hover:bg-emerald-100 transition-all"
+                              onClick={() => handlePublishNow(post.id)}
+                              disabled={publishingId === post.id}
+                              title="Publish now"
+                              className="w-6 h-6 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center hover:bg-emerald-100 disabled:opacity-60 disabled:cursor-not-allowed transition-all"
                             >
-                              <CheckCircle className="w-3.5 h-3.5" />
+                              {publishingId === post.id ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Send className="w-3.5 h-3.5" />
+                              )}
                             </button>
                             <button
                               onClick={() => handleCancel(post.id)}

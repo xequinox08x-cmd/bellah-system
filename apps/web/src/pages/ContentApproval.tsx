@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { CheckCircle, XCircle, Clock, X, Eye } from 'lucide-react';
+import { CheckCircle, Loader2, Send, XCircle, Clock, X, Eye } from 'lucide-react';
 import { useAuth } from '../components/AuthContext';
 import { Navigate } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -38,15 +38,20 @@ const STATUS_CARD_CONFIG: Record<string, { bg: string; text: string }> = {
 function ContentCard({
   item,
   onApprove,
+  onPublish,
   onReject,
   onView,
+  publishing,
 }: {
   item: ContentItem;
   onApprove: (id: number) => void;
+  onPublish: (id: number) => void;
   onReject: (item: ContentItem) => void;
   onView: (item: ContentItem) => void;
+  publishing: boolean;
 }) {
   const plat = PLATFORM_BADGE[item.platform] ?? { label: item.platform, className: 'bg-gray-100 text-gray-500' };
+  const canPublish = item.status === 'approved' && item.platform === 'facebook';
 
   return (
     <div className="bg-white rounded-xl border border-[#E5E7EB] p-5 space-y-3">
@@ -115,6 +120,16 @@ function ContentCard({
               <XCircle className="w-3.5 h-3.5" /> Reject
             </button>
           </>
+        )}
+        {canPublish && (
+          <button
+            onClick={() => onPublish(item.id)}
+            disabled={publishing}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-all"
+          >
+            {publishing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+            Publish
+          </button>
         )}
       </div>
     </div>
@@ -251,6 +266,7 @@ export default function ContentApproval() {
   const [activeTab, setActiveTab] = useState<ContentStatus | 'all'>('pending');
   const [rejectItem, setRejectItem] = useState<ContentItem | null>(null);
   const [viewItem, setViewItem] = useState<ContentItem | null>(null);
+  const [publishingId, setPublishingId] = useState<number | null>(null);
 
   // ── Redirect non-admins ─────────────────────────────────────────────────────
   // Staff should never see this page
@@ -282,7 +298,8 @@ export default function ContentApproval() {
       const res = await api.updateContentStatus(id, 'approved');
       if (res.error) throw new Error(res.error);
       toast.success('Content approved!');
-      loadContent(); // reload list so the status updates immediately
+      void loadContent(); // reload list so the status updates immediately
+      window.dispatchEvent(new Event('ai-content-updated'));
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to approve content');
     }
@@ -299,9 +316,25 @@ export default function ContentApproval() {
       if (res.error) throw new Error(res.error);
       toast.success('Content rejected.');
       setRejectItem(null);
-      loadContent(); // reload list so the status updates immediately
+      void loadContent(); // reload list so the status updates immediately
+      window.dispatchEvent(new Event('ai-content-updated'));
     } catch (err: unknown) {
       toast.error((err as Error).message || 'Failed to reject content');
+    }
+  };
+
+  const handlePublish = async (id: number) => {
+    setPublishingId(id);
+    try {
+      const res = await api.publishFacebookContent(id);
+      if (!res.ok) throw new Error(res.message || 'Failed to publish content');
+      toast.success('Published to Facebook page!');
+      void loadContent();
+      window.dispatchEvent(new Event('ai-content-updated'));
+    } catch (err: unknown) {
+      toast.error((err as Error).message || 'Failed to publish to Facebook');
+    } finally {
+      setPublishingId(null);
     }
   };
 
@@ -410,8 +443,10 @@ export default function ContentApproval() {
               key={item.id}
               item={item}
               onApprove={handleApprove}
+              onPublish={handlePublish}
               onReject={setRejectItem}
               onView={setViewItem}
+              publishing={publishingId === item.id}
             />
           ))}
         </div>

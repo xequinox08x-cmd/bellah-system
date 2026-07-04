@@ -1,15 +1,82 @@
-import { supabase } from './supabase';
+function getDefaultApiRoot() {
+  if (typeof window === 'undefined') return 'http://localhost:4000';
+  const hostname = window.location.hostname || 'localhost';
+  return `http://${hostname}:4000`;
+}
 
-export const API_ROOT = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+const configuredApiRoot = import.meta.env.VITE_API_URL?.trim().replace(/\/$/, '');
+
+export const API_ROOT = configuredApiRoot || getDefaultApiRoot();
 export const API_BASE = `${API_ROOT}/api`;
 
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+const REQUEST_TIMEOUT_MS = 15_000;
+const FAST_OPTIONAL_TIMEOUT_MS = 8_000;
+const LOCAL_USERS_KEY = 'bb_local_users';
+
+async function getSupabaseClient() {
+  const { supabase } = await import('./supabase');
+  return supabase;
+}
+
+// OPTIMIZATION: Simple request cache with TTL to prevent duplicate API calls
+// Cache stays valid for 30 seconds by default, can be overridden per request
+const REQUEST_CACHE = new Map<string, { data: unknown; expires: number }>();
+
+function getCacheKey(url: string, init?: RequestInit): string {
+  // Only cache GET requests
+  if (init?.method && init.method !== 'GET') return '';
+  return url;
+}
+
+function getFromCache(key: string): unknown | null {
+  if (!key) return null;
+  const cached = REQUEST_CACHE.get(key);
+  if (!cached) return null;
+  if (Date.now() > cached.expires) {
+    REQUEST_CACHE.delete(key);
+    return null;
+  }
+  return cached.data;
+}
+
+function setInCache(key: string, data: unknown, ttlMs = 30_000): void {
+  if (!key) return;
+  REQUEST_CACHE.set(key, { data, expires: Date.now() + ttlMs });
+}
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  if (init.signal) return fetch(input, init);
+
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function fetchJson<T>(url: string, init?: RequestInit, cacheTtlMs?: number): Promise<T> {
+  // OPTIMIZATION: Check cache first for GET requests
+  const cacheKey = getCacheKey(url, init);
+  if (cacheKey) {
+    const cached = getFromCache(cacheKey);
+    if (cached !== null) {
+      return cached as T;
+    }
+  }
+
+  const res = await fetchWithTimeout(url, init);
   const contentType = res.headers.get('content-type') || '';
   const data = contentType.includes('application/json') ? await res.json() : null;
 
   if (!res.ok) {
     throw new Error(data?.message || data?.error || `Request failed with status ${res.status}`);
+  }
+
+  // OPTIMIZATION: Store successful responses in cache
+  if (cacheKey && res.ok) {
+    setInCache(cacheKey, data, cacheTtlMs);
   }
 
   return data as T;
@@ -33,6 +100,7 @@ function normalizeProduct(row: any) {
 }
 
 async function getSupabaseProducts() {
+  const supabase = await getSupabaseClient();
   const { data, error } = await supabase
     .from('products')
     .select('id, sku, name, category, price, cost, stock, low_stock_threshold, description, image_url, is_active, created_at, updated_at')
@@ -44,9 +112,11 @@ async function getSupabaseProducts() {
 }
 
 async function getSupabaseSales() {
+  const supabase = await getSupabaseClient();
+  // OPTIMIZATION: Select only needed columns instead of *
   const { data, error } = await supabase
     .from('sales')
-    .select('*')
+    .select('id, total, customer_name, created_at')
     .order('created_at', { ascending: false });
 
   if (error) throw new Error(error.message);
@@ -54,9 +124,11 @@ async function getSupabaseSales() {
 }
 
 async function getSupabaseSaleById(id: number) {
+  const supabase = await getSupabaseClient();
+  // OPTIMIZATION: Select only needed columns instead of *
   const { data: sale, error: saleError } = await supabase
     .from('sales')
-    .select('*')
+    .select('id, total, created_at')
     .eq('id', id)
     .maybeSingle();
 
@@ -92,10 +164,12 @@ async function getSupabaseSaleById(id: number) {
 }
 
 async function getSupabaseDashboardSalesRecords() {
+  const supabase = await getSupabaseClient();
   const { data, error } = await supabase
     .from('sale_items')
     .select('id, sale_id, product_id, qty, unit_price, sales(id, created_at, customer_name), products(id, name, category, cost)')
-    .order('id', { ascending: false });
+    .order('id', { ascending: false })
+    .limit(200);
 
   if (error) throw new Error(error.message);
 
@@ -187,21 +261,30 @@ async function getSupabaseDashboardSummary(start?: string, end?: string) {
 }
 
 async function getSupabaseAnalytics(trendDays = 7) {
+  const supabase = await getSupabaseClient();
+  // OPTIMIZATION: Select only needed columns instead of *
   const [{ data: contents, error: contentError }, { data: metrics, error: metricsError }] = await Promise.all([
-    supabase.from('ai_contents').select('*').order('created_at', { ascending: false }),
-    supabase.from('ai_content_metrics').select('*').order('snapshot_at', { ascending: false }),
+    supabase.from('ai_contents').select('id, title, content, platform, facebook_post_id, published_at, last_metrics_sync_at, created_at').order('created_at', { ascending: false }),
+    supabase.from('ai_content_metrics').select('ai_content_id, likes_count, comments_count, shares_count, reach_count, engagement_rate, snapshot_at').order('snapshot_at', { ascending: false }),
   ]);
 
-  if (contentError) throw new Error(contentError.message);
-  if (metricsError) throw new Error(metricsError.message);
+  if (contentError) {
+    console.warn('[api] analytics content unavailable, returning empty analytics', contentError);
+  }
+  if (metricsError) {
+    console.warn('[api] analytics metrics unavailable, using zero metrics', metricsError);
+  }
+
+  const contentRows = contentError ? [] : (contents || []);
+  const metricRows = metricsError ? [] : (metrics || []);
 
   const latestMetrics = new Map<number, any>();
-  for (const metric of metrics || []) {
+  for (const metric of metricRows) {
     const contentId = Number(metric.ai_content_id);
     if (!latestMetrics.has(contentId)) latestMetrics.set(contentId, metric);
   }
 
-  const posts = (contents || [])
+  const posts = contentRows
     .filter((content: any) => content.facebook_post_id)
     .map((content: any) => {
       const metric = latestMetrics.get(Number(content.id)) || {};
@@ -248,7 +331,7 @@ async function getSupabaseAnalytics(trendDays = 7) {
   const latestMetricByContentDate = new Map<string, any>();
   const trackedContentIds = new Set(posts.map((post) => post.id));
 
-  for (const metric of metrics || []) {
+  for (const metric of metricRows) {
     const contentId = Number(metric.ai_content_id);
     const snapshotAt = metric.snapshot_at || metric.fetched_at || metric.created_at;
     if (!trackedContentIds.has(contentId) || !snapshotAt) continue;
@@ -296,6 +379,7 @@ async function getSupabaseAnalytics(trendDays = 7) {
 }
 
 async function getSupabaseAiContentFeed() {
+  const supabase = await getSupabaseClient();
   const { data, error } = await supabase
     .from('ai_contents')
     .select('id, title, content, platform, status, created_at, approved_at, scheduled_at, published_at, products(name)')
@@ -353,6 +437,7 @@ function normalizeAiContentItem(item: any) {
 }
 
 async function getSupabaseContent(status?: string, page = 1) {
+  const supabase = await getSupabaseClient();
   const limit = 20;
   const offset = (Math.max(1, page) - 1) * limit;
   let query = supabase
@@ -377,6 +462,7 @@ async function getSupabaseContent(status?: string, page = 1) {
 }
 
 async function getSupabaseScheduledPosts() {
+  const supabase = await getSupabaseClient();
   const { data, error } = await supabase
     .from('ai_contents')
     .select('id, title, content, hashtags, platform, status, scheduled_at, published_at, created_at')
@@ -431,7 +517,162 @@ export type ApiUser = {
   created_at: string;
 };
 
+function isApiUserRole(value: unknown): value is ApiUser['role'] {
+  return value === 'admin' || value === 'staff';
+}
+
+function decodeBase64Url(value: string) {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=');
+  const binary = atob(padded);
+  const bytes = Array.from(binary, (char) => `%${char.charCodeAt(0).toString(16).padStart(2, '0')}`).join('');
+  return decodeURIComponent(bytes);
+}
+
+function getTokenPayload(token: string): Record<string, any> | null {
+  try {
+    const payloadSegment = token.split('.')[1];
+    if (!payloadSegment) return null;
+    return JSON.parse(decodeBase64Url(payloadSegment));
+  } catch {
+    return null;
+  }
+}
+
+function getCachedSessionUser(): Partial<ApiUser> | null {
+  try {
+    const raw = sessionStorage.getItem('bb_user');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ApiUser>;
+    return parsed.email ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeApiUser(row: Partial<ApiUser> & Record<string, any>): ApiUser {
+  const email = String(row.email || 'admin@bellah.test').toLowerCase();
+  const role = isApiUserRole(row.role) ? row.role : 'staff';
+
+  return {
+    id: Number(row.id || Date.now()),
+    auth_id: row.auth_id || row.authId || `local-${email}`,
+    authId: row.authId || row.auth_id || `local-${email}`,
+    name: String(row.name || email.split('@')[0] || 'User'),
+    email,
+    role,
+    username: String(row.username || email.split('@')[0] || 'user'),
+    bio: String(row.bio || ''),
+    created_at: String(row.created_at || new Date().toISOString()),
+  };
+}
+
+function getLocalCurrentUser(token: string): ApiUser {
+  const tokenPayload = getTokenPayload(token);
+  const cachedUser = getCachedSessionUser();
+  const email = String(cachedUser?.email || tokenPayload?.email || 'admin@bellah.test').toLowerCase();
+  const role = isApiUserRole(cachedUser?.role)
+    ? cachedUser.role
+    : isApiUserRole(tokenPayload?.app_metadata?.role)
+      ? tokenPayload.app_metadata.role
+      : isApiUserRole(tokenPayload?.user_metadata?.role)
+        ? tokenPayload.user_metadata.role
+        : 'admin';
+
+  return normalizeApiUser({
+    id: role === 'admin' ? 1 : 2,
+    auth_id: String(tokenPayload?.sub || cachedUser?.auth_id || cachedUser?.authId || `local-${email}`),
+    name: String(
+      cachedUser?.name ||
+      tokenPayload?.user_metadata?.full_name ||
+      tokenPayload?.user_metadata?.name ||
+      (role === 'admin' ? 'Local Admin' : email.split('@')[0])
+    ),
+    email,
+    role,
+    username: String(cachedUser?.username || email.split('@')[0] || 'user'),
+    bio: String(cachedUser?.bio || ''),
+    created_at: String(tokenPayload?.created_at || new Date().toISOString()),
+  });
+}
+
+function readLocalUsers(token: string): ApiUser[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_USERS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.map((item) => normalizeApiUser(item));
+    }
+  } catch {
+    // Ignore corrupt local fallback data and re-seed below.
+  }
+
+  const current = getLocalCurrentUser(token);
+  const seed = [
+    current,
+    normalizeApiUser({
+      id: current.email === 'staff@bellah.test' ? 1 : 2,
+      auth_id: 'local-staff',
+      name: 'Local Staff',
+      email: 'staff@bellah.test',
+      role: 'staff',
+      created_at: new Date().toISOString(),
+    }),
+  ].filter((user, index, users) => users.findIndex((candidate) => candidate.email === user.email) === index);
+
+  writeLocalUsers(seed);
+  return seed;
+}
+
+function writeLocalUsers(users: ApiUser[]) {
+  try {
+    localStorage.setItem(LOCAL_USERS_KEY, JSON.stringify(users.map(normalizeApiUser)));
+  } catch {
+    // Local fallback is best-effort only.
+  }
+}
+
+function createLocalUser(body: { name: string; email: string; role: 'admin' | 'staff' }, token: string) {
+  const users = readLocalUsers(token);
+  const email = body.email.trim().toLowerCase();
+  const existing = users.find((user) => user.email === email);
+  if (existing) throw new Error('A user with this email already exists');
+
+  const next = normalizeApiUser({
+    id: Math.max(0, ...users.map((user) => Number(user.id) || 0)) + 1,
+    auth_id: `local-${email}`,
+    name: body.name.trim(),
+    email,
+    role: body.role,
+    created_at: new Date().toISOString(),
+  });
+  const updated = [...users, next];
+  writeLocalUsers(updated);
+  return next;
+}
+
+function updateLocalUser(id: number, body: { name?: string; role?: 'admin' | 'staff' }, token: string) {
+  const users = readLocalUsers(token);
+  const current = users.find((user) => user.id === id);
+  if (!current) throw new Error('User not found');
+
+  const updatedUser = normalizeApiUser({
+    ...current,
+    ...(body.name ? { name: body.name.trim() } : {}),
+    ...(body.role ? { role: body.role } : {}),
+  });
+  writeLocalUsers(users.map((user) => user.id === id ? updatedUser : user));
+  return updatedUser;
+}
+
+function deleteLocalUser(id: number, token: string) {
+  const users = readLocalUsers(token);
+  const updated = users.filter((user) => user.id !== id);
+  writeLocalUsers(updated);
+}
+
 type GenerationProvider = 'openai' | 'gemini' | 'fallback' | 'none';
+type ImageGenerationStatus = 'none' | 'pending' | 'complete' | 'fallback';
 
 type GenerationProviders = {
   text: GenerationProvider;
@@ -459,42 +700,122 @@ function buildLocalAutoMarketingPrompt(body: {
   referenceImageUrl?: string;
 }) {
   const product = body.product;
-  const productName = product?.name?.trim() || 'the selected product';
-  const category = product?.category?.trim() || 'beauty';
+  const productName = product?.name?.trim() || 'beauty product';
+  const category = (product?.category?.trim() || 'beauty').toLowerCase();
   const price = Number(product?.price ?? 0);
   const description = product?.description?.trim();
-  const contentType = formatAutoPromptLabel(body.contentType);
   const tone = body.tone || 'fun';
   const hasReferenceImage = Boolean(body.referenceImageUrl);
-  const modeInstruction = body.outputMode === 'text'
-    ? 'Focus on a strong Facebook caption angle, emotional hook, concise benefit framing, and a clear shop-now CTA.'
-    : 'Create a clean 4:5 Facebook beauty poster concept with the product as the hero, premium styling, flattering lighting, and readable minimal text.';
-  const referenceInstruction = hasReferenceImage
-    ? 'Use the uploaded/reference image as the visual source of truth: preserve the actual product identity, packaging shape, label placement, and dominant product colors.'
-    : 'No reference image is provided, so base the creative direction only on the product name, category, price, and description.';
 
-  return [
-    `Create a ${tone} Facebook ${contentType} brief for ${productName}, a ${category} product${price > 0 ? ` priced at PHP ${price.toFixed(2)}` : ''}.`,
-    description ? `Product details: ${description}.` : '',
-    modeInstruction,
-    referenceInstruction,
-    'Keep the message premium, beauty-focused, conversion-oriented, and suitable for a Filipino audience. Do not invent product claims.',
-  ].filter(Boolean).join(' ');
+  // Tone → style map
+  const styleMap: Record<string, string> = {
+    fun:          'vibrant, playful, bright pastel tones, youthful energy',
+    professional: 'clean minimalist, luxury branding, muted neutrals, editorial',
+    romantic:     'soft bokeh, warm rose-gold hues, intimate lifestyle feel',
+    urgent:       'bold contrast, high-impact typography overlay, punchy red accent',
+  };
+  const styleDesc = styleMap[tone] ?? styleMap.fun;
+
+  // Category → background/setting
+  const bgMap: Record<string, string> = {
+    skincare:  'marble surface, soft white petals scattered around',
+    makeup:    'rose-gold vanity table, blush powder puffs as props',
+    haircare:  'dark glossy surface, golden silk fabric draped behind',
+    perfume:   'crystal glass table, shallow depth-of-field luxury setting',
+    beauty:    'frosted white surface, fresh flowers as accents',
+  };
+  const bg = Object.keys(bgMap).find((k) => category.includes(k))
+    ? bgMap[Object.keys(bgMap).find((k) => category.includes(k))!]
+    : 'clean white studio backdrop, soft diffused light';
+
+  // Build structured prompt
+  const parts = [
+    // Subject
+    `Professional product photography of ${productName}${description ? ` (${description.slice(0, 80)})` : ''}.`,
+    // Placement
+    hasReferenceImage
+      ? `Product is centered in foreground, use the reference image to match exact packaging, label colors, and product shape.`
+      : `Product is centered in foreground, ${bg}.`,
+    // Style & lighting
+    `Style: ${styleDesc}. Cinematic studio lighting with soft specular highlights on the product surface. Shallow depth of field.`,
+    // Composition
+    `Composition: 4:5 vertical Facebook ad format. Product occupies lower two-thirds. Clean negative space in upper third for brand name text overlay.`,
+    // Mood
+    `Mood: premium ${category} brand advertisement. Aspirational, high-conversion. No people, no hands.`,
+    // Price tag (optional)
+    price > 0 ? `Price point: PHP ${price.toFixed(2)} — position as an accessible luxury.` : '',
+    // Technical specs
+    `Photorealistic render, 4K quality, commercial product ad.`,
+  ];
+
+  return parts.filter(Boolean).join(' ');
 }
 
 export const api = {
-  // PRODUCTS
+  // PRODUCTS — go through Express API (pooled PG)
   async getProducts(token?: string) {
-    return getSupabaseProducts();
+    const res = await fetchWithTimeout(`${API_BASE}/products`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const rows = await res.json();
+    return (Array.isArray(rows) ? rows : []).map(normalizeProduct);
   },
 
-  // SALES
-  async getSales() {
-    return getSupabaseSales();
+  async createProduct(data: Record<string, unknown>, token?: string) {
+    const res = await fetch(`${API_BASE}/products`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(data),
+    });
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || payload.message || 'Failed to create product');
+    return normalizeProduct(payload);
   },
 
-  async getSaleById(id: number) {
-    return getSupabaseSaleById(id);
+  async updateProduct(id: number, data: Record<string, unknown>, token?: string) {
+    const res = await fetch(`${API_BASE}/products/${id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(data),
+    });
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || payload.message || 'Failed to update product');
+    return normalizeProduct(payload);
+  },
+
+  async deleteProduct(id: number, token?: string) {
+    const res = await fetch(`${API_BASE}/products/${id}`, {
+      method: 'DELETE',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || payload.message || 'Failed to delete product');
+    return payload;
+  },
+
+  // SALES — go through Express API (pooled PG)
+  async getSales(token?: string) {
+    const res = await fetchWithTimeout(`${API_BASE}/sales`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const payload = await res.json();
+    return Array.isArray(payload) ? payload : (payload?.data ?? []);
+  },
+
+  async getSaleById(id: number, token?: string) {
+    const res = await fetchWithTimeout(`${API_BASE}/sales/${id}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
   },
 
   async createSale(data: {
@@ -514,11 +835,15 @@ export const api = {
 
   // DASHBOARD
   async getDashboardSummary(start?: string, end?: string) {
-    return getSupabaseDashboardSummary(start, end);
+    const params = new URLSearchParams();
+    if (start) params.set('start', start);
+    if (end) params.set('end', end);
+    const query = params.toString();
+    return fetchJson(`${API_ROOT}/api/dashboard/summary${query ? `?${query}` : ''}`);
   },
 
   async getDashboardSalesRecords() {
-    return getSupabaseDashboardSalesRecords() as Promise<{
+    return fetchJson(`${API_ROOT}/api/dashboard/sales-records`) as Promise<{
       ok: boolean;
       data: Array<{
         id: string;
@@ -540,28 +865,7 @@ export const api = {
   },
 
   async getStaffTodaySales() {
-    const today = dateKey(new Date());
-    const records = (await getSupabaseDashboardSalesRecords()).data.filter((record) => record.date === today);
-    return {
-      ok: true,
-      todaySales: {
-        transactionCount: new Set(records.map((record) => record.saleId)).size,
-        unitsSold: records.reduce((sum, record) => sum + record.quantity, 0),
-        revenueTotal: records.reduce((sum, record) => sum + record.total, 0),
-        profitTotal: records.reduce((sum, record) => sum + record.profit, 0),
-        items: records.map((record) => ({
-          saleId: record.saleId,
-          productId: record.productId,
-          productName: record.productName,
-          category: record.category,
-          customerName: record.customerName,
-          qty: record.quantity,
-          lineTotal: record.total,
-          lineProfit: record.profit,
-        })),
-      },
-      message: null,
-    } as {
+    return fetchJson(`${API_ROOT}/api/staff/dashboard/today-sales`) as Promise<{
       ok: boolean;
       todaySales: {
         transactionCount: number;
@@ -580,22 +884,26 @@ export const api = {
         }>;
       };
       message?: string | null;
-    };
+    }>;
   },
 
   // AI CONTENT
   async getContent(status?: string, page = 1) {
-    return withSupabaseFallback(
-      async () => {
-        const params = new URLSearchParams({ page: String(page), limit: '20' });
-        if (status && status !== 'all') params.set('status', status);
-        const res = await fetch(`${API_BASE}/ai/contents?${params}`);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.message || 'Failed to fetch content');
-        return data;
-      },
-      () => getSupabaseContent(status, page)
-    );
+    const params = new URLSearchParams({ page: String(page), limit: '20' });
+    if (status && status !== 'all') params.set('status', status);
+    const res = await fetchWithTimeout(`${API_BASE}/ai/contents?${params}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || 'Failed to fetch content');
+    return data;
+  },
+
+  async getContentCount(status?: string) {
+    const params = new URLSearchParams({ page: '1', limit: '100' });
+    if (status && status !== 'all') params.set('status', status);
+    const res = await fetchWithTimeout(`${API_BASE}/ai/contents?${params}`, undefined, FAST_OPTIONAL_TIMEOUT_MS);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.message || 'Failed to count content');
+    return Number(data?.total ?? (Array.isArray(data?.data) ? data.data.length : 0));
   },
 
   async createContent(body: {
@@ -659,6 +967,8 @@ export const api = {
     platform: string;
     outputMode: string;
     referenceImageUrl?: string;
+    asyncImage?: boolean;
+    promptMode?: 'auto' | 'custom';
   }) {
     const res = await fetch(`${API_ROOT}/api/ai/generate`, {
       method: 'POST',
@@ -684,7 +994,34 @@ export const api = {
         promptProvider: GenerationProvider | null;
         outputMode: string;
         providers: GenerationProviders;
+        imageGenerationStatus?: ImageGenerationStatus;
         status: string;
+      };
+      message: string | null;
+    };
+  },
+
+  async getAiContent(id: number) {
+    const res = await fetchWithTimeout(`${API_BASE}/ai/contents/${id}`, undefined, FAST_OPTIONAL_TIMEOUT_MS);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || 'Failed to fetch content');
+    return data as {
+      ok: boolean;
+      data: {
+        id: number;
+        title: string;
+        prompt: string;
+        output: string;
+        platform: string;
+        hashtags: string;
+        outputMode: string;
+        referenceImageUrl: string | null;
+        generatedImageUrl: string | null;
+        status: string;
+        createdAt: string;
+        approvedAt: string | null;
+        scheduledAt: string | null;
+        publishedAt: string | null;
       };
       message: string | null;
     };
@@ -766,7 +1103,15 @@ export const api = {
       }>;
       message: string | null;
     }> {
-    return getSupabaseAiContentFeed();
+    const res = await fetchWithTimeout(`${API_BASE}/ai/contents?page=1&limit=50`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || 'Failed to fetch content feed');
+    // Express returns { data: [], total, page } — wrap to match expected shape
+    return {
+      ok: true,
+      data: Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []),
+      message: null,
+    };
   },
 
   async scheduleContent(id: number, scheduledAt: string) {
@@ -859,7 +1204,7 @@ export const api = {
   },
 
   async getAnalyticsSummary() {
-    return { ok: true, data: (await getSupabaseAnalytics()).summary, message: null } as {
+    return fetchJson(`${API_BASE}/analytics/summary`) as Promise<{
       ok: boolean;
       data: {
         likes: number;
@@ -871,11 +1216,11 @@ export const api = {
         lastSyncedAt: string | null;
       };
       message: string | null;
-    };
+    }>;
   },
 
   async getAnalyticsTrend(days = 7) {
-    return { ok: true, data: (await getSupabaseAnalytics(days)).trend, message: null } as {
+    return fetchJson(`${API_BASE}/analytics/trend?days=${encodeURIComponent(String(days))}`) as Promise<{
       ok: boolean;
       data: Array<{
         date: string;
@@ -887,11 +1232,11 @@ export const api = {
         engagementRate: number;
       }>;
       message: string | null;
-    };
+    }>;
   },
 
   async getAnalyticsPosts() {
-    return { ok: true, data: (await getSupabaseAnalytics()).posts, message: null } as {
+    return fetchJson(`${API_BASE}/analytics/posts`) as Promise<{
       ok: boolean;
       data: Array<{
         id: number;
@@ -909,7 +1254,7 @@ export const api = {
         engagementRate: number;
       }>;
       message: string | null;
-    };
+    }>;
   },
 
   // USERS
@@ -963,59 +1308,90 @@ export const api = {
   },
 
   async getUsers(token: string) {
-    const res = await fetch(`${API_BASE}/users`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to load users');
-    return data as { data: ApiUser[] };
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/users`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load users');
+      return { data: (Array.isArray(data?.data) ? data.data : []).map(normalizeApiUser) };
+    } catch (error) {
+      console.warn('[api] users endpoint unavailable, using local user fallback', error);
+      return { data: readLocalUsers(token) };
+    }
   },
 
   async createUser(
     body: { name: string; email: string; password: string; role: 'admin' | 'staff' },
     token: string
   ) {
-    const res = await fetch(`${API_BASE}/users`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to create user');
-    return data as { data: ApiUser };
+    let allowLocalFallback = true;
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/users`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      allowLocalFallback = res.status >= 500;
+      if (!res.ok) throw new Error(data.error || 'Failed to create user');
+      return { data: normalizeApiUser(data.data) };
+    } catch (error) {
+      if (!allowLocalFallback) throw error;
+      console.warn('[api] create user endpoint unavailable, using local user fallback', error);
+      return { data: createLocalUser(body, token) };
+    }
   },
 
   async updateUser(id: number, body: { name?: string; role?: 'admin' | 'staff' }, token: string) {
-    const res = await fetch(`${API_BASE}/users/${id}`, {
-      method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to update user');
-    return data as { data: ApiUser };
+    let allowLocalFallback = true;
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/users/${id}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      allowLocalFallback = res.status >= 500;
+      if (!res.ok) throw new Error(data.error || 'Failed to update user');
+      return { data: normalizeApiUser(data.data) };
+    } catch (error) {
+      if (!allowLocalFallback) throw error;
+      console.warn('[api] update user endpoint unavailable, using local user fallback', error);
+      return { data: updateLocalUser(id, body, token) };
+    }
   },
 
   async deleteUser(id: number, token: string) {
-    const res = await fetch(`${API_BASE}/users/${id}`, {
-      method: 'DELETE',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to delete user');
-    return data as { success: boolean };
+    let allowLocalFallback = true;
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/users/${id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const data = await res.json();
+      allowLocalFallback = res.status >= 500;
+      if (!res.ok) throw new Error(data.error || 'Failed to delete user');
+      deleteLocalUser(id, token);
+      return data as { success: boolean };
+    } catch (error) {
+      if (!allowLocalFallback) throw error;
+      console.warn('[api] delete user endpoint unavailable, using local user fallback', error);
+      deleteLocalUser(id, token);
+      return { success: true };
+    }
   },
 
   // CAMPAIGNS
@@ -1095,15 +1471,10 @@ export const api = {
 
   // SCHEDULED POSTS
   getScheduledPosts: async () => {
-    return withSupabaseFallback(
-      async () => {
-        const res = await fetch(`${API_BASE}/scheduled-posts`);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Failed to load scheduled posts');
-        return data;
-      },
-      getSupabaseScheduledPosts
-    );
+    const res = await fetchWithTimeout(`${API_BASE}/scheduled-posts`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load scheduled posts');
+    return data;
   },
 
   createScheduledPost: async (data: {
@@ -1140,22 +1511,4 @@ export const api = {
     return payload;
   },
 
-  // FORECASTS
-  generateForecasts: async () => {
-    const res = await fetch(`${API_BASE}/forecasts/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    return res.json();
-  },
-
-  getForecasts: async () => {
-    const res = await fetch(`${API_BASE}/forecasts`);
-    return res.json();
-  },
-
-  getForecastAlerts: async () => {
-    const res = await fetch(`${API_BASE}/forecasts/alerts`);
-    return res.json();
-  },
 };
