@@ -5,7 +5,6 @@ import { analyticsRouter } from './routes/analytics';
 import campaignsRouter from './routes/campaigns';
 import { dashboardRouter } from './routes/dashboard';
 import { facebookRouter } from './routes/facebook';
-import forecastsRouter from './routes/forecasts';
 import { healthRouter } from './routes/health';
 import { errorHandler } from './middleware/errorHandler';
 import { productsRouter } from './routes/products';
@@ -22,7 +21,9 @@ export function createApp() {
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS', 'PUT'],
     allowedHeaders: ['Content-Type', 'Authorization', 'apikey', 'x-client-info', 'x-user-role'],
   }));
-  app.use(express.json({ limit: "10mb" }));
+  app.use(express.json({ limit: '25mb' }));
+  app.use(express.urlencoded({ limit: '25mb', extended: true }));
+
 
   app.use(healthRouter);
   // `productsRouter` already declares `/api/products` paths internally.
@@ -30,7 +31,6 @@ export function createApp() {
   app.use("/api/sales", salesRouter);
   // `dashboardRouter` already declares absolute dashboard paths internally.
   app.use(dashboardRouter);
-  app.use("/api/forecasts", forecastsRouter);
   app.use("/api/ai", aiRouter);
   app.use("/api/campaigns", campaignsRouter);
   app.use("/api/scheduled-posts", scheduledPostsRouter);

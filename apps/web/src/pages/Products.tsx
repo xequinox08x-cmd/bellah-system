@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
-import { Plus, Search, Edit2, Trash2, AlertTriangle, X, Package, DollarSign, BarChart2, Camera } from 'lucide-react';
+import { useLocation } from 'react-router';
+import { Plus, Search, Edit2, Trash2, AlertTriangle, X, Package, DollarSign, BarChart2 } from 'lucide-react';
 import { useAuth } from '../components/AuthContext';
 import { api } from '../lib/api';
 import { toast } from 'sonner';
@@ -54,6 +55,7 @@ const ProductForm = ProductFormModal;
 
 export default function Products() {
   const { user, session } = useAuth();
+  const location = useLocation();
   const token = session?.access_token ?? '';
   const isAdmin = user?.role === 'admin';
 
@@ -66,6 +68,8 @@ export default function Products() {
   const [stockFilter, setStockFilter] = useState('All');
   const [showForm, setShowForm] = useState(false);
   const [editProduct, setEditProduct] = useState<Product | null>(null);
+  // True when filter was pre-applied via dashboard navigation
+  const [filterFromDashboard, setFilterFromDashboard] = useState(false);
 
   // ── Load ──────────────────────────────────────────────────────────────────
   const load = async () => {
@@ -94,6 +98,15 @@ export default function Products() {
   // Only fetch once on mount — Supabase anon key is sufficient for products.
   // Avoid re-fetching every time the token string reference changes.
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Apply stock filter pre-set from dashboard navigation.
+  useEffect(() => {
+    const navFilter = (location.state as any)?.stockFilter;
+    if (navFilter === 'Low' || navFilter === 'Out') {
+      setStockFilter(navFilter);
+      setFilterFromDashboard(true);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── KPIs ──────────────────────────────────────────────────────────────────
   const kpis = useMemo(() => {
@@ -189,11 +202,35 @@ export default function Products() {
         ))}
       </div>
 
+      {/* Dashboard filter banner */}
+      {filterFromDashboard && stockFilter !== 'All' && (
+        <div className="flex items-center justify-between gap-2.5 p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>Showing <strong>{stockFilter === 'Low' ? 'Low Stock' : 'Out of Stock'}</strong> items — navigated from Dashboard</span>
+          </div>
+          <button
+            onClick={() => { setStockFilter('All'); setFilterFromDashboard(false); }}
+            className="flex items-center gap-1 text-blue-500 hover:text-blue-700 transition-colors text-xs shrink-0"
+          >
+            <X className="w-3.5 h-3.5" /> Clear filter
+          </button>
+        </div>
+      )}
+
       {/* Low stock banner */}
       {kpis.lowStockCount > 0 && (
         <div className="flex items-center gap-2.5 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700">
           <AlertTriangle className="w-4 h-4 shrink-0" />
-          <span>{kpis.lowStockCount} product(s) are running low on stock and need restocking.</span>
+          <span>⚠️ <strong>{kpis.lowStockCount}</strong> product{kpis.lowStockCount !== 1 ? 's' : ''} running low on stock and need restocking.</span>
+        </div>
+      )}
+
+      {/* Out of stock banner */}
+      {kpis.outOfStock > 0 && (
+        <div className="flex items-center gap-2.5 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span>❌ <strong>{kpis.outOfStock}</strong> product{kpis.outOfStock !== 1 ? 's' : ''} are out of stock.</span>
         </div>
       )}
 

@@ -30,15 +30,15 @@ async function getDueScheduledContentIds(limit: number) {
 
     const result = await pool.query<{ id: number }>(
         `
-    SELECT id
-    FROM ai_contents
-    WHERE COALESCE(platform, $1) = $1
-      AND status = 'scheduled'
-      AND scheduled_at IS NOT NULL
-      AND scheduled_at <= NOW()
-    ORDER BY scheduled_at ASC, id ASC
-    LIMIT $2
-    `,
+        SELECT id
+        FROM ai_contents
+        WHERE COALESCE(platform, $1) = $1
+          AND status = 'scheduled'
+          AND scheduled_at IS NOT NULL
+          AND scheduled_at <= NOW()
+        ORDER BY scheduled_at ASC, id ASC
+        LIMIT $2
+        `,
         [FACEBOOK_PLATFORM, limit]
     );
 
@@ -50,12 +50,12 @@ async function markScheduledContentFailed(contentId: number, errorMessage: strin
 
     await pool.query(
         `
-        UPDATE ai_contents
-        SET
-          status = 'failed',
-          last_publish_error = $2
-        WHERE id = $1
-        `,
+            UPDATE ai_contents
+            SET
+              status = 'failed',
+              last_publish_error = $2
+            WHERE id = $1
+            `,
         [contentId, errorMessage]
     );
 }

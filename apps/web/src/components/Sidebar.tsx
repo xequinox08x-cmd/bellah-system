@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { NavLink, useLocation } from 'react-router';
 import {
   LayoutDashboard, Package, ShoppingCart, Sparkles,
@@ -8,7 +8,6 @@ import {
 import { useAuth } from './AuthContext';
 import { BrandLogo } from './BrandLogo';
 import { toast } from 'sonner';
-import { api } from '../lib/api';
 
 // ─── Logo ─────────────────────────────────────────────────────────────────────
 
@@ -67,7 +66,7 @@ function NavItem({
 }
 
 // ─── Sidebar ───────────────────────────────────────────────────────────────────
-export function Sidebar() {
+export function Sidebar({ mobileOpen, onMobileClose }: { mobileOpen?: boolean; onMobileClose?: () => void }) {
   const { user, logout } = useAuth();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState<boolean>(() =>
@@ -78,13 +77,7 @@ export function Sidebar() {
     p => location.pathname.startsWith(p)
   );
   const [marketingOpen, setMarketingOpen] = useState(isOnMarketing);
-  const [approvalDraftCount, setApprovalDraftCount] = useState(0);
   const [signingOut, setSigningOut] = useState(false);
-
-  // Module-level cache so navigating between pages doesn't re-fetch
-  const draftCountCache = useRef<{ count: number; ts: number } | null>(null);
-  const DRAFT_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-
   useEffect(() => {
     localStorage.setItem('bb_sidebar_collapsed', String(collapsed));
   }, [collapsed]);
@@ -93,47 +86,13 @@ export function Sidebar() {
     if (isOnMarketing) setMarketingOpen(true);
   }, [location.pathname, isOnMarketing]);
 
+  // Close mobile drawer on navigation
   useEffect(() => {
-    let cancelled = false;
+    onMobileClose?.();
+  }, [location.pathname]);
 
-    const loadApprovalCount = async (force = false) => {
-      if (user?.role !== 'admin') {
-        setApprovalDraftCount(0);
-        return;
-      }
-
-      // Use cache if fresh and not forced
-      const cache = draftCountCache.current;
-      if (!force && cache && Date.now() - cache.ts < DRAFT_CACHE_TTL) {
-        setApprovalDraftCount(cache.count);
-        return;
-      }
-
-      try {
-        const res = await api.getContent();
-        if (cancelled) return;
-        const items = Array.isArray(res?.data) ? res.data : [];
-        const count = items.filter((item: { status?: string }) => item.status === 'draft').length;
-        draftCountCache.current = { count, ts: Date.now() };
-        setApprovalDraftCount(count);
-      } catch {
-        if (!cancelled) setApprovalDraftCount(draftCountCache.current?.count ?? 0);
-      }
-    };
-
-    loadApprovalCount();
-
-    // Only re-fetch when content actually changes, not on every navigation
-    const handleContentUpdated = () => { loadApprovalCount(true); };
-    window.addEventListener('ai-content-updated', handleContentUpdated);
-    return () => {
-      cancelled = true;
-      window.removeEventListener('ai-content-updated', handleContentUpdated);
-    };
-  }, [user?.role]); // ← removed location.pathname to stop per-navigation fetches
 
   const isAdmin = user?.role === 'admin';
-  const draftCount = approvalDraftCount;
 
   const handleLogout = async () => {
     if (signingOut) return;
@@ -157,10 +116,10 @@ export function Sidebar() {
     });
   };
 
-  return (
+  const sidebarContent = (
     <aside
       className="bg-white border-r border-[#E5E7EB] flex flex-col h-full relative shrink-0 sidebar-transition"
-      style={{ width: collapsed ? 64 : 232 }}
+      style={{ width: collapsed && !mobileOpen ? 64 : 232 }}
     >
       {/* ── Brand Header ──────────────────────────────────────────────── */}
       <div
@@ -240,11 +199,6 @@ export function Sidebar() {
                 {isAdmin && (
                   <NavLink to="/approvals" className={subNavClass}>
                     Content Approvals
-                    {draftCount > 0 && (
-                      <span className="ml-auto text-[9px] px-1.5 py-0.5 bg-[#EC4899] text-white rounded-full shrink-0">
-                        {draftCount}
-                      </span>
-                    )}
                   </NavLink>
                 )}
                 <NavLink to="/scheduling" className={subNavClass}>Scheduling</NavLink>
@@ -260,9 +214,6 @@ export function Sidebar() {
               title="Marketing"
             >
               <Sparkles className="w-4 h-4 shrink-0" />
-              {draftCount > 0 && (
-                <span className="absolute top-1 right-1 w-2 h-2 bg-[#EC4899] rounded-full" />
-              )}
             </NavLink>
             <div className="pointer-events-none absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2 py-1 bg-[#111827] text-white text-xs rounded-md opacity-0 group-hover/nav:opacity-100 transition-opacity whitespace-nowrap z-50 shadow-lg">
               Marketing
@@ -338,5 +289,24 @@ export function Sidebar() {
         </div>
       </div>
     </aside>
+  );
+
+  return (
+    <>
+      {/* Desktop sidebar */}
+      <div className="hidden md:block">
+        {sidebarContent}
+      </div>
+
+      {/* Mobile overlay */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-40 md:hidden">
+          <div className="absolute inset-0 bg-black/50" onClick={onMobileClose} />
+          <div className="relative z-50 h-full w-[260px] shadow-2xl animate-slide-in-left">
+            {sidebarContent}
+          </div>
+        </div>
+      )}
+    </>
   );
 }

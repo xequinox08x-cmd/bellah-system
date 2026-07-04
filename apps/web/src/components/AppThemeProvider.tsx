@@ -105,9 +105,18 @@ export const APP_THEME_PALETTES: AppThemePalette[] = [
 ];
 
 type AppThemeContextValue = {
+    /** The currently committed (applied) palette. */
     palette: AppThemePalette;
+    /** The currently committed palette ID (applied to DOM + persisted). */
     paletteId: AppThemePaletteId;
-    setPaletteId: (paletteId: AppThemePaletteId) => void;
+    /** Preview palette ID — used only in the Settings UI; does NOT apply to DOM. */
+    previewPaletteId: AppThemePaletteId;
+    /** Update the preview selection without applying to DOM. */
+    setPreviewPaletteId: (id: AppThemePaletteId) => void;
+    /** Apply and persist the given (or current preview) palette ID. */
+    commitPalette: (id?: AppThemePaletteId) => void;
+    /** @deprecated Use commitPalette. Kept for backward compatibility. */
+    setPaletteId: (id: AppThemePaletteId) => void;
 };
 
 const AppThemeContext = createContext<AppThemeContextValue | null>(null);
@@ -166,22 +175,36 @@ function getInitialPaletteId(): AppThemePaletteId {
 }
 
 export function AppThemeProvider({ children }: { children: ReactNode }) {
-    const [paletteId, setPaletteId] = useState<AppThemePaletteId>(getInitialPaletteId);
+    // committedPaletteId is the one actually applied to the DOM and persisted.
+    const [committedPaletteId, setCommittedPaletteId] = useState<AppThemePaletteId>(getInitialPaletteId);
+    // previewPaletteId lives only in Settings — it does NOT trigger DOM changes.
+    const [previewPaletteId, setPreviewPaletteId] = useState<AppThemePaletteId>(getInitialPaletteId);
 
+    // Apply CSS vars + persist only when the committed palette changes.
     useEffect(() => {
-        const palette = getPaletteById(paletteId);
+        const palette = getPaletteById(committedPaletteId);
         applyPalette(palette);
-        window.localStorage.setItem(STORAGE_KEY, paletteId);
-    }, [paletteId]);
+        window.localStorage.setItem(STORAGE_KEY, committedPaletteId);
+    }, [committedPaletteId]);
 
     const value = useMemo<AppThemeContextValue>(() => {
-        const palette = getPaletteById(paletteId);
+        const palette = getPaletteById(committedPaletteId);
+
+        const commitPalette = (id?: AppThemePaletteId) => {
+            const next = id ?? previewPaletteId;
+            setCommittedPaletteId(next);
+            setPreviewPaletteId(next); // keep preview in sync after commit
+        };
+
         return {
             palette,
-            paletteId,
-            setPaletteId,
+            paletteId: committedPaletteId,
+            previewPaletteId,
+            setPreviewPaletteId,
+            commitPalette,
+            setPaletteId: commitPalette, // backward compat
         };
-    }, [paletteId]);
+    }, [committedPaletteId, previewPaletteId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     return (
         <NextThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>

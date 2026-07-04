@@ -22,6 +22,54 @@ productsRouter.get('/api/products', async (_req, res) => {
   }
 });
 
+// POST /api/products/upload-image
+// Accepts { base64, filename } — uses service role to bypass bucket RLS
+productsRouter.post('/api/products/upload-image', async (req, res) => {
+  try {
+    const { base64, filename } = req.body as { base64?: string; filename?: string };
+    if (!base64 || !filename) {
+      return res.status(400).json({ error: 'base64 and filename are required' });
+    }
+
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!supabaseUrl || !serviceKey) {
+      return res.status(500).json({ error: 'Storage not configured' });
+    }
+
+    // Detect mime type from base64 prefix (data:image/png;base64,...)
+    const mimeMatch = base64.match(/^data:([^;]+);base64,/);
+    const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+    const cleanBase64 = base64.replace(/^data:[^;]+;base64,/, '');
+    const buffer = Buffer.from(cleanBase64, 'base64');
+
+    const ext = filename.split('.').pop()?.toLowerCase() || 'jpg';
+    const path = `products/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+
+    const uploadRes = await fetch(`${supabaseUrl}/storage/v1/object/product-images/${path}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${serviceKey}`,
+        apikey: serviceKey,
+        'Content-Type': mimeType,
+        'x-upsert': 'false',
+      },
+      body: buffer,
+    });
+
+    if (!uploadRes.ok) {
+      const errText = await uploadRes.text();
+      return res.status(500).json({ error: `Upload failed: ${errText}` });
+    }
+
+    const publicUrl = `${supabaseUrl}/storage/v1/object/public/product-images/${path}`;
+    return res.json({ ok: true, url: publicUrl });
+  } catch (err: any) {
+    console.error('[POST /api/products/upload-image]', err);
+    return res.status(500).json({ error: err.message || 'Upload failed' });
+  }
+});
+
 // POST /api/products
 productsRouter.post('/api/products', async (req, res) => {
   try {
@@ -60,6 +108,7 @@ productsRouter.post('/api/products', async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
+
 
 // PUT /api/products/:id
 productsRouter.put('/api/products/:id', async (req, res) => {
@@ -129,10 +178,10 @@ productsRouter.delete('/api/products/:id', async (req, res) => {
     // Product is referenced by sale_items — cannot hard-delete
     if (err.code === '23503') {
       return res.status(409).json({
-        error: 'Cannot delete this product because it has existing sales records. Archive it instead.',
+        error: 'Cannot delete this product because it has existing sales records.',
       });
     }
     console.error('[DELETE /api/products/:id]', err);
     res.status(500).json({ error: 'Server error' });
   }
-});
+});

@@ -12,7 +12,7 @@ export default function App() {
         <StoreProvider>
           <div className="theme-compat min-h-screen bg-background text-foreground">
             <RouterProvider router={router} />
-            <Toaster position="top-right" richColors />
+            <Toaster position="bottom-right" richColors closeButton />
           </div>
         </StoreProvider>
       </AuthProvider>

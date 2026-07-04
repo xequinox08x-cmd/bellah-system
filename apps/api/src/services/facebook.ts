@@ -1,15 +1,41 @@
 import type { PoolClient } from "pg";
 import { ensureAiAnalyticsSchema } from "../db/aiAnalyticsSchema";
 import { pool } from "../db/pool";
+import { supabaseRest } from "./supabaseAdmin";
 
 const FACEBOOK_PLATFORM = "facebook";
 const DEFAULT_GRAPH_API_VERSION = "v25.0";
 const TRACKED_ANALYTICS_STATUS = "published";
 const PUBLISHABLE_CONTENT_STATUSES = new Set(["approved", "scheduled", TRACKED_ANALYTICS_STATUS]);
+const FACEBOOK_OPTIONAL_TIMEOUT_MS = 2_500;
 const FACEBOOK_POST_FIELDS =
     "id,message,created_time,permalink_url,full_picture,attachments{media_type,media,subattachments},likes.summary(true),comments.summary(true),shares";
 const FACEBOOK_PHOTO_FIELDS =
     "id,name,created_time,permalink_url,images,likes.summary(true),comments.summary(true)";
+const PUBLISH_CONTENT_COLUMNS = [
+    "id",
+    "title",
+    "content",
+    "hashtags",
+    "generated_image_url",
+    "platform",
+    "status",
+    "approved_at",
+    "published_at",
+    "facebook_post_id",
+    "facebook_page_id",
+    "facebook_permalink_url",
+].join(",");
+const PUBLISHED_SNAPSHOT_COLUMNS = [
+    "id",
+    "title",
+    "status",
+    "approved_at",
+    "published_at",
+    "facebook_post_id",
+    "facebook_page_id",
+    "facebook_permalink_url",
+].join(",");
 
 // Analytics scope is intentionally limited to records stored in `ai_contents`.
 // The `ai_contents.id` row is the source of truth for tracking, and any record
@@ -257,11 +283,36 @@ function logFacebookPublish(message: string, details: Record<string, unknown>) {
     console.info(`[facebook.publish] ${message}`, details);
 }
 
+function contentPath(params: Record<string, string | number>) {
+    const search = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => search.set(key, String(value)));
+    return `/ai_contents?${search.toString()}`;
+}
+
+function shouldFallbackToSupabaseRest(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error || "");
+    return /password authentication failed|connect|connection|timeout|timed out|database|ECONN|ENOTFOUND|ETIMEDOUT/i.test(message);
+}
+
+function withOptionalTimeout<T>(operation: Promise<T>, label = "Optional Facebook store request timed out") {
+    return Promise.race([
+        operation,
+        new Promise<T>((_, reject) => {
+            setTimeout(() => reject(new Error(label)), FACEBOOK_OPTIONAL_TIMEOUT_MS);
+        }),
+    ]);
+}
+
+function getGraphApiVersion() {
+    const rawVersion = process.env.FACEBOOK_GRAPH_API_VERSION?.trim() || DEFAULT_GRAPH_API_VERSION;
+    return rawVersion.match(/^v\d+\.\d+/)?.[0] ?? DEFAULT_GRAPH_API_VERSION;
+}
+
 function getFacebookConfig() {
     return {
         pageId: process.env.FACEBOOK_PAGE_ID?.trim() ?? "",
         accessToken: process.env.FACEBOOK_PAGE_ACCESS_TOKEN?.trim() ?? "",
-        graphApiVersion: process.env.FACEBOOK_GRAPH_API_VERSION?.trim() || DEFAULT_GRAPH_API_VERSION,
+        graphApiVersion: getGraphApiVersion(),
         tokenUpdatedAt: process.env.FACEBOOK_TOKEN_UPDATED_AT?.trim() ?? "",
         tokenExpiresAt: process.env.FACEBOOK_TOKEN_EXPIRES_AT?.trim() ?? "",
     };
@@ -545,6 +596,37 @@ async function insertMetricsSnapshot(client: PoolClient, input: InsertMetricsSna
     );
 }
 
+async function insertMetricsSnapshotRest(input: InsertMetricsSnapshotInput) {
+    const likesCount = toNumber(input.likesCount);
+    const commentsCount = toNumber(input.commentsCount);
+    const sharesCount = toNumber(input.sharesCount);
+    const reachCount = toNumber(input.reachCount);
+    const engagementRate = calculateEngagementRate(likesCount, commentsCount, sharesCount, reachCount);
+    const now = new Date().toISOString();
+
+    await supabaseRest<unknown[]>(
+        "/ai_content_metrics",
+        {
+            method: "POST",
+            body: JSON.stringify({
+                ai_content_id: input.aiContentId,
+                facebook_post_id: input.facebookPostId,
+                likes_count: likesCount,
+                comments_count: commentsCount,
+                shares_count: sharesCount,
+                reach_count: reachCount,
+                likes: likesCount,
+                comments: commentsCount,
+                shares: sharesCount,
+                reach: reachCount,
+                engagement_rate: engagementRate,
+                fetched_at: now,
+                snapshot_at: now,
+            }),
+        }
+    );
+}
+
 function normalizePost(post: FacebookPostResponse): NormalizedFacebookPost {
     return {
         id: post.id,
@@ -607,6 +689,18 @@ async function getPublishedContentSnapshot(aiContentId: number) {
     return result.rows[0];
 }
 
+async function getPublishedContentSnapshotRest(aiContentId: number) {
+    const rows = await supabaseRest<PublishedContentSnapshotRow[]>(
+        contentPath({ select: PUBLISHED_SNAPSHOT_COLUMNS, id: `eq.${aiContentId}`, limit: 1 })
+    );
+
+    if (!rows.length) {
+        throw new FacebookNotFoundError("Content not found");
+    }
+
+    return rows[0];
+}
+
 async function markContentPublished(
     client: PoolClient,
     input: {
@@ -642,6 +736,34 @@ async function markContentPublished(
     }
 
     return result.rows[0];
+}
+
+async function markContentPublishedRest(input: {
+    contentId: number;
+    facebookPostId: string;
+    facebookPageId: string | null;
+    facebookPermalinkUrl?: string | null;
+}) {
+    const rows = await supabaseRest<PublishedContentSnapshotRow[]>(
+        contentPath({ select: PUBLISHED_SNAPSHOT_COLUMNS, id: `eq.${input.contentId}` }),
+        {
+            method: "PATCH",
+            headers: { Prefer: "return=representation" },
+            body: JSON.stringify({
+                facebook_post_id: input.facebookPostId,
+                facebook_page_id: input.facebookPageId,
+                ...(input.facebookPermalinkUrl ? { facebook_permalink_url: input.facebookPermalinkUrl } : {}),
+                status: TRACKED_ANALYTICS_STATUS,
+                published_at: new Date().toISOString(),
+            }),
+        }
+    );
+
+    if (!rows.length) {
+        throw new FacebookNotFoundError("Content not found");
+    }
+
+    return rows[0];
 }
 
 async function getContentForPublish(client: PoolClient, aiContentId: number) {
@@ -687,6 +809,31 @@ async function getContentForPublish(client: PoolClient, aiContentId: number) {
     return row;
 }
 
+async function getContentForPublishRest(aiContentId: number) {
+    const rows = await supabaseRest<PublishContentRow[]>(
+        contentPath({ select: PUBLISH_CONTENT_COLUMNS, id: `eq.${aiContentId}`, limit: 1 })
+    );
+
+    if (!rows.length) {
+        throw new FacebookNotFoundError("Content not found");
+    }
+
+    const row = rows[0];
+
+    if ((row.platform ?? FACEBOOK_PLATFORM) !== FACEBOOK_PLATFORM) {
+        throw new FacebookServiceError("Only Facebook content can be published", 400);
+    }
+
+    if (!PUBLISHABLE_CONTENT_STATUSES.has(row.status)) {
+        throw new FacebookServiceError(
+            "Content must be approved or scheduled before it can be published to Facebook.",
+            400
+        );
+    }
+
+    return row;
+}
+
 async function getContentForSync(client: PoolClient, aiContentId: number) {
     const result = await client.query<ContentRow>(
         `
@@ -702,6 +849,30 @@ async function getContentForSync(client: PoolClient, aiContentId: number) {
     }
 
     const row = result.rows[0];
+    if ((row.platform ?? FACEBOOK_PLATFORM) !== FACEBOOK_PLATFORM) {
+        throw new FacebookServiceError("Only Facebook content can be synced", 400);
+    }
+
+    if (!row.facebook_post_id) {
+        throw new FacebookServiceError(
+            "This content does not have a facebook_post_id yet. Publish the post in Facebook and save the post ID before syncing metrics.",
+            400
+        );
+    }
+
+    return row;
+}
+
+async function getContentForSyncRest(aiContentId: number) {
+    const rows = await supabaseRest<ContentRow[]>(
+        contentPath({ select: "id,platform,facebook_post_id", id: `eq.${aiContentId}`, limit: 1 })
+    );
+
+    if (!rows.length) {
+        throw new FacebookNotFoundError("Content not found");
+    }
+
+    const row = rows[0];
     if ((row.platform ?? FACEBOOK_PLATFORM) !== FACEBOOK_PLATFORM) {
         throw new FacebookServiceError("Only Facebook content can be synced", 400);
     }
@@ -735,6 +906,25 @@ async function getTrackedContentRows() {
         id: Number(row.id),
         facebook_post_id: String(row.facebook_post_id),
     }));
+}
+
+async function getTrackedContentRowsRest() {
+    const rows = await supabaseRest<TrackedContentRow[]>(
+        contentPath({
+            select: "id,facebook_post_id",
+            or: `(platform.is.null,platform.eq.${FACEBOOK_PLATFORM})`,
+            facebook_post_id: "not.is.null",
+            order: "published_at.desc",
+            limit: 500,
+        })
+    );
+
+    return rows
+        .filter((row) => row.facebook_post_id)
+        .map((row) => ({
+            id: Number(row.id),
+            facebook_post_id: String(row.facebook_post_id),
+        }));
 }
 
 export async function getPagePosts() {
@@ -775,7 +965,7 @@ async function publishFacebookPost(
     hashtags: string | null,
     generatedImageUrl: string | null
 ) {
-    if (!generatedImageUrl) {
+    const publishTextPost = async () => {
         const message = buildFacebookFeedMessage(content, hashtags);
         const publishResponse = await graphPost<FacebookPublishResponse>(`${pageId}/feed`, { message });
         const facebookPostId = normalizeOptionalString(publishResponse.post_id) || normalizeOptionalString(publishResponse.id);
@@ -788,17 +978,50 @@ async function publishFacebookPost(
             facebookPostId,
             usedImage: false,
         };
+    };
+
+    if (!generatedImageUrl) {
+        return publishTextPost();
     }
 
-    const imagePayload = toFacebookImagePayload(generatedImageUrl);
     const caption = buildFacebookPhotoCaption(content, hashtags);
 
-    if (imagePayload.kind === "remote") {
-        const publishResponse = await graphPost<FacebookPublishResponse>(`${pageId}/photos`, {
-            url: imagePayload.url,
-            caption,
-            published: "true",
-        });
+    try {
+        const imagePayload = toFacebookImagePayload(generatedImageUrl);
+
+        if (imagePayload.kind === "remote") {
+            const publishResponse = await graphPost<FacebookPublishResponse>(`${pageId}/photos`, {
+                url: imagePayload.url,
+                caption,
+                published: "true",
+            });
+
+            const facebookPostId =
+                normalizeOptionalString(publishResponse.post_id) ||
+                (publishResponse.id ? await resolvePublishedStoryIdFromMedia(publishResponse.id) : null);
+
+            if (!facebookPostId) {
+                throw new FacebookServiceError("Facebook did not return a post id for the published image content.", 502);
+            }
+
+            return {
+                facebookPostId,
+                usedImage: true,
+            };
+        }
+
+        const form = new FormData();
+        if (caption) {
+            form.set("caption", caption);
+        }
+        form.set("published", "true");
+
+        const imageBuffer = Buffer.from(imagePayload.data, "base64");
+        const extension = imagePayload.mimeType.split("/")[1] || "png";
+        const blob = new Blob([imageBuffer], { type: imagePayload.mimeType });
+        form.set("source", blob, `generated-post.${extension}`);
+
+        const publishResponse = await graphPostMultipart<FacebookPublishResponse>(`${pageId}/photos`, form);
 
         const facebookPostId =
             normalizeOptionalString(publishResponse.post_id) ||
@@ -812,32 +1035,17 @@ async function publishFacebookPost(
             facebookPostId,
             usedImage: true,
         };
+    } catch (error) {
+        if (error instanceof FacebookAuthError || error instanceof FacebookConfigurationError) {
+            throw error;
+        }
+
+        console.warn("[facebook.publish] image publish failed, falling back to text post", {
+            message: error instanceof Error ? error.message : "Failed to publish image content",
+        });
+
+        return publishTextPost();
     }
-
-    const form = new FormData();
-    if (caption) {
-        form.set("caption", caption);
-    }
-    form.set("published", "true");
-
-    const imageBuffer = Buffer.from(imagePayload.data, "base64");
-    const extension = imagePayload.mimeType.split("/")[1] || "png";
-    const blob = new Blob([imageBuffer], { type: imagePayload.mimeType });
-    form.set("source", blob, `generated-post.${extension}`);
-
-    const publishResponse = await graphPostMultipart<FacebookPublishResponse>(`${pageId}/photos`, form);
-    const facebookPostId =
-        normalizeOptionalString(publishResponse.post_id) ||
-        (publishResponse.id ? await resolvePublishedStoryIdFromMedia(publishResponse.id) : null);
-
-    if (!facebookPostId) {
-        throw new FacebookServiceError("Facebook did not return a post id for the published image content.", 502);
-    }
-
-    return {
-        facebookPostId,
-        usedImage: true,
-    };
 }
 
 async function getPostSnapshot(postId: string): Promise<FacebookPostMetrics> {
@@ -900,25 +1108,35 @@ type LastKnownSyncRow = {
 };
 
 async function getLastKnownSync() {
-    await ensureAiAnalyticsSchema();
+    try {
+        const result = await withOptionalTimeout(
+            pool.query<LastKnownSyncRow>(
+                `
+                SELECT id, facebook_post_id, last_metrics_sync_at
+                FROM ai_contents
+                WHERE last_metrics_sync_at IS NOT NULL
+                ORDER BY last_metrics_sync_at DESC
+                LIMIT 1
+                `
+            )
+        );
+        const row = result.rows[0];
 
-    const result = await pool.query<LastKnownSyncRow>(
-        `
-    SELECT id, facebook_post_id, last_metrics_sync_at
-    FROM ai_contents
-    WHERE last_metrics_sync_at IS NOT NULL
-    ORDER BY last_metrics_sync_at DESC, id DESC
-    LIMIT 1
-    `
-    );
-
-    const row = result.rows[0];
-
-    return {
-        contentId: row ? Number(row.id) : null,
-        facebookPostId: row?.facebook_post_id ?? null,
-        syncedAt: row?.last_metrics_sync_at ?? null,
-    };
+        return {
+            contentId: row ? Number(row.id) : null,
+            facebookPostId: row?.facebook_post_id ?? null,
+            syncedAt: row?.last_metrics_sync_at ?? null,
+        };
+    } catch (error) {
+        console.warn("[facebook.status] failed to load last sync; continuing without sync history", {
+            message: error instanceof Error ? error.message : "Failed to load last sync",
+        });
+        return {
+            contentId: null,
+            facebookPostId: null,
+            syncedAt: null,
+        };
+    }
 }
 
 export async function getFacebookStatus(): Promise<FacebookStatusResult> {
@@ -988,7 +1206,7 @@ export async function getFacebookStatus(): Promise<FacebookStatusResult> {
     }
 }
 
-export async function publishSystemContent(aiContentId: number): Promise<PublishSystemContentResult> {
+async function publishSystemContentWithPool(aiContentId: number): Promise<PublishSystemContentResult> {
     if (!Number.isInteger(aiContentId) || aiContentId <= 0) {
         throw new FacebookServiceError("Invalid content id", 400);
     }
@@ -1098,7 +1316,7 @@ export async function publishSystemContent(aiContentId: number): Promise<Publish
     return toPublishResult(updated, publishMode, initialMetricsSynced);
 }
 
-export async function syncContentMetrics(aiContentId: number): Promise<SyncContentMetricsResult> {
+async function syncContentMetricsWithPool(aiContentId: number): Promise<SyncContentMetricsResult> {
     if (!Number.isInteger(aiContentId) || aiContentId <= 0) {
         throw new FacebookServiceError("Invalid content id", 400);
     }
@@ -1154,7 +1372,7 @@ export async function syncContentMetrics(aiContentId: number): Promise<SyncConte
     }
 }
 
-export async function syncAllContentMetrics(): Promise<SyncAllContentMetricsResult> {
+async function syncAllContentMetricsWithPool(): Promise<SyncAllContentMetricsResult> {
     await ensureAiAnalyticsSchema();
 
     const trackedRows = await getTrackedContentRows();
@@ -1182,4 +1400,168 @@ export async function syncAllContentMetrics(): Promise<SyncAllContentMetricsResu
         results,
         errors,
     };
+}
+
+async function publishSystemContentWithRest(aiContentId: number): Promise<PublishSystemContentResult> {
+    if (!Number.isInteger(aiContentId) || aiContentId <= 0) {
+        throw new FacebookServiceError("Invalid content id", 400);
+    }
+
+    let contentId = aiContentId;
+    let facebookPostId: string | null = null;
+    let publishMode: "text" | "image" = "text";
+
+    const content = await getContentForPublishRest(aiContentId);
+    contentId = content.id;
+
+    if (content.facebook_post_id) {
+        const savedOrConfiguredPageId =
+            normalizeOptionalString(content.facebook_page_id) || normalizeOptionalString(getFacebookConfig().pageId);
+
+        facebookPostId = content.facebook_post_id;
+        await markContentPublishedRest({
+            contentId,
+            facebookPostId,
+            facebookPageId: savedOrConfiguredPageId,
+            facebookPermalinkUrl: normalizeOptionalString(content.facebook_permalink_url),
+        });
+
+        logFacebookPublish("existing facebook_post_id reused via REST fallback", {
+            contentId,
+            facebookPostId,
+            pageId: savedOrConfiguredPageId,
+            status: content.status,
+        });
+    } else {
+        const config = requireFacebookConfig();
+        logFacebookPublish("publish started via REST fallback", {
+            contentId,
+            status: content.status,
+            pageId: config.pageId,
+            hasImage: Boolean(normalizeOptionalString(content.generated_image_url)),
+        });
+
+        const publishResult = await publishFacebookPost(
+            config.pageId,
+            content.content,
+            content.hashtags,
+            normalizeOptionalString(content.generated_image_url)
+        );
+        facebookPostId = publishResult.facebookPostId;
+        publishMode = publishResult.usedImage ? "image" : "text";
+
+        await markContentPublishedRest({
+            contentId,
+            facebookPostId,
+            facebookPageId: normalizeOptionalString(config.pageId),
+        });
+
+        logFacebookPublish("facebook_post_id saved via REST fallback", {
+            contentId,
+            facebookPostId,
+            pageId: config.pageId,
+        });
+    }
+
+    let initialMetricsSynced = false;
+
+    try {
+        const synced = await syncContentMetricsWithRest(contentId);
+        initialMetricsSynced = true;
+        logFacebookPublish("initial sync completed via REST fallback", {
+            contentId: synced.contentId,
+            facebookPostId: synced.facebookPostId,
+            pageId: synced.facebookPageId,
+        });
+    } catch (error) {
+        console.warn("[facebook.publish] initial REST sync failed", {
+            contentId,
+            facebookPostId,
+            message: error instanceof Error ? error.message : "Failed to sync initial Facebook metrics",
+        });
+    }
+
+    const updated = await getPublishedContentSnapshotRest(contentId);
+    return toPublishResult(updated, publishMode, initialMetricsSynced);
+}
+
+async function syncContentMetricsWithRest(aiContentId: number): Promise<SyncContentMetricsResult> {
+    if (!Number.isInteger(aiContentId) || aiContentId <= 0) {
+        throw new FacebookServiceError("Invalid content id", 400);
+    }
+
+    const content = await getContentForSyncRest(aiContentId);
+    const metrics = await getPostSnapshot(content.facebook_post_id as string);
+
+    await insertMetricsSnapshotRest({
+        aiContentId: content.id,
+        facebookPostId: metrics.postId,
+        likesCount: metrics.likesCount,
+        commentsCount: metrics.commentsCount,
+        sharesCount: metrics.sharesCount,
+        reachCount: 0,
+    });
+
+    await supabaseRest<unknown[]>(
+        contentPath({ id: `eq.${content.id}` }),
+        {
+            method: "PATCH",
+            body: JSON.stringify({
+                facebook_post_id: metrics.postId,
+                ...(metrics.facebookPageId ? { facebook_page_id: metrics.facebookPageId } : {}),
+                ...(metrics.facebookPermalinkUrl ? { facebook_permalink_url: metrics.facebookPermalinkUrl } : {}),
+                last_metrics_sync_at: new Date().toISOString(),
+            }),
+        }
+    );
+
+    return {
+        contentId: content.id,
+        facebookPostId: metrics.postId,
+        facebookPageId: metrics.facebookPageId,
+        facebookPermalinkUrl: metrics.facebookPermalinkUrl,
+        likesCount: metrics.likesCount,
+        commentsCount: metrics.commentsCount,
+        sharesCount: metrics.sharesCount,
+    };
+}
+
+async function syncAllContentMetricsWithRest(): Promise<SyncAllContentMetricsResult> {
+    const trackedRows = await getTrackedContentRowsRest();
+    const results: SyncContentMetricsResult[] = [];
+    const errors: SyncAllContentMetricsResult["errors"] = [];
+
+    for (const row of trackedRows) {
+        try {
+            const synced = await syncContentMetricsWithRest(row.id);
+            results.push(synced);
+        } catch (error) {
+            errors.push({
+                contentId: row.id,
+                facebookPostId: row.facebook_post_id,
+                message: error instanceof Error ? error.message : "Failed to sync Facebook metrics",
+            });
+        }
+    }
+
+    return {
+        totalTracked: trackedRows.length,
+        totalSynced: results.length,
+        totalFailed: errors.length,
+        failedIds: errors.map((error) => error.contentId),
+        results,
+        errors,
+    };
+}
+
+export async function publishSystemContent(aiContentId: number): Promise<PublishSystemContentResult> {
+    return publishSystemContentWithPool(aiContentId);
+}
+
+export async function syncContentMetrics(aiContentId: number): Promise<SyncContentMetricsResult> {
+    return syncContentMetricsWithPool(aiContentId);
+}
+
+export async function syncAllContentMetrics(): Promise<SyncAllContentMetricsResult> {
+    return syncAllContentMetricsWithPool();
 }

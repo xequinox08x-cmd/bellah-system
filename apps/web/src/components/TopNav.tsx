@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle,
-  Bell,
   ChevronDown,
-  FileText,
   LogOut,
+  Menu,
   Plus,
   Search,
   User,
@@ -138,20 +136,15 @@ function scoreSearchEntry(entry: SearchEntry, query: string) {
   return score;
 }
 
-export function TopNav() {
+export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
   const { user, logout } = useAuth();
   const { contentItems, products } = useStore();
   const navigate = useNavigate();
   const location = useLocation();
   const [showProfile, setShowProfile] = useState(false);
-  const [showNotifs, setShowNotifs] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearchResults, setShowSearchResults] = useState(false);
   const searchRef = useRef<HTMLFormElement | null>(null);
-
-  const pendingCount = contentItems.filter((item) => item.status === 'pending').length;
-  const lowStockCount = products.filter((product) => product.stock <= product.lowStockThreshold).length;
-  const totalNotifs = pendingCount + (lowStockCount > 0 ? 1 : 0);
   const meta = PAGE_META[location.pathname] ?? { title: 'Dashboard', sub: '' };
 
   const searchEntries = useMemo(() => {
@@ -235,17 +228,26 @@ export function TopNav() {
 
   const closeAll = () => {
     setShowProfile(false);
-    setShowNotifs(false);
     setShowSearchResults(false);
   };
 
   return (
-    <header className="h-16 bg-white border-b border-[#E5E7EB] flex items-center justify-between px-5 shrink-0 z-20">
-      <div>
-        <h2 className="text-[#111827] text-[15px] leading-tight" style={{ fontWeight: 700 }}>
-          {meta.title}
-        </h2>
-        <p className="text-[#9CA3AF] text-[11px] mt-0.5">{meta.sub}</p>
+    <header className="h-16 bg-white border-b border-[#E5E7EB] flex items-center justify-between px-3 sm:px-5 shrink-0 z-20">
+      <div className="flex items-center gap-3">
+        {/* Hamburger — mobile only */}
+        <button
+          onClick={onMenuClick}
+          className="md:hidden p-2 -ml-1 rounded-lg text-[#6B7280] hover:bg-[#F3F4F6] transition-colors"
+          aria-label="Open menu"
+        >
+          <Menu className="w-5 h-5" />
+        </button>
+        <div>
+          <h2 className="text-[#111827] text-[15px] leading-tight" style={{ fontWeight: 700 }}>
+            {meta.title}
+          </h2>
+          <p className="text-[#9CA3AF] text-[11px] mt-0.5 hidden sm:block">{meta.sub}</p>
+        </div>
       </div>
 
       <div className="flex items-center gap-2">
@@ -307,97 +309,10 @@ export function TopNav() {
             Create Post
           </button>
         )}
-
-        <div className="relative">
-          <button
-            onClick={() => {
-              setShowNotifs(!showNotifs);
-              setShowProfile(false);
-              setShowSearchResults(false);
-            }}
-            className="relative p-2 rounded-lg hover:bg-[#F9FAFB] transition-colors"
-          >
-            <Bell className="w-[18px] h-[18px] text-[#6B7280]" />
-            {totalNotifs > 0 && (
-              <span
-                className="absolute top-1 right-1 w-4 h-4 bg-[#EC4899] text-white text-[9px] rounded-full flex items-center justify-center"
-                style={{ fontWeight: 700 }}
-              >
-                {totalNotifs > 9 ? '9+' : totalNotifs}
-              </span>
-            )}
-          </button>
-
-          {showNotifs && (
-            <div className="absolute right-0 top-full mt-2 w-76 bg-white border border-[#E5E7EB] rounded-xl shadow-xl z-50 overflow-hidden">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-[#F3F4F6]">
-                <p className="text-sm text-[#111827]" style={{ fontWeight: 600 }}>
-                  Notifications
-                </p>
-                {totalNotifs > 0 && (
-                  <span className="text-[10px] px-1.5 py-0.5 bg-[#EC4899] text-white rounded-full">
-                    {totalNotifs} new
-                  </span>
-                )}
-              </div>
-              <div className="py-1 max-h-60 overflow-y-auto">
-                {totalNotifs === 0 && (
-                  <div className="px-4 py-8 text-center">
-                    <p className="text-xs text-[#9CA3AF]">All caught up!</p>
-                  </div>
-                )}
-                {pendingCount > 0 && (
-                  <button
-                    onClick={() => {
-                      navigate('/approvals');
-                      closeAll();
-                    }}
-                    className="w-full px-4 py-3 text-left hover:bg-[#F9FAFB] transition-colors border-b border-[#F9FAFB]"
-                  >
-                    <div className="flex items-start gap-3">
-                      <div className="w-7 h-7 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
-                        <FileText className="w-3.5 h-3.5 text-amber-600" />
-                      </div>
-                      <div>
-                        <p className="text-xs text-[#111827]" style={{ fontWeight: 500 }}>
-                          {pendingCount} post{pendingCount > 1 ? 's' : ''} awaiting approval
-                        </p>
-                        <p className="text-[10px] text-[#9CA3AF]">Content Approvals to Review now</p>
-                      </div>
-                    </div>
-                  </button>
-                )}
-                {lowStockCount > 0 && (
-                  <button
-                    onClick={() => {
-                      navigate('/products');
-                      closeAll();
-                    }}
-                    className="w-full px-4 py-3 text-left hover:bg-[#F9FAFB] transition-colors"
-                  >
-                    <div className="flex items-start gap-3">
-                      <div className="w-7 h-7 rounded-full bg-red-100 flex items-center justify-center shrink-0 mt-0.5">
-                        <AlertTriangle className="w-3.5 h-3.5 text-red-500" />
-                      </div>
-                      <div>
-                        <p className="text-xs text-[#111827]" style={{ fontWeight: 500 }}>
-                          {lowStockCount} product{lowStockCount > 1 ? 's' : ''} low on stock
-                        </p>
-                        <p className="text-[10px] text-[#9CA3AF]">Inventory to Check stock levels</p>
-                      </div>
-                    </div>
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-
         <div className="relative">
           <button
             onClick={() => {
               setShowProfile(!showProfile);
-              setShowNotifs(false);
               setShowSearchResults(false);
             }}
             className="flex items-center gap-2 pl-2 pr-3 py-1.5 rounded-lg hover:bg-[#F9FAFB] border border-transparent hover:border-[#E5E7EB] transition-all"
@@ -468,7 +383,7 @@ export function TopNav() {
         </div>
       </div>
 
-      {(showProfile || showNotifs) && <div className="fixed inset-0 z-40" onClick={closeAll} />}
+      {showProfile && <div className="fixed inset-0 z-40" onClick={closeAll} />}
     </header>
   );
 }

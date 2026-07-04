@@ -10,6 +10,7 @@ type Tone = 'fun' | 'professional' | 'romantic' | 'urgent';
 type ContentType = 'caption' | 'promotion' | 'product_highlight' | 'story';
 type OutputMode = 'text' | 'image' | 'text_image';
 type GenerationProvider = 'openai' | 'gemini' | 'fallback' | 'none';
+type ImageGenerationStatus = 'none' | 'pending' | 'complete' | 'fallback';
 
 type GenerationProviders = {
   text: GenerationProvider;
@@ -51,6 +52,7 @@ type GeneratedContent = {
   promptProvider: GenerationProvider | null;
   outputMode: OutputMode;
   providers: GenerationProviders;
+  imageGenerationStatus?: ImageGenerationStatus;
   status: string;
 };
 
@@ -72,6 +74,8 @@ const OUTPUT_MODE_LABEL: Record<OutputMode, string> = {
 };
 
 const FACEBOOK_PLATFORM = 'facebook';
+const MAX_REFERENCE_IMAGE_SIDE = 1280;
+const REFERENCE_IMAGE_QUALITY = 0.82;
 
 function formatOptionLabel(value: string) {
   return value.replace(/_/g, ' ');
@@ -118,6 +122,47 @@ function FacebookIcon({ className = 'w-5 h-5' }: { className?: string }) {
   );
 }
 
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Failed to read image'));
+      }
+    };
+    reader.onerror = () => reject(reader.error || new Error('Failed to read image'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImage(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Failed to load image'));
+    image.src = src;
+  });
+}
+
+async function compressReferenceImage(file: File) {
+  const dataUrl = await readFileAsDataUrl(file);
+  const image = await loadImage(dataUrl);
+  const scale = Math.min(1, MAX_REFERENCE_IMAGE_SIDE / Math.max(image.width, image.height));
+  const width = Math.max(1, Math.round(image.width * scale));
+  const height = Math.max(1, Math.round(image.height * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return dataUrl;
+
+  ctx.drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL('image/jpeg', REFERENCE_IMAGE_QUALITY);
+}
+
 export default function AIMarketing() {
   const { contentItems, addContent } = useStore();
   const { user } = useAuth();
@@ -141,13 +186,23 @@ export default function AIMarketing() {
   const [editHashtags, setEditHashtags] = useState('');
   const [title, setTitle] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationStatus, setGenerationStatus] = useState<'idle' | 'generating' | 'done' | 'error'>('idle');
+  const isGeneratingRef = useRef(false); // prevents effect-based state wipes during generation
   const [isGeneratingAutoPrompt, setIsGeneratingAutoPrompt] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [generatedContentId, setGeneratedContentId] = useState<number | null>(null);
   const [feedItems, setFeedItems] = useState<FeedContentItem[]>([]);
   const [feedLoading, setFeedLoading] = useState(false);
   const [feedError, setFeedError] = useState('');
+  const isMountedRef = useRef(true);
 
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -166,7 +221,7 @@ export default function AIMarketing() {
             category: String(item.category ?? ''),
             price: Number(item.price ?? 0),
             description: item.description ? String(item.description) : '',
-            imageUrl: item.image_url ? String(item.image_url) : undefined,
+            imageUrl: item.imageUrl || item.image_url ? String(item.imageUrl ?? item.image_url) : undefined,
           }))
         );
       } catch (err) {
@@ -186,8 +241,13 @@ export default function AIMarketing() {
   }, []);
 
   useEffect(() => {
+    // Do NOT reset the auto-prompt while generation is in progress —
+    // this prevents a state-wipe race condition that would clear the prompt
+    // that was just returned by the API and cause the result to disappear.
+    if (isGeneratingRef.current) return;
     setAutoPromptText('');
     setAutoPromptProvider(null);
+    setGenerationStatus('idle');
   }, [productId, type, tone, outputMode, manualImagePreview]);
 
   useEffect(() => {
@@ -235,6 +295,10 @@ export default function AIMarketing() {
     usedReferenceImage: false,
   };
   const usedFallback = generatedProviders.text === 'fallback' || generatedProviders.image === 'fallback';
+  const isGeneratedImagePending =
+    generated?.imageGenerationStatus === 'pending' &&
+    generated.outputMode !== 'text' &&
+    !generated.generatedImageUrl;
 
   const clearManualImage = () => {
     setManualImagePreview('');
@@ -242,17 +306,22 @@ export default function AIMarketing() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleManualImageChange = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleManualImageChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setManualImagePreview(reader.result);
-        setManualImageFile(file);
-      }
-    };
-    reader.readAsDataURL(file);
+    if (!file.type.startsWith('image/')) {
+      toast.error('Please upload an image file');
+      return;
+    }
+
+    try {
+      const compressed = await compressReferenceImage(file);
+      setManualImagePreview(compressed);
+      setManualImageFile(file);
+    } catch (error) {
+      console.error(error);
+      toast.error('Failed to prepare image');
+    }
   };
 
   const handleGenerateAutoPrompt = async () => {
@@ -298,37 +367,122 @@ export default function AIMarketing() {
     }
   };
 
+  const pollGeneratedImage = async (contentId: number, toastId: string) => {
+    const maxAttempts = 60;
+    const delayMs = 3_000;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+      if (!isMountedRef.current) return;
+
+      try {
+        const response = await api.getAiContent(contentId);
+        const item = response.data;
+        if (!item.generatedImageUrl) continue;
+
+        setGenerated((current) => {
+          if (!current || current.id !== contentId) return current;
+          const imageProvider = item.generatedImageUrl?.startsWith('data:image/svg+xml')
+            ? 'fallback'
+            : 'gemini';
+          return {
+            ...current,
+            caption: item.output || current.caption,
+            generatedImageUrl: item.generatedImageUrl,
+            imageGenerationStatus: 'complete',
+            providers: { ...current.providers, image: imageProvider },
+          };
+        });
+        if (item.output) setEditCaption(item.output);
+        setGenerationStatus('done');
+        toast.success('Image generated successfully!', { id: toastId });
+        window.dispatchEvent(new CustomEvent('image-generation-complete', {
+          detail: { title: item.title || 'AI Content' },
+        }));
+        return;
+      } catch (err) {
+        console.error('[AIMarketing] image polling error', err);
+      }
+    }
+
+    if (!isMountedRef.current) return;
+    setGenerationStatus('error');
+    toast.error('Image is still taking longer than expected. Check generated content again in a moment.', { id: toastId });
+  };
+
   const handleGenerate = async () => {
     if (!productId) {
       toast.error('Please select a product first');
       return;
     }
 
+    // Guard against re-triggering while already generating.
+    if (isGeneratingRef.current) return;
+
+    const activePrompt = useCustomPrompt ? promptText.trim() : autoPromptText.trim();
+    if (!activePrompt) {
+      toast.error(
+        useCustomPrompt
+          ? 'Please write a custom prompt first'
+          : 'Click \u201cAuto\u201d (double-click) to generate a prompt first, or switch to Custom mode',
+        { duration: 5000 }
+      );
+      return;
+    }
+
+    // Use a unique toast ID per run so Sonner does not silently skip updates.
+    const toastId = `ai-gen-${Date.now()}`;
+    isGeneratingRef.current = true;
     setIsGenerating(true);
+    setGenerationStatus('generating');
+    toast.loading('Generating content… you can navigate away and come back.', { id: toastId, duration: Infinity });
+
     try {
       const response = await api.generateMarketingContent({
         productId: Number(productId),
-        promptText: useCustomPrompt ? promptText.trim() : autoPromptText.trim(),
+        promptText: activePrompt,
         contentType: type,
         tone,
         platform,
         outputMode,
         referenceImageUrl: manualImagePreview || selectedProduct?.imageUrl || undefined,
+        asyncImage: outputMode !== 'text',
+        promptMode: useCustomPrompt ? 'custom' : 'auto',
       });
 
-      setGeneratedContentId(response.data.id);
-      setGenerated(response.data as GeneratedContent);
-      setEditCaption(response.data.caption);
-      setEditHashtags(response.data.hashtags);
-      setTitle(response.data.title);
+      const data = response.data as GeneratedContent;
+      setGeneratedContentId(data.id);
+      setGenerated(data);
+      setEditCaption(data.caption ?? '');
+      setEditHashtags(data.hashtags ?? '');
+      setTitle(data.title ?? '');
       if (!useCustomPrompt) {
-        setAutoPromptText(response.data.promptText);
-        setAutoPromptProvider(response.data.promptProvider ?? null);
+        setAutoPromptText(data.promptText ?? '');
+        setAutoPromptProvider(data.promptProvider ?? null);
+      }
+
+      if (data.imageGenerationStatus === 'pending') {
+        setGenerationStatus('generating');
+        toast.success('Caption is ready. The image is finishing in the background.', { id: toastId });
+        void pollGeneratedImage(data.id, toastId);
+      } else {
+        setGenerationStatus('done');
+        toast.success(
+          data.generatedImageUrl
+            ? 'Image generated successfully!'
+            : 'Content generated successfully!',
+          { id: toastId }
+        );
+        window.dispatchEvent(new CustomEvent('image-generation-complete', {
+          detail: { title: data.title || 'AI Content' },
+        }));
       }
     } catch (err) {
-      console.error(err);
-      toast.error(err instanceof Error ? err.message : 'Failed to generate content');
+      console.error('[AIMarketing] generate error', err);
+      setGenerationStatus('error');
+      toast.error(err instanceof Error ? err.message : 'Failed to generate content', { id: toastId });
     } finally {
+      isGeneratingRef.current = false;
       setIsGenerating(false);
     }
   };
@@ -336,6 +490,10 @@ export default function AIMarketing() {
   const handleSubmit = async () => {
     if (!generated) {
       toast.error('Generate content first');
+      return;
+    }
+    if (isGeneratedImagePending) {
+      toast.error('Please wait for the generated image to finish');
       return;
     }
     if (generatedContentId == null) {
@@ -352,7 +510,7 @@ export default function AIMarketing() {
       const res = await api.createContent({
         id: generatedContentId,
         title,
-        prompt: promptText.trim(),
+        prompt: useCustomPrompt ? promptText.trim() : (autoPromptText.trim() || generated.promptText),
         output: editCaption,
         platform,
         hashtags: editHashtags,
@@ -631,15 +789,37 @@ export default function AIMarketing() {
               <button
                 type="button"
                 onClick={handleGenerate}
-                disabled={isGenerating || !productId || productsLoading}
+                disabled={isGenerating || isGeneratedImagePending || !productId || productsLoading}
                 className="w-full py-2.5 bg-[#EC4899] text-white rounded-lg text-sm flex items-center justify-center gap-2 hover:bg-[#DB2777] border border-[#EC4899] shadow-sm transition-all disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                {isGenerating ? (
+                {isGeneratedImagePending ? (
+                  <><RefreshCw className="w-4 h-4 animate-spin" /> Image finishing...</>
+                ) : isGenerating ? (
                   <><RefreshCw className="w-4 h-4 animate-spin" /> Generating...</>
                 ) : (
                   <><Sparkles className="w-4 h-4" /> Generate Facebook Content</>
                 )}
               </button>
+
+              {/* In-page generation status indicator */}
+              {generationStatus === 'generating' && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-700">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
+                  <span>AI is generating your content — you may navigate away and return.</span>
+                </div>
+              )}
+              {generationStatus === 'done' && !isGenerating && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-700">
+                  <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>Generation complete! Review the result on the right.</span>
+                </div>
+              )}
+              {generationStatus === 'error' && !isGenerating && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-xs text-red-600">
+                  <XCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>Generation failed. Check your prompt or try again.</span>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -657,10 +837,12 @@ export default function AIMarketing() {
                 <button
                   type="button"
                   onClick={handleGenerate}
-                  disabled={isGenerating || !productId || productsLoading}
+                  disabled={isGenerating || isGeneratedImagePending || !productId || productsLoading}
                   className="flex items-center gap-1 rounded-lg border border-[#E5E7EB] px-3 py-1.5 text-xs text-[#6B7280] hover:text-[#111827] hover:bg-[#F9FAFB] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {isGenerating ? (
+                  {isGeneratedImagePending ? (
+                    <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Image finishing...</>
+                  ) : isGenerating ? (
                     <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Generating...</>
                   ) : (
                     <><RefreshCw className="w-3.5 h-3.5" /> Generate Facebook Content</>
@@ -747,7 +929,11 @@ export default function AIMarketing() {
                   />
                 ) : (
                   <div className="aspect-[4/5] w-full rounded-xl border border-dashed border-[#E5E7EB] bg-[#F9FAFB] flex items-center justify-center text-center px-6">
-                    <p className="text-sm text-[#9CA3AF]">Generated poster preview will appear here</p>
+                    <p className="text-sm text-[#9CA3AF]">
+                      {isGeneratedImagePending
+                        ? 'Image is still generating in the background...'
+                        : 'Generated poster preview will appear here'}
+                    </p>
                   </div>
                 )}
               </div>
@@ -766,10 +952,12 @@ export default function AIMarketing() {
 
               <button
                 onClick={handleSubmit}
-                disabled={isSubmitting}
+                disabled={isSubmitting || isGeneratedImagePending}
                 className="w-full py-2.5 bg-[#EC4899] text-white rounded-lg text-sm flex items-center justify-center gap-2 hover:bg-[#DB2777] transition-all disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                {isSubmitting ? (
+                {isGeneratedImagePending ? (
+                  <><RefreshCw className="w-4 h-4 animate-spin" /> Image finishing...</>
+                ) : isSubmitting ? (
                   <><RefreshCw className="w-4 h-4 animate-spin" /> Submitting...</>
                 ) : (
                   <><Send className="w-4 h-4" /> Submit for Approval</>

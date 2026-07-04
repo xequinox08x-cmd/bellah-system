@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { supabaseRest } from '../services/supabaseAdmin';
+import { pool } from '../db/pool';
 
 const router = Router();
 const FACEBOOK_PLATFORM = 'facebook';
@@ -18,23 +18,19 @@ type AiContentRow = {
 
 type ScheduledStatus = 'pending' | 'published' | 'failed' | 'cancelled';
 
-const CONTENT_COLUMNS = [
-  'id',
-  'title',
-  'content',
-  'hashtags',
-  'platform',
-  'status',
-  'scheduled_at',
-  'published_at',
-  'created_at',
-].join(',');
-
-function contentPath(params: Record<string, string | number>) {
-  const search = new URLSearchParams();
-  Object.entries(params).forEach(([key, value]) => search.set(key, String(value)));
-  return `/ai_contents?${search.toString()}`;
-}
+const CONTENT_SELECT = `
+  SELECT
+    id,
+    title,
+    content,
+    hashtags,
+    platform,
+    status,
+    scheduled_at,
+    published_at,
+    created_at
+  FROM ai_contents
+`;
 
 function toScheduledStatus(status: string | null): ScheduledStatus {
   if (status === 'published' || status === 'failed' || status === 'cancelled') return status;
@@ -65,21 +61,22 @@ function getSortDate(row: AiContentRow) {
 }
 
 async function getContentById(id: number) {
-  const rows = await supabaseRest<AiContentRow[]>(
-    contentPath({ select: `${CONTENT_COLUMNS}`, id: `eq.${id}`, limit: 1 })
+  const result = await pool.query<AiContentRow>(
+    `${CONTENT_SELECT} WHERE id = $1 LIMIT 1`,
+    [id]
   );
-  return rows[0] ?? null;
+  return result.rows[0] ?? null;
 }
 
 // GET /api/scheduled-posts
 router.get('/', async (_req: Request, res: Response) => {
   try {
-    const rows = await supabaseRest<AiContentRow[]>(
-      contentPath({ select: CONTENT_COLUMNS, order: 'created_at.desc', limit: 500 })
+    const result = await pool.query<AiContentRow>(
+      `${CONTENT_SELECT} ORDER BY created_at DESC LIMIT 500`
     );
 
     const scheduledStatuses = new Set(['scheduled', 'published', 'failed', 'cancelled']);
-    const data = rows
+    const data = result.rows
       .filter((row) => Boolean(row.scheduled_at) || scheduledStatuses.has(String(row.status || '')))
       .sort((a, b) => getSortDate(b).localeCompare(getSortDate(a)) || Number(b.id) - Number(a.id))
       .map(serializeScheduledPost);
@@ -94,12 +91,17 @@ router.get('/', async (_req: Request, res: Response) => {
 // GET /api/scheduled-posts/pending
 router.get('/pending', async (_req: Request, res: Response) => {
   try {
-    const rows = await supabaseRest<AiContentRow[]>(
-      contentPath({ select: CONTENT_COLUMNS, status: 'eq.scheduled', order: 'scheduled_at.asc', limit: 100 })
+    const result = await pool.query<AiContentRow>(
+      `
+      ${CONTENT_SELECT}
+      WHERE status = 'scheduled'
+      ORDER BY scheduled_at ASC
+      LIMIT 100
+      `
     );
 
     const now = Date.now();
-    const data = rows
+    const data = result.rows
       .filter((row) => row.scheduled_at && new Date(row.scheduled_at).getTime() <= now)
       .map(serializeScheduledPost);
 
@@ -139,21 +141,20 @@ router.post('/', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Content must be approved before scheduling' });
     }
 
-    const rows = await supabaseRest<AiContentRow[]>(
-      contentPath({ select: CONTENT_COLUMNS, id: `eq.${contentId}` }),
-      {
-        method: 'PATCH',
-        headers: { Prefer: 'return=representation' },
-        body: JSON.stringify({
-          status: 'scheduled',
-          scheduled_at: scheduledAt.toISOString(),
-          platform: platform || content.platform || FACEBOOK_PLATFORM,
-          published_at: null,
-        }),
-      }
+    const result = await pool.query<AiContentRow>(
+      `
+      UPDATE ai_contents
+      SET status = 'scheduled',
+          scheduled_at = $2,
+          platform = $3,
+          published_at = NULL
+      WHERE id = $1
+      RETURNING id, title, content, hashtags, platform, status, scheduled_at, published_at, created_at
+      `,
+      [contentId, scheduledAt.toISOString(), platform || content.platform || FACEBOOK_PLATFORM]
     );
 
-    const updated = rows[0];
+    const updated = result.rows[0];
     if (!updated) {
       return res.status(404).json({ error: 'Content not found' });
     }
@@ -180,19 +181,18 @@ router.patch('/:id/status', async (req: Request, res: Response) => {
 
   try {
     const mappedStatus = status === 'pending' ? 'scheduled' : status;
-    const rows = await supabaseRest<AiContentRow[]>(
-      contentPath({ select: CONTENT_COLUMNS, id: `eq.${id}` }),
-      {
-        method: 'PATCH',
-        headers: { Prefer: 'return=representation' },
-        body: JSON.stringify({
-          status: mappedStatus,
-          ...(status === 'published' ? { published_at: new Date().toISOString() } : {}),
-        }),
-      }
+    const result = await pool.query<AiContentRow>(
+      `
+      UPDATE ai_contents
+      SET status = $2,
+          published_at = CASE WHEN $3 = 'published' THEN NOW() ELSE published_at END
+      WHERE id = $1
+      RETURNING id, title, content, hashtags, platform, status, scheduled_at, published_at, created_at
+      `,
+      [id, mappedStatus, status]
     );
 
-    const updated = rows[0];
+    const updated = result.rows[0];
     if (!updated) {
       return res.status(404).json({ error: 'Post not found' });
     }
@@ -212,20 +212,22 @@ router.delete('/:id', async (req: Request, res: Response) => {
   }
 
   try {
-    const rows = await supabaseRest<AiContentRow[]>(
-      contentPath({ select: CONTENT_COLUMNS, id: `eq.${id}`, status: 'eq.scheduled' }),
-      {
-        method: 'PATCH',
-        headers: { Prefer: 'return=representation' },
-        body: JSON.stringify({ status: 'cancelled' }),
-      }
+    const result = await pool.query<AiContentRow>(
+      `
+      UPDATE ai_contents
+      SET status = 'cancelled'
+      WHERE id = $1
+        AND status = 'scheduled'
+      RETURNING id, title, content, hashtags, platform, status, scheduled_at, published_at, created_at
+      `,
+      [id]
     );
 
-    if (!rows[0]) {
+    if (!result.rows[0]) {
       return res.status(404).json({ error: 'Post not found or already published' });
     }
 
-    res.json({ message: 'Post cancelled', data: serializeScheduledPost(rows[0]) });
+    res.json({ message: 'Post cancelled', data: serializeScheduledPost(result.rows[0]) });
   } catch (err) {
     console.error('DELETE /api/scheduled-posts/:id error:', err);
     res.status(500).json({ error: err instanceof Error ? err.message : 'Server error' });
